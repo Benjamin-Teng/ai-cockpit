@@ -49,8 +49,8 @@ Cargo.toml version 0.9.0；此 commit 可能比本機安裝的 preview 新數日
 | Windows 11 | 0.9.0-preview.2026-09-08-62431dbd033b | 22 | `C:\Users\<user>\AppData\Roaming\herdr\herdr.sock` | stable 1.97.1 msvc |
 | WSL Ubuntu-24.04 | 0.8.2 | 20 | `/home/<user>/.config/herdr/herdr.sock` | stable 1.98.0 |
 
-版本字串來自本機 `herdr --version`、`cargo --version` 實測。兩個 server 互不相通，
-WSL 端 server 平時不一定在跑。
+版本字串來自本機 `herdr --version`、`cargo --version` 實測（原始輸出見
+`docs/research/2026-09-13/local-checks.txt`）。兩個 server 互不相通，WSL 端 server 平時不一定在跑。
 
 ### 2.2 Transport 與連線模型
 
@@ -94,10 +94,11 @@ WSL 端 server 平時不一定在跑。
 
 **沒有全域的 agent 狀態訂閱。** `EventKind` 26 種裡的 `pane_agent_status_changed` 與
 `pane_output_changed` 沒有無參數訂閱可收。agent 狀態改變時 server 只發生命週期版的
-`pane_agent_status_changed`（`src/app/api.rs` 的 `emit_pane_state_update`），而 `pane.updated`
-**只在 agent 名稱等呈現資訊改變時才發**，狀態改變不會觸發它。因此要即時知道任一 pane 的
-狀態變化，只能對每個 pane 各訂一筆 `pane.agent_status_changed`。這是本設計 §4.2 與 §7.1 的
-直接依據。
+`pane_agent_status_changed`（`src/app/api.rs` 的 `emit_pane_state_update`）。`pane.updated`
+由多個呼叫點發出（agent 名稱改變、標題改變、metadata token 更新、agent 和解等，皆為
+呈現資訊），**狀態改變不會觸發它**。因此要即時知道任一 pane 的狀態變化，只能對每個 pane
+各訂一筆 `pane.agent_status_changed`。這是本設計 §4.2 與 §7.1 的直接依據。
+另外，**pane 的 cwd 改變沒有任何事件**，只能靠定期 snapshot 更新。
 
 判別規則：`event` 字串含 `.` 即每 pane 訂閱的推送。`pane.agent_status_changed` payload 兩軌相同：
 `pane_id*`、`workspace_id*`、`agent_status*`、`agent`、`display_agent`、`state_labels`、`title`。
@@ -115,8 +116,11 @@ WSL 端 server 平時不一定在跑。
 | `tab.closed`、`tab.renamed` | id（renamed 另帶 `label`） |
 | `pane.created`、`pane.updated` | 完整 `PaneInfo` |
 | `pane.moved` | `previous_pane_id`、`previous_workspace_id`、`previous_tab_id` 加新的完整 `PaneInfo`；**pane id 在移動後會變** |
-| `pane.focused`、`workspace.focused` | id |
-| `tab.moved`、`tab.focused`、`pane.closed`、`pane.exited`、`pane.agent_detected`、`layout.updated` | 本次未逐字核對，以 schema fixture 為準 |
+| `tab.moved` | `tab_id`、`workspace_id`、`insert_index`、`tabs: Vec<TabInfo>`（整份順序，與 `workspace.moved` 同構） |
+| `pane.focused`、`tab.focused`、`workspace.focused` | id |
+| `pane.closed`、`pane.exited` | `pane_id`、`workspace_id` |
+| `pane.agent_detected` | `pane_id`、`workspace_id`、`agent: Option<String>`、`released: bool`（agent 離開時 `released` 為 true） |
+| `layout.updated` | `layout: PaneLayoutSnapshot` |
 
 ### 2.4 Agent 狀態語意
 
@@ -134,7 +138,7 @@ WSL 端 server 平時不一定在跑。
 `SessionSnapshot` 是五個平行陣列加外鍵：`workspaces`、`tabs`、`panes`、`layouts`、
 `agents`，另有 `version`、`protocol`、`focused_workspace_id`、`focused_tab_id`、
 `focused_pane_id`。id 格式：workspace `wJ`、tab `wJ:t1`、pane `wJ:p1`。
-本機 2026-09-13 一次 snapshot 為 3.8 KB（兩個 workspace）。
+本機 2026-09-13 一次 snapshot 為 3,799 bytes（兩個 workspace；`local-checks.txt`）。
 
 ### 2.6 讀取 pane 輸出（change 3 用）
 
@@ -165,7 +169,7 @@ observer 子集在 protocol 20 與 22 是同一份合約。
 - WSL Ubuntu-24.04 內建 OpenBSD netcat（`/usr/bin/nc`，本機 `nc -h` 顯示 Debian patchlevel
   1.226-1ubuntu2），支援 `-U` 連 unix socket。
 - `wsl.exe --list --running --quiet` 在虛擬機停止時執行，前後皆無 `vmmem`／`vmmemWSL`
-  程序、兩次輸出皆空，**不會喚醒虛擬機**（本機 2026-09-13 實測）。
+  程序、兩次輸出皆空，**不會喚醒虛擬機**（本機 2026-09-13 實測，輸出見 `local-checks.txt`）。
 
 ## 3. 決策摘要
 
@@ -301,7 +305,7 @@ pub struct RuntimeSnapshot { server_version: String, protocol: u32,
 
 pub enum RuntimeEvent {
     WorkspaceUpserted(Workspace), WorkspacesReplaced(Vec<Workspace>), WorkspaceRemoved(WorkspaceId),
-    TabUpserted(Tab), TabRemoved(TabId),
+    TabUpserted(Tab), TabsReplaced(Vec<Tab>), TabRemoved(TabId),
     PaneUpserted(Pane), PaneMoved { previous: PaneId, pane: Pane }, PaneRemoved(PaneId), PaneExited(PaneId),
     AgentDetected { pane_id, agent: String },
     AgentStatusChanged { pane_id, status: AgentStatus, title: Option<String>, agent: Option<String> },
@@ -423,20 +427,20 @@ Backoff（1s, 2s, 4s … 上限 30s；成功後歸零）→ Probe               
 | `tab_created` | `TabUpserted` |
 | `tab_renamed` | `TabUpserted`（改 label；不存在 → `Drift`） |
 | `tab_closed` | `TabRemoved` |
-| `tab_moved` | payload 含完整 `TabInfo` 則 `TabUpserted`，否則 `Drift` |
+| `tab_moved` | `TabsReplaced`（payload 帶該 workspace 整份 tabs） |
 | `pane_created`、`pane_updated` | `PaneUpserted` |
 | `pane_moved` | `PaneMoved { previous, pane }`：移除舊 id、以新 `PaneInfo` upsert |
 | `pane_closed` | `PaneRemoved` |
 | `pane_exited` | `PaneExited` |
-| `pane_agent_detected` | `AgentDetected` |
+| `pane_agent_detected` | `AgentDetected`；`released` 為 true 或 `agent` 為 null 時清掉該 pane 的 agent |
 | `pane.agent_status_changed`（S 連線） | `AgentStatusChanged` |
 | `workspace_focused`、`tab_focused`、`pane_focused` | `FocusChanged` |
 | `layout_updated`、`worktree_*` | `Noted` |
 | `pane_output_changed` | 無對應訂閱，收不到；若出現則忽略並記 debug |
 | `pane.output_matched`、`pane.scroll_changed` | 不訂閱 |
 
-各事件 payload 欄位以 fixture 為準；§2.3 標「未逐字核對」的事件在實作時先對照 fixture 再定
-對應方式，payload 不足以 upsert 的一律 `Drift`。
+各事件 payload 欄位以 §2.3 的表與 fixture 為準；實作時若 fixture 與表不符，以 fixture 為準並
+回頭改本文件。payload 不足以 upsert 的一律 `Drift`。
 
 ## 8. `cockpit` 程式本體
 
@@ -547,9 +551,9 @@ Codex review 沙箱唯讀而 cargo 必寫 `target/`，`AGENTS.md` 只給 `cargo 
 1. tokio `ClientOptions::open` 開得了含冒號與反斜線的 pipe 名稱，送 `session.snapshot` 得到回應。
 2. `wsl.exe -d Ubuntu-24.04 -e nc -U <sock>` 經 stdio 送一行 request 收到一行 response；
    server 關閉時 nc 結束；是否需要 `-N`；長連線訂閱下事件不被緩衝延遲。
-3. 一條 `events.subscribe` 連線同時帶 24 種生命週期加 N 筆 `pane.agent_status_changed`
-   可成功；其中一筆 `pane_id` 已不存在時整個請求回 `error`（預期，需確認）；重開 S 的重疊
-   期間不丟事件。
+3. S 連線：一條 `events.subscribe` 帶 N 筆 `pane.agent_status_changed` 可成功，且與 L 連線
+   （24 種生命週期）同時開著互不影響；其中一筆 `pane_id` 已不存在時整個請求回 `error`
+   （預期，需確認）；重開 S 的重疊期間不丟事件。
 4. 從 HERDR pane 內啟動 cockpit.exe 並連 WSL 時，不出現任何額外視窗。
 5. `wsl.exe --list --running --quiet` 不喚醒虛擬機（§2.9 已實測一次，實作時再確認並記錄
    輸出編碼處理）。

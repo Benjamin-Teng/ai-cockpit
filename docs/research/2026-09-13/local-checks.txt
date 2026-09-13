@@ -1,0 +1,33 @@
+# 本機實測輸出（2026-09-13）
+
+## rust toolchain
+$ cargo --version; rustc --version   (Windows)
+cargo 1.97.1 (c980f4866 2026-06-30)
+rustc 1.97.1 (8bab26f4f 2026-07-14)
+$ wsl.exe -e bash -lc "source ~/.cargo/env; cargo --version; rustc --version"
+cargo 1.98.0 (797e8a9bc 2026-08-05)
+rustc 1.98.0 (88d9e12ae 2026-08-18)
+
+## wsl distros
+$ wsl.exe --list --quiet
+Ubuntu-24.04
+docker-desktop
+
+## netcat in WSL
+$ wsl.exe -e bash -lc "which nc; nc -h 2>&1 | head -1"
+/usr/bin/nc
+OpenBSD netcat (Debian patchlevel 1.226-1ubuntu2)
+
+## snapshot size (Windows herdr api snapshot, 2 workspaces)
+$ ls -l snapshot.json
+3799 bytes
+
+## wsl --list --running does not wake the VM (PowerShell, VM stopped)
+$ Get-Process -Name vmmemWSL,vmmem,wslhost   # before
+(none)
+$ wsl.exe --list --running --quiet
+(empty, exit 0)
+$ Start-Sleep 3; Get-Process -Name vmmemWSL,vmmem,wslhost   # after
+(none)
+$ wsl.exe --list --running --quiet
+(empty, exit 0)
