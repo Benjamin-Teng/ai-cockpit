@@ -407,7 +407,7 @@ Backoff（1s, 2s, 4s … 上限 30s；成功後歸零）→ Probe               
   Drift 觸發）都重設計時器；Drift 觸發的 snapshot 進行中時，再來的 Drift 不重複觸發。
 - **WSL 探測**：`wsl` 型 runtime 在 Probe 階段先跑 `wsl.exe --list --running --quiet`。
   發行版不在清單 → `Disconnected`，原因「WSL 發行版 <名稱> 未啟動」；探測指令本身失敗
-  （wsl.exe 不存在、非零結束碼）→ `Disconnected`，原因「WSL 探測失敗：<stderr>」。兩者都以
+  （wsl.exe 不存在、非零結束碼）→ `Disconnected`，原因「WSL 探測失敗：」加上 stderr 內容。兩者都以
   `wsl_probe_secs` 間隔再探，不進退避序列。輸出為 UTF-16，解析時要轉碼。
 - **版本**：snapshot 回傳的 `protocol` 不在已測範圍 20..=22 時記 warn 並在畫面連線狀態旁標註，
   照常運作。
@@ -595,7 +595,7 @@ Codex review 沙箱唯讀而 cargo 必寫 `target/`，`AGENTS.md` 只給 `cargo 
 
 | 項目 | 結論 | 來源 |
 |---|---|---|
-| Chrome PWA：`127.0.0.1`／`localhost` 是否算 secure context | 算，含任意 port | MDN Making PWAs installable；chromestatus.com「Treat http://localhost as a secure context」 |
+| Chrome PWA：`127.0.0.1`／`localhost` 是否算 secure context | 算，含任意 port | MDN Making PWAs installable；chromestatus.com「Treat `http://localhost` as a secure context」 |
 | Chrome PWA：是否要求 service worker | 從瀏覽器選單安裝**不需要**（Chrome 112 桌面版起）；只有「自動跳出安裝提示」仍要求 fetch handler，本專案不需要 | developer.chrome.com blog「update-install-criteria」（2023-12-05） |
 | Chrome PWA：manifest 最少欄位 | `name` 或 `short_name`；`icons` 含 192px 與 512px；`start_url`；`display` 為 standalone 等值之一 | web.dev install-criteria（2024-09-19 更新） |
 | Rust JSON Schema 驗證 crate | `jsonschema` 0.56.0（2026-09-10 發布），有 `draft202012` 模組，直接驗 `serde_json::Value`。次選 `boon` 0.6.1（更新較慢） | crates.io API、docs.rs |
