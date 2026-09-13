@@ -1,0 +1,350 @@
+# Herdr Socket API — 一手事實萃取（供 Rust HERDR socket client 設計參考）
+
+來源檔案（皆在本目錄）：
+- `schema.json`：`herdr api schema --output schema.json`，275,129 bytes（`--json` 到 stdout 內容逐位元組相同，已驗證 diff 無差異）
+- `schema-text.txt`：`herdr api schema`（非 json 摘要）
+- `snapshot.json`：`herdr api snapshot`，即時 live snapshot（本機兩個 workspace）
+- `status-server.txt`：`herdr status server`
+- `skill.md`：`herdr --skill`
+- `default-config.toml`：`herdr --default-config`
+- `compact_reference.txt`：由 `schema.json` 程式化萃取的 102 method 完整參數表 + 64 種 response variant 完整欄位表（本檔案的一級來源）
+- `schema_dump_full.txt`：`schema.json` 全量展開（含每個 method 的完整 JSON Schema 片段），12,160 行，作為逐字引用的最終依據
+
+版本：`herdr 0.9.0-preview.2026-09-08-62431dbd033b`；`protocol: 22`；`schema_version: 1`（`schema-text.txt:2-3`, `schema.json` 根層 `protocol`/`schema_version` 欄位）
+
+---
+
+## 1. API methods 完整清單
+
+**事實**：`request` schema 是一個 102 元素的 `oneOf`（每個元素 `{method: const, params: $ref}`），`success_response` schema 的 `result` 是一個 64 元素的 `oneOf`（每個元素 `{type: const, ...欄位}`）。**schema.json 本身沒有把「哪個 request method 對應哪個 response type」明文寫出來**——這個對應關係是我從方法語意與欄位形狀推論的（見下方特別標出項），不是 schema 直接聲明的事實。
+
+完整 102 methods 與其 params 逐欄位型別、完整 64 response variants 與其欄位型別，見 `compact_reference.txt`（718 行，人工可讀的緊湊表格）；每個 method 的完整原始 JSON Schema 片段在 `schema_dump_full.txt` 第 81–1988 行（request 區）與第 2385–3960 行左右（response 區，64 個 variant 逐一列出，含 `--- response type: X ---` 標頭）。
+
+Method 清單按命名空間分組計數（共 102）：
+`agent.*`=12, `client.window_title.*`=2, `client_shell.surface.set`=1, `command.invoke`=1, `events.*`=2, `integration.*`=3, `layout.*`=3, `notification.show`=1, `pane.*`=34, `ping`=1, `plugin.*`=13, `popup.close`=1, `product_announcement.dismiss`=1, `release_notes.dismiss`=1, `server.*`=5, `session.snapshot`=1, `tab.*`=6, `workspace.*`=9, `worktree.*`=4。
+
+### 特別標出（逐欄位，`*`=required）
+
+**`session.snapshot`**（`schema_dump_full.txt:1906-1910`）
+- params：`EmptyParams`（無欄位）
+- response type `session_snapshot`：`{snapshot: SessionSnapshot}`（`schema_dump_full.txt:2421` 起；`SessionSnapshot` 定義見第 8 節）
+
+**`pane.read`**（`schema_dump_full.txt:984-1016`）
+- params `PaneReadParams`：`pane_id*: string`, `source*: ReadSource`, `format: ReadFormat`(default "text"), `lines: uint32|null`, `strip_ansi: bool`(default true)
+- response type `pane_read`（`schema_dump_full.txt:3096` 起）：`{read: PaneReadResult}`
+  - `PaneReadResult`（`schema_dump_full.txt:9507-9548`）：`pane_id*, workspace_id*, tab_id*, source*: ReadSource, format*: ReadFormat, text*: string, revision*: uint64, truncated*: bool`
+
+**`agent.read`**（`schema_dump_full.txt:81-113`）
+- params `AgentReadParams`：`target*: string`, `source*: ReadSource`, `format: ReadFormat`(default "text"), `lines: uint32|null`, `strip_ansi: bool`(default true)
+- **推論（非 schema 明文）**：response 的 64 個 variant 中沒有獨立的 `agent_read` type，只有 `pane_read`；`AgentReadParams` 與 `PaneReadParams` 除 `target` vs `pane_id` 外欄位完全相同。因此 `agent.read` 極可能複用 `pane_read` response variant，把 `target`（agent 名稱或 pane id）解析成該 agent 所在 pane 後回傳同一個 `PaneReadResult`。這點 schema 沒有直接聲明對應關係，標記為推論。
+
+**`agent.wait`**（`schema_dump_full.txt:243-269`）
+- params `AgentWaitParams`：`target*: string`, `timeout_ms: uint64|null`, `until: array<AgentStatus>`
+- response 對應：schema 沒有 `agent_wait` type；有 `wait_matched`（`schema_dump_full.txt:3361` 起）：`{event: EventEnvelope}`。**推論**：`agent.wait` 達到條件時回傳 `wait_matched`，內含觸發它的 `EventEnvelope`（`event: EventKind, data: EventData`）；若 timeout 則應為 error_response（未直接驗證，因為會需要真的觸發一次 timeout）。
+
+**`events.subscribe`**（`schema_dump_full.txt:350-365`）
+- params `EventsSubscribeParams`：`subscriptions*: array<Subscription>`
+- `Subscription` 是 27 元素 oneOf（逐字列出見第 2 節）
+- response 對應：`subscription_started`（`{}`，無額外欄位，僅 `type`）為第一個同步回覆；後續的事件用不同的訊息 frame 推送（見第 4 節「transport」的 skill/web 交叉引用）
+
+**`pane.report_metadata`**（`schema_dump_full.txt:1168-1256`，同義詞 `pane.report_agent` / `pane.report_agent_session` 是更專門的變體，見第 7 節）
+- 完整欄位見第 7 節
+
+---
+
+## 2. Event types 完整清單
+
+**重要結構事實：herdr 有兩套平行的事件命名/資料結構**，分別對應兩個不同的頂層 schema：
+
+### (a) `event` schema — session 生命週期事件（底線命名，26 種，`EventKind` enum）
+逐字列出（`schema_dump_full.txt:8606-8637`，`EventKind` enum）：
+```
+workspace_created, workspace_updated, workspace_metadata_updated, workspace_closed,
+workspace_renamed, workspace_moved, workspace_reordered, workspace_focused,
+worktree_created, worktree_opened, worktree_removed,
+tab_created, tab_closed, tab_renamed, tab_moved, tab_focused,
+pane_created, pane_closed, pane_updated, pane_focused, pane_moved,
+pane_output_changed, pane_exited, pane_agent_detected, pane_agent_status_changed,
+layout_updated
+```
+每個都在 `EventData`（`schema_dump_full.txt:7940-8589`）裡有對應的 26 元素 oneOf variant，欄位與上面 enum 完全 1:1。事件訊息本身的頂層結構（`event` schema 根）只有兩個欄位、**沒有 `id`**：`{event*: EventKind, data*: EventData}`（`schema.json` 內 `schemas.event.properties`）。
+
+**`pane_agent_status_changed`（EventData 版本，即透過一般 event 通道收到的）完整 payload**（`schema_dump_full.txt:8555` 附近）：
+```
+type: "pane_agent_status_changed" (const)
+pane_id*: string
+workspace_id*: string
+agent_status*: AgentStatus   (enum: idle/working/blocked/done/unknown)
+agent: string|null
+display_agent: string|null
+state_labels: object (additionalProperties: string)
+title: string|null
+```
+
+### (b) `subscription_event` schema — 針對性 pane 訂閱（點號命名，3 種，`SubscriptionEventKind` enum）
+逐字列出：`pane.output_matched`, `pane.agent_status_changed`, `pane.scroll_changed`。這 3 種對應 `SubscriptionEventData`（anyOf 3 個 def：`PaneOutputMatchedEvent`, `PaneAgentStatusChangedEvent`, `PaneScrollChangedEvent`）。
+
+**`pane.agent_status_changed`（subscription_event 版本，`PaneAgentStatusChangedEvent`）完整 payload**：
+```
+pane_id*: string
+workspace_id*: string
+agent_status*: AgentStatus
+agent: string|null
+display_agent: string|null
+state_labels: object
+title: string|null
+```
+（與 (a) 版本欄位相同，只是少了外層的 `type` const——因為 `SubscriptionEventKind` 用獨立的 `event` 欄位標示，資料本身不重複 type）
+
+### `events.subscribe` 的 `Subscription`（request 用）是 27 元素 oneOf
+逐字列出（`schema_dump_full.txt:6862` 起）：
+```
+workspace.created, workspace.updated, workspace.metadata_updated, workspace.renamed,
+workspace.moved, workspace.reordered, workspace.closed, workspace.focused,
+worktree.created, worktree.opened, worktree.removed,
+tab.created, tab.closed, tab.focused, tab.renamed, tab.moved,
+pane.created, pane.closed, pane.updated, pane.focused, pane.moved, pane.exited,
+pane.agent_detected, pane.output_matched, pane.agent_status_changed, pane.scroll_changed,
+layout.updated
+```
+**觀察**：這 27 種訂閱型別涵蓋了 (a) 的 26 種（底線命名對應點號命名，如 `pane_updated` ↔ `pane.updated`）加上 (b) 的 3 種裡的 2 種新增（`pane.output_matched`, `pane.scroll_changed`；`pane.agent_status_changed` 兩邊都有）。**推論**：訂閱 `pane.output_matched` / `pane.scroll_changed` / `pane.agent_status_changed` 時，推送訊息走 `subscription_event` frame；訂閱其餘 24 種生命週期事件時走 `event` frame。這個路由規則 schema 沒有明文寫出來，是從兩套 enum 的交集/差集推論的。
+
+---
+
+## 3. Agent status enum 精確值
+
+**`AgentStatus`**（request 與 response schema 中定義完全相同，逐字，`schema_dump_full.txt:7908-7918` 為 response 版、`schema_dump_full.txt:4070-4080` 為 request 版）：
+```
+idle, working, blocked, done, unknown
+```
+5 個值，**沒有** `waiting` 或 `needs_attention`。
+
+**`agent_status` 欄位存在於哪些物件**（皆用同一個 5 值 `AgentStatus` enum）：
+- `PaneInfo.agent_status`（`schema_dump_full.txt:9064-9066`，required）—— 每個 pane 都有，即使沒有 agent 也是 `unknown`（見 snapshot 實例）
+- `AgentInfo.agent_status`（`schema_dump_full.txt:7702-7704`，required）
+- `TabInfo.agent_status`（`schema_dump_full.txt:10508-10510`，required）—— tab 層級也有彙總狀態
+- `WorkspaceInfo.agent_status`（`schema_dump_full.txt:10552-10554`，required）—— workspace 層級也有彙總狀態
+- 事件 payload 中的 `pane_agent_status_changed` / `PaneAgentStatusChangedEvent.agent_status`
+
+**第二軸狀態（不同於 AgentStatus，schema 明確有另一個 enum）**：`PaneAgentState`（`schema_dump_full.txt:5188-5197`，只用在 `pane.report_agent` 的 `state` 參數，即整合商回報用的寫入值）：
+```
+idle, working, blocked, unknown
+```
+只有 4 個值，**沒有 `done`**——因為 `done` 是 herdr 伺服器自己從「agent 曾經 working 後轉回 idle」推導出來的己讀/未讀狀態，不是整合商可以直接回報的原始狀態（佐證見 `skill.md:59`：「`idle` 和 `done` 都代表 agent 已就緒可輸入；CLI/API 用伺服器的 seen 狀態區分兩者」）。
+
+**額外語意（來自 `skill.md:55-59`，非 schema 但是一手 CLI 文件）**：
+> "`idle` and `done` both mean the agent is ready for input. The CLI/API uses the server's seen state to distinguish them; explicit focus commands mark the target seen, while reads do not. Each TUI client tracks viewed completions independently... `blocked` means Herdr recognized an approval or question UI. `unknown` means an agent is present but Herdr cannot classify it confidently; it does not prove completion."
+
+`ReadSource` 和 `ReadFormat`（用於 pane.read/agent.read）**不是**第二狀態軸，是讀取模式列舉，見第 6 節。
+
+---
+
+## 4. Transport 與 framing
+
+| 項目 | 事實 | 來源 |
+|---|---|---|
+| Windows 定址 | 本機即時觀察：`socket: C:\Users\<user>\AppData\Roaming\herdr\herdr.sock`（一個檔案路徑，非 `\\.\pipe\...` 傳統 named pipe UNC 格式） | `status-server.txt`（一手，`herdr status server` 實際輸出） |
+| Windows 定址（官網說法） | "On Windows, it is a named pipe." | 來源：網頁 https://herdr.dev/docs/socket-api/ ，查證日期 2026-09-13 |
+| **矛盾標記** | 官網文件泛稱 Windows 走「named pipe」，但本機實測 `status server` 回報的是一個 `.sock` 副檔名的檔案系統路徑，型態更像 Windows 10+ 對 AF_UNIX 的檔案路徑支援，而非傳統 Win32 Named Pipe API（`\\.\pipe\name`）。文件可能是概念性描述、未反映實際 IPC 機制細節，或用詞不精確。 | 一手 vs 網頁對照 |
+| Unix 定址 | `~/.config/herdr/herdr.sock`；具名 session 用 `~/.config/herdr/sessions/<name>/herdr.sock` | 來源：網頁 https://herdr.dev/docs/socket-api/ ，查證日期 2026-09-13（schema.json 與 skill.md 均未提及路徑細節） |
+| 定址控制的環境變數/config key | **查無**：`default-config.toml`（`herdr --default-config` 完整輸出，374 行）沒有任何 `[api]`/`[socket]`/socket path/port 相關 key；`skill.md` 只提到 `HERDR_WORKSPACE_ID`/`HERDR_TAB_ID`/`HERDR_PANE_ID`（呼叫端 context，非 socket 定址）與 `HERDR_ENV`（是否在 herdr 內）。已查 schema.json、default-config.toml、skill.md，均無此設定項。 | 一手：`default-config.toml` 全文, `skill.md:71-75` |
+| Framing | "Herdr uses newline-delimited JSON over a local socket."（"Send one request per line"，範例為一行一個 JSON object） | 來源：網頁 https://herdr.dev/docs/socket-api/ 與其 GitHub raw mdx，查證日期 2026-09-13。schema.json／skill.md 未提及框架格式（schema 只定義訊息內容的 JSON Schema，不含 wire framing） |
+| Request/response 配對 | **一手確認**：`request` schema 根要求 `id: string`（required）；`success_response` 根要求 `id: string, result: ResponseResult`（required）；`error_response` 根要求 `id: string, error: ErrorBody`（required）。三者都用同一個 `id` 欄位配對。 | `schema.json`：`schemas.request.properties.id` / `schemas.success_response.properties.id` / `schemas.error_response.properties.id`，皆 `required` |
+| Request/response 配對（網頁佐證用詞） | "A successful response includes the same `id`"，範例 `"id":"req_1"` 一致出現在請求與回應 | 來源：網頁，查證日期 2026-09-13 |
+| `events.subscribe` 是長連線串流還是輪詢 | **長連線串流**。schema 一手證據：頂層 `event`／`subscription_event` schema 都**沒有 `id` 欄位**（只有 `{event, data}`），代表這類訊息不是對某個 request 的回覆，而是伺服器主動推送的獨立 frame，走同一條已開啟的 socket 連線。網頁補充："The first response acknowledges the subscription [as `subscription_started`]. Later lines are pushed events." | schema.json（`event`/`subscription_event` 根 schema 無 `id`）+ 網頁，查證日期 2026-09-13 |
+| Sequence number / cursor / resume 機制 | **查無**。已查：(1) `EventEnvelope`（`schema_dump_full.txt:8589-8604`）只有 `{event, data}`，無序號；(2) `PaneOutputMatchedEvent`/`PaneAgentStatusChangedEvent`/`PaneScrollChangedEvent`（`subscription_event.$defs`）都沒有 sequence/cursor 欄位；(3) `EventsSubscribeParams` 只有 `subscriptions: array<Subscription>`，無 `since`/`cursor`/`resume_token` 參數；(4) 全 schema 搜尋 "cursor"/"sequence" 字樣未命中事件相關定義（`state_change_seq`/`seq` 欄位存在，但那是 pane/agent 內部修訂號，用於 report_* 系列的樂觀鎖，不是事件流的重播游標，見第 7 節）。網頁佐證："Lifecycle subscriptions start when the request is accepted and do not replay events retained before that point." | schema.json 全量搜尋 + 網頁明文否定，查證日期 2026-09-13 |
+
+---
+
+## 5. 術語：workspace vs space；worktree 是否獨立物件
+
+**`workspace` 是 schema 的正式／穩定型別名稱**，出現在全部 9 個 `workspace.*` methods、`WorkspaceInfo`、`SessionSnapshot.workspaces`、`Subscription`/`EventKind` 的 `workspace.*`/`workspace_*` 前綴。**schema.json 裡完全沒有 "space" 這個型別或欄位**（已用 grep 邏輯確認 $defs 清單中無 `Space` 開頭型別）。
+
+**"space" 只在 UI 層 config 出現，是 workspace 的別名/歷史用詞**，不是獨立概念：
+- `default-config.toml:265-267`：`# Agent panel ordering: "spaces" (grouped by space) or "priority" ...` `# "workspaces" is accepted as an alias for "spaces".`
+- `default-config.toml:286`：`# Expanded space rows. Built-ins are state_icon, state_text, workspace, branch, and git_status.`（註解本身把 "space" 和 "workspace" 混用，`[ui.sidebar.spaces]` 區塊裡的 built-in 欄位卻叫 `workspace`）
+
+**結論**：對 API/schema 設計而言唯一權威型別是 `workspace`；"space" 是 TUI 文案/legacy 別名，不影響 socket API 的欄位命名。
+
+**`worktree` 是獨立物件，不是 workspace 的欄位**——但 `WorkspaceInfo` 有一個可為 null 的 `worktree` 欄位反向連結到（精簡版）worktree 資訊：
+
+```
+WorkspaceInfo.worktree: WorkspaceWorktreeInfo | null   (schema_dump_full.txt:10589-10598)
+```
+
+三個相關型別逐字列出：
+
+**`WorkspaceWorktreeInfo`**（掛在 workspace 上的精簡版，`schema_dump_full.txt:10613-10640`）：
+```
+repo_key*: string
+repo_name*: string
+repo_root*: string
+checkout_path*: string
+is_linked_worktree*: bool
+```
+
+**`WorktreeInfo`**（`worktree.list` 回傳的完整物件，`schema_dump_full.txt:10642-10685`）：
+```
+path*: string
+is_bare*: bool
+is_detached*: bool
+is_prunable*: bool
+is_linked_worktree*: bool
+label*: string
+branch: string|null
+open_workspace_id: string|null   <- 反向連回目前開啟它的 workspace（若有）
+```
+
+**`WorktreeSourceInfo`**（`worktree.list` 回傳的 `source`，即這個 repo 本身的資訊，`schema_dump_full.txt:10687-10716`）：
+```
+repo_key*: string
+repo_name*: string
+repo_root*: string
+source_checkout_path*: string
+source_workspace_id: string|null
+```
+
+`worktree.*` 有 4 個獨立 methods：`worktree.create`, `worktree.list`, `worktree.open`, `worktree.remove`（各自完整 params 見 `compact_reference.txt`）。**結論**：worktree 是一等公民物件（有自己的 CRUD methods 與型別），workspace 只是持有一個指向它的可選反向連結（`worktree` 欄位），兩者是多對一而非巢狀包含關係（一個 repo 的多個 worktree 可對應多個各自獨立的 workspace）。
+
+---
+
+## 6. `pane.read` 讀取模型
+
+**Params**（`PaneReadParams`，`schema_dump_full.txt:986-1016`）：
+```
+pane_id*: string
+source*: ReadSource        枚舉見下
+format: ReadFormat = "text"
+lines: uint32 | null       (無 offset/cursor 參數)
+strip_ansi: bool = true
+```
+
+`ReadSource` 枚舉（`schema_dump_full.txt:6802-6811`，逐字）：`visible, recent, recent_unwrapped, detection`
+`ReadFormat` 枚舉（`schema_dump_full.txt:6793-6800`，逐字）：`text, ansi`
+
+**沒有 incremental/since 參數**——`lines` 只控制「向上取多少行」，不是 offset。schema 裡完全沒有 `since_revision`/`offset`/`cursor` 這類欄位出現在 `PaneReadParams` 或 `AgentReadParams`。
+
+**Response 形狀**（`PaneReadResult`，`schema_dump_full.txt:9507-9548`）：
+```
+pane_id*, workspace_id*, tab_id*: string
+source*: ReadSource
+format*: ReadFormat
+text*: string        <- 單一字串，不分段/不分頁
+revision*: uint64     <- pane 的內容修訂號（同一個欄位也出現在 PaneInfo.revision / AgentInfo.revision）
+truncated*: bool      <- 是否被截斷（原因未在 schema 中細分）
+```
+`text` 是純文字或含 ANSI escape（取決於 `format`），一次回傳完整字串，無分頁機制。
+
+**`agent.read` 與 `pane.read` 的差異**：唯一欄位差異是 `target: string`（agent 名稱或所在 pane id）取代 `pane_id: string`；其餘參數（`source`, `format`, `lines`, `strip_ansi`）完全相同。**推論**（非 schema 明文，見第 1 節說明）：`agent.read` 很可能只是把 `target` 解析成對應 pane 之後內部呼叫等同 `pane.read` 邏輯，回傳同一個 `pane_read` response type（因為 response 的 64 個 variant 中找不到獨立的 `agent_read` type）。語意差異（來自 `skill.md:49-55`）：agent 命令要求該 pane 被 herdr 辨識為某個 agent 身份，pane 命令則對任何 pane（無論有沒有 agent）都適用。
+
+`pane.wait_for_output`（`OutputMatch`／`PaneWaitForOutputParams`）是另一個相關但不同的 method：阻塞直到輸出符合 pattern，schema 裡有獨立的 `output_matched` response type（`{matched_line, pane_id, read: PaneReadResult, revision}`，`schema_dump_full.txt:3380` 起），本質是「等待 + 讀取」的複合操作，不是 `pane.read` 的變體。
+
+---
+
+## 7. Metadata 能力
+
+三個相關 methods，欄位逐字列出（`*`=required）：
+
+**`pane.report_metadata`**（`PaneReportMetadataParams`，`schema_dump_full.txt:1168-1256`）：
+```
+pane_id*: string
+source*: string                     <- 回報來源標識（例如某個整合商/plugin 名稱）
+agent: string|null
+applies_to_source: string|null
+title: string|null
+display_agent: string|null
+state_labels: {[key: string]: string}          <- 自訂 key-value（無明說筆數上限）
+tokens: {[key(^[A-Za-z0-9_-]{1,32}$)]: string|null}   <- maxProperties: 16
+ttl_ms: uint64|null   (min 1, max 86400000 = 24hr)
+clear_title / clear_display_agent / clear_state_labels: bool = false
+seq: uint64|null                    <- 樂觀鎖用的單調遞增序號（不是事件流游標）
+```
+
+**`workspace.report_metadata`**（`WorkspaceReportMetadataParams`，`schema_dump_full.txt:2191-2238`）：
+```
+workspace_id*: string
+source*: string
+tokens*: {[key(^[A-Za-z0-9_-]{1,32}$)]: string|null}   <- maxProperties: 16, 這裡是 required（pane 版是 optional）
+ttl_ms: uint64|null (同樣 max 86400000)
+seq: uint64|null
+```
+
+**`pane.report_agent`** 與 **`pane.report_agent_session`**（同義詞/更專門變體，`schema_dump_full.txt:1068-1166`）：
+- `pane.report_agent`：多了 `state*: PaneAgentState`（4 值枚舉，見第 3 節）與 `message: string|null`——這是整合商回報「這個 pane 裡有一個 agent，狀態是 X」的專用管道，比通用 `report_metadata` 更結構化。
+- `pane.report_agent_session`：多了 `agent_session_id`/`agent_session_path`/`session_start_source`——回報 agent 的原生對話 session 參照（用於 `resume_agents_on_restore`，見 `default-config.toml:327-330`）。
+
+**大小限制**：`tokens` 最多 16 個 key（單次呼叫），key 需符合 `^[A-Za-z0-9_-]{1,32}$`（1-32 字元）；`ttl_ms` 上限 86,400,000 毫秒（24 小時）。`state_labels` 未見筆數限制。
+
+**是否出現在 snapshot／events 中**：
+- **snapshot**：`PaneInfo.tokens`（`schema_dump_full.txt:9142-9151`）與 `AgentInfo.tokens`（`schema_dump_full.txt:7785-7794`）、`WorkspaceInfo.tokens`（`schema_dump_full.txt:10576-10585`）都有 `tokens` 欄位，但這裡的上限是 **`maxProperties: 32`**（比單次 report 的 16 大一倍——推論：多個來源可各自 report 最多 16 個,彙總儲存上限 32）。本機 `snapshot.json` 實測命中：`"tokens":{"herdr-sidebar-explorer":"1789265269","herdr-sidebar-git":"1789265269"}`（pane `wF:p2`）。
+- `state_labels` 同樣出現在 `PaneInfo`/`AgentInfo` 與 `pane_agent_status_changed` 事件 payload 中（見第 2、3 節）。
+- `title`/`display_agent` 出現在 `PaneInfo`/`AgentInfo` 及 `pane_agent_status_changed`、`pane_agent_detected` 事件中。
+
+---
+
+## 8. Snapshot 物件階層
+
+`SessionSnapshot`（`schema_dump_full.txt:10424-10494`）頂層 keys（7 個，全部 required）：
+```
+version*: string
+protocol*: uint32
+workspaces*: array<WorkspaceInfo>
+tabs*: array<TabInfo>
+panes*: array<PaneInfo>
+layouts*: array<PaneLayoutSnapshot>
+agents*: array<AgentInfo>
+```
+加上三個可選的目前焦點指標：`focused_workspace_id`, `focused_tab_id`, `focused_pane_id`（皆 `string|null`）。
+
+**結構事實（重要）：這不是巢狀（nested）物件，是扁平陣列 + 外鍵式互相參照**。`workspaces`/`tabs`/`panes`/`agents`/`layouts` 是 5 個平行陣列，彼此靠 `workspace_id`/`tab_id`/`pane_id` 字串欄位關聯，沒有任何一個物件把子物件直接內嵌在自己底下（例如 `WorkspaceInfo` 沒有 `tabs: TabInfo[]` 欄位，只有 `active_tab_id: string`；`TabInfo` 沒有 `panes: PaneInfo[]`，只有 `pane_count: number`）。
+
+**各層 id 格式**（本機 `snapshot.json` 實測，一手）：
+- workspace：`"wJ"`, `"wF"`（單一 token，無冒號）
+- tab：`"wJ:t1"`, `"wF:t1"`（`<workspace_id>:t<number>`）
+- pane：`"wJ:p1"`, `"wJ:p2"`（`<workspace_id>:p<number>`）
+- 與 `skill.md:63-67` 描述的格式一致："workspace: `w1`, tab: `w1:t1`, pane: `w1:p1`"（skill.md 用假名範例 `w1`，本機實測是 `wJ`/`wF`——**推論**：workspace 的短 id 看起來是某種 base62/字母序 token 而非單純遞增數字，因為兩個 workspace 分別是 `wJ` 和 `wF`，同時各自的 `number` 欄位是 2 和 1）。
+
+**去識別化的單一 workspace 範例**（≤20 行，取自本機真實 `snapshot.json`，路徑/標題已替換為佔位符）：
+```json
+{
+  "workspace": {"workspace_id":"wJ","label":"PROJECT_NAME","number":2,
+    "active_tab_id":"wJ:t1","tab_count":1,"pane_count":2,
+    "agent_status":"working","focused":true},
+  "tabs": [{"tab_id":"wJ:t1","workspace_id":"wJ","number":1,
+    "agent_status":"working","pane_count":2,"focused":true}],
+  "panes": [
+    {"pane_id":"wJ:p1","workspace_id":"wJ","tab_id":"wJ:t1",
+     "agent":"claude","agent_status":"working","cwd":"D:\\PROJECT_PATH",
+     "terminal_title":"REDACTED_TITLE","revision":3,"focused":true},
+    {"pane_id":"wJ:p2","workspace_id":"wJ","tab_id":"wJ:t1","label":"Sidebar",
+     "agent_status":"unknown","cwd":"D:\\PROJECT_PATH","revision":126,
+     "tokens":{"herdr-sidebar-explorer":"1789265269"}}
+  ],
+  "agents": [{"agent":"claude","pane_id":"wJ:p1","workspace_id":"wJ","tab_id":"wJ:t1",
+    "agent_status":"working","agent_session":{"agent":"claude","kind":"id",
+    "source":"herdr:claude","value":"REDACTED_UUID"},"revision":3}]
+}
+```
+（原始未去識別化資料在 `snapshot.json` 第 1 行，單行 JSON）
+
+---
+
+## 9. 版本資訊
+
+- `herdr --version` 完整字串（一手指令輸出）：
+  ```
+  herdr 0.9.0-preview.2026-09-08-62431dbd033b
+  ```
+- `schema.json` 根層版本欄位（逐字）：`"protocol": 22`, `"schema_version": 1`（無單獨的 "api_version" 或語意版號字串，只有這兩個整數）
+- `schema.json` 根層另有 `"$schema": "https://json-schema.org/draft/2020-12/schema"`（JSON Schema 方言版本，非 herdr 自身版本）與 `"title"` 欄位（值為 schema 名稱，非版本）
+- `session.snapshot` 回應內也帶一份 `version`（string，同 `herdr --version` 的值）與 `protocol`（uint32，同 22）——即每次 snapshot 都會夾帶當時伺服器的版本／protocol，可用來偵測 client/server 版本落差
+- `pong`（`ping` 的回應，`schema_dump_full.txt:2385-2419`）也帶 `version*: string`, `protocol*: uint32`, `capabilities: ServerCapabilities|null` —— `ServerCapabilities` 有 `live_handoff*: bool`（必填）、`detached_server_daemon`, `health_check`, `surface_interest`（皆 default false）、`endpoint_protocol_generation: uint32|null`，是一組能力旗標而非版本號本身
+
+---
+
+## 未能完全確認 / 待查證清單
+
+1. `agent.read`/`agent.wait` 對應哪個 response type，是從欄位形狀推論，非 schema 明文聲明（見第 1 節）。
+2. `pane.output_matched`/`pane.scroll_changed`/`pane.agent_status_changed` 走 `subscription_event` frame、其餘 24 種走 `event` frame——這條路由規則是從兩個 enum 交集/差集推論的，schema 沒有一個欄位明講「哪個 subscription type 對應哪個 frame schema」。
+3. Windows 底層到底是不是傳統 Win32 Named Pipe，還是 AF_UNIX-over-Windows：官網文件說「named pipe」，本機實測路徑格式（`...\herdr.sock`）更像 AF_UNIX 檔案位址。兩者矛盾，未能用 schema 或 skill.md 解決，只能並列標記（見第 4 節矛盾標記列）。
+4. Windows 版是否有等效於 Unix `~/.config/herdr/sessions/<name>/herdr.sock` 的具名 session socket路徑格式——網頁只給了 Unix 範例，未給 Windows 對應路徑；`herdr session attach <name>` 等指令屬於會改變狀態的操作，本任務範圍內未執行以實測。

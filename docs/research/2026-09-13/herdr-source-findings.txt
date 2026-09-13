@@ -1,0 +1,327 @@
+HERDR socket API — Windows/Linux transport and connection findings
+=====================================================================
+Repo: https://github.com/herdrdev/herdr
+Clone commit: bafbc0949dd996cf7fd0848c8965e254348cc11e (default branch, depth 1, cloned 2026-09-13)
+Cargo.toml version: "0.9.0" (base version; channel/build id injected via env vars at build
+  time — see src/build_info.rs). Local binary is 0.9.0-preview.2026-09-08-62431dbd033b, i.e.
+  built from a commit ~5 days before the cloned HEAD. Base version "0.9.0" matches; the exact
+  source commit (62431dbd033b) could NOT be verified against this shallow clone (git history
+  not fetched — depth 1). Treat any behavior below as "true as of 2026-09-13 HEAD", with a
+  small (~5 day) window of drift risk against the exact local build.
+interprocess crate: Cargo.lock pins version "2.4.2" exactly. Downloaded the exact 2.4.2 source
+  tarball from static.crates.io (not vendored in herdr repo) to inspect Windows naming
+  internals — see section 2b.
+
+=====================================================================
+1. SOURCE AVAILABILITY
+=====================================================================
+Full Rust source for both server and client is public in this repo (not a stub/binary-only
+repo). Relevant modules: src/ipc.rs (cross-platform transport shim), src/api/* (JSON-RPC-ish
+API socket server + client), src/session.rs (socket path derivation), src/client/* (separate
+"client protocol" — TUI attach — socket, handshake, binary framing), src/server/socket_paths.rs.
+
+=====================================================================
+2. WINDOWS API LISTENER (server side)
+=====================================================================
+2a. Transport type: A Win32 NAMED PIPE, via the `interprocess` crate's `local_socket`
+    abstraction (NOT AF_UNIX, NOT TCP). Evidence: src/ipc.rs:44-51 (connect) and
+    src/ipc.rs:66-79 (bind) are `#[cfg(windows)]` blocks using
+    `interprocess::local_socket::{GenericNamespaced, ListenerOptions}` and
+    `name.to_ns_name::<GenericNamespaced>()`.
+
+2b. Endpoint name derivation — CORRECTION to the task's working assumption: the pipe name is
+    NOT derived from the `<pid>:<nonce>` content. It is derived directly from the socket FILE
+    PATH STRING itself. Call chain:
+      - herdr: src/ipc.rs:70 `let name = path.to_string_lossy().to_string();`
+               src/ipc.rs:71 `let name = name.to_ns_name::<GenericNamespaced>()?;`
+      - interprocess 2.4.2 src/os/windows/local_socket/name_type.rs:38-41:
+          `map_generic_namespaced_osstr` -> `NameInner::NamedPipe(convert_and_encode_path(&name, None)?)`
+      - interprocess 2.4.2 src/os/windows/path_conversion.rs:125-140 (`pathcvt`) builds:
+          components = [ "\\\\", hostname_or(".") , "\\pipe\\" , pipe_name ]
+        i.e. the literal native pipe path is:
+          \\.\pipe\<full-socket-file-path-string>
+        For the observed install this means the actual Win32 object name is:
+          \\.\pipe\C:\Users\<user>\AppData\Roaming\herdr\herdr.sock
+        (backslashes/colon are literal characters inside the NPFS name; interprocess's own
+        test in name_type.rs:76-89 confirms names containing backslashes are accepted/passed
+        through verbatim as long as the `\\.\pipe\` or `\\HOST\pipe\` prefix is present.)
+    This explains why grepping \\.\pipe\ for a name that starts with "herdr" can miss it: the
+    object's name starts with the drive letter / user profile path, not "herdr". It still
+    contains "herdr" as a substring (from "...\herdr\herdr.sock"), so a full listing (not a
+    prefix filter) should show it.
+
+2c. `herdr.sock` file identity: this file is NOT the pipe and carries no pipe metadata. It is
+    written by the server purely as a "someone is/was bound here" marker + stale-detection
+    key. Evidence:
+      - src/ipc.rs:74-78 (`bind_local_listener`, windows branch): after creating the pipe
+        listener, `fs::write(path, windows_socket_marker())?;`
+      - src/ipc.rs:319-326:
+          fn windows_socket_marker() -> String {
+              let now = ...as_nanos()...;
+              format!("{}:{now}", std::process::id())
+          }
+        -> exactly `<pid>:<nanoseconds-since-unix-epoch>`, matching the observed
+           `16200:1789049131027543600`.
+      - Used later only for same-process-generation identity comparison on cleanup:
+        src/ipc.rs:280-296 `socket_file_identity` (windows: reads raw file bytes as `marker:
+        Vec<u8>`), src/ipc.rs:298-317 `remove_socket_file_if_owned` (only deletes the file if
+        its current content still equals the identity captured at bind time — protects against
+        deleting a *newer* server's marker after a stale one was cleaned up and replaced).
+      - src/api/server.rs:88 captures `identity` at startup; `ServerHandle::drop` (server.rs:
+        41-51) calls `remove_socket_file_if_owned` on shutdown.
+    No code path parses the pid or nanos out of this file for connecting or for liveness
+    checks by PID (no process-table lookup). It is a pure opaque marker compared byte-for-byte.
+
+2d. API socket DACL: src/api/server.rs:86-87 binds with `bind_local_listener` (NOT
+    `bind_private_local_listener`). `restrict_socket_permissions` (server.rs:141-143 ->
+    ipc.rs:335-338) is a no-op on Windows (`Ok(())`). Contrast: ipc.rs:136-162
+    `bind_private_local_listener` (used for "private terminal traffic", i.e. the CLIENT
+    protocol socket path, see src/client/mod.rs) explicitly sets an SDDL DACL
+    `"D:P(A;;GA;;;SY)(A;;GA;;;OW)"` (SYSTEM + Owner only). The API socket does NOT get this
+    DACL — it uses whatever default security descriptor `interprocess`'s
+    `ListenerOptions::create_sync()` applies when none is given. (Fact: API socket has no
+    explicit DACL hardening in herdr's own code. Did not chase interprocess's exact default
+    SD in 2.4.2 — out of scope/time; flag as inference gap, not verified.)
+
+=====================================================================
+3. WINDOWS CLIENT CONNECT (CLI side)
+=====================================================================
+3a. The CLI does NOT read or parse the `.sock` file content at all before connecting.
+    src/api/client.rs:96-98:
+        fn connect(&self) -> io::Result<LocalStream> {
+            crate::ipc::connect_local_stream(&self.socket_path())
+        }
+    `self.socket_path()` (client.rs:22-28) just resolves the *path* (see section 5 for the
+    resolution rule) and hands the PATH STRING straight to `connect_local_stream`, which (per
+    2b) turns the path string into `\\.\pipe\<path>` and calls the Win32 pipe connect. No file
+    read of `herdr.sock` happens on the connect path.
+    (`fs::exists`-style checks do appear elsewhere, e.g. session.rs:389 `is_running_at`, but
+    only to short-circuit before attempting a connect — not to read/parse content.)
+
+3b. Stale/not-running detection is done purely via the io::ErrorKind of the connect/first-line
+    failure, not by content inspection:
+      src/cli.rs:821-829:
+        /// True when an io::Error indicates nothing is listening on the API socket.
+        /// Classify by `ErrorKind` only: Windows named pipes surface different raw
+        /// errno values than Unix domain sockets but the same error kinds.
+        pub(super) fn server_not_running_error(err: &std::io::Error) -> bool {
+            matches!(err.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused)
+        }
+    This is the load-bearing fact for a Rust client: after a failed connect (or failed first
+    read) to the named pipe, if the resulting io::ErrorKind is NotFound or ConnectionRefused,
+    treat it as "server not running" (regardless of the underlying raw Win32 errno, which
+    differs from the Unix errno for the equivalent condition — the code comment says so
+    explicitly).
+    Server-side stale-file cleanup (on the SERVER's own startup, not client-side) is
+    src/ipc.rs:81-115 `prepare_socket_path` / `stale_socket_connect_error` (ipc.rs:110-115):
+    treats ConnectionRefused | NotFound | TimedOut, and on Windows also WouldBlock, as "stale,
+    safe to delete and rebind"; anything else (e.g. a live pipe) is AddrInUse.
+
+3c. CLI command flow example (`herdr api snapshot`, or any `send_request` caller) — src/cli.rs:
+    768-782:
+      pub(super) fn send_request(request: &Request) -> std::io::Result<serde_json::Value> {
+          let client = target::api_client()?;
+          ensure_server_protocol_compatible(&client, &request.id)?;   // opens its OWN connection
+          client.request_value(request)                                // opens a SECOND connection
+              .map_err(|err| map_server_not_running_or_io(err, &request.id, &client))
+      }
+    IMPORTANT: `ensure_server_protocol_compatible` (cli.rs:784-802) calls `client.status()`
+    which internally opens a fresh connection (api/client.rs `request()` -> `connect()`), sends
+    a `ping`, reads one line, then CLOSES that connection (BufReader/stream dropped at end of
+    `request_value`). Then `client.request_value(request)` opens ANOTHER fresh connection for
+    the actual command. So a single herdr CLI invocation of most commands makes at least TWO
+    separate named-pipe connections, each strictly one-request/one-response, then closes.
+
+=====================================================================
+4. HANDSHAKE / AUTH ON THE API SOCKET — NONE
+=====================================================================
+FACT: the API socket (`herdr.sock`) has zero handshake and zero auth/token before the first
+JSON request. Evidence: src/api/server.rs:156-176 `handle_connection_with_stop` — the very
+first thing read from a newly accepted connection is `read_initial_request_line` (server.rs:
+513-522), which is fed straight into `serde_json::from_str::<Request>(line)` (server.rs:177).
+There is no preceding hello/welcome frame, no length-prefixed control message, nothing besides
+"read one NDJSON line, parse as a Request". The only thing resembling a "version check" is
+`ping`/`Pong{version, protocol, capabilities}` (server.rs:342-355), which is an ordinary
+application-level Request/Response pair over the *same* NDJSON wire — the CLI (cli.rs:784-802
+`ensure_server_protocol_compatible`) chooses to send one before other commands, but the server
+does not require it and would happily answer any other Method first if a client sent it first.
+
+`herdr::client::handshake` (src/client/handshake.rs) is a COMPLETELY SEPARATE protocol on a
+COMPLETELY SEPARATE socket: the "client protocol" / terminal-attach socket
+(`herdr-client.sock`, path from src/session.rs:183-185 `client_socket_path_for`, connected in
+src/client/mod.rs:147-200). Evidence this is not the API socket:
+  - src/client/mod.rs:147 `let socket_path = client_socket_path();` /
+    src/client/mod.rs:200 `crate::ipc::connect_local_stream(&socket_path)`.
+  - handshake.rs uses `protocol::write_message` / `protocol::read_message` (length-prefixed
+    binary frames bounded by `MAX_FRAME_SIZE`, see src/protocol/wire.rs), sending either a
+    `ClientMessage::TerminalHello{version,...}` or `ClientMessage::EndpointControl{kind:
+    ENDPOINT_HELLO_KIND, data: <json EndpointClientHello>}` and expecting a
+    `ServerMessage::Welcome{...}` / `ServerMessage::EndpointControl{kind: ENDPOINT_WELCOME_KIND,
+    ...}` in return (handshake.rs:154-295). This is a totally different wire format (binary
+    length-prefixed frames, not NDJSON) from the API socket's line-delimited JSON.
+  - The observed log line "endpoint handshake succeeded generation=1" is emitted at
+    handshake.rs:263-267, only reachable via the `endpoint_shell` branch of `do_handshake`,
+    which is only invoked from the client-socket code path above — never from
+    src/api/server.rs or src/api/client.rs.
+CONCLUSION: the API socket handshake question in the task is answered "no — there is no
+handshake on herdr.sock"; the endpoint handshake the local log showed is for herdr-client.sock
+only, and is architecturally unrelated to the JSON API.
+
+=====================================================================
+5. SOCKET PATH RESOLUTION RULES (cross-platform, same code both OSes)
+=====================================================================
+All of the following is OS-agnostic Rust in src/session.rs and src/api/mod.rs; Windows only
+differs in what "connect/bind to this path" ends up doing (named pipe vs AF_UNIX), not in how
+the path is chosen.
+
+API socket path — src/session.rs:173-181 `active_api_socket_path()`:
+  1. If an explicit `--session <name>` was passed on argv (`explicit_session_requested()==true`,
+     set in session.rs:448-457 `apply_explicit_name`) -> `api_socket_path_for(active_name())`.
+  2. Else if env var `HERDR_SOCKET_PATH` is set -> use that literal path verbatim
+     (src/api/mod.rs:20 `pub const SOCKET_PATH_ENV_VAR: &str = "HERDR_SOCKET_PATH";`).
+  3. Else -> `api_socket_path_for(active_name())`, where `active_name()` (session.rs:96-101)
+     reads env var `HERDR_SESSION` (`pub const SESSION_ENV_VAR: &str = "HERDR_SESSION";`),
+     filtering out the literal string "default" and any name that fails `validate_name`.
+
+Directory layout — session.rs:157-171:
+  data_dir_for(None)       = config_dir()                                  (config_dir() = the
+  data_dir_for(Some(name)) = config_dir().join("sessions").join(name)       platform config dir,
+  api_socket_path_for(n)   = data_dir_for(n).join("herdr.sock")             e.g. Roaming\herdr
+  client_socket_path_for(n)= data_dir_for(n).join("herdr-client.sock")      on Windows)
+  -> named session example: <config_dir>/sessions/work/herdr.sock (session.rs:1094-1099 test).
+  -> default/no session:    <config_dir>/herdr.sock  (matches the observed
+     C:\Users\<user>\AppData\Roaming\herdr\herdr.sock exactly: default session, no
+     HERDR_SOCKET_PATH override).
+
+validate_name (session.rs:425-446): ASCII alnum + '.' '_' '-' only, 1..=64 bytes, not "." or
+"..". `configure_from_args` (session.rs:29-94) is what turns `--session <name>` on argv into
+the explicit-session state; it is CLI-level, not env-only.
+
+Client-protocol socket path (herdr-client.sock) — src/server/socket_paths.rs:23-33
+`client_socket_path()` has a slightly different override precedence than the API socket:
+  1. explicit `--session` -> session's client socket.
+  2. else if `HERDR_SOCKET_PATH` is set -> derive by replacing the API socket's file stem with
+     "<stem>-client.sock" in the SAME directory (socket_paths.rs:50-58
+     `derive_client_socket_from_api_socket`) — i.e. NOT simply `HERDR_CLIENT_SOCKET_PATH`.
+  3. else honor legacy `HERDR_CLIENT_SOCKET_PATH` env var if set.
+  4. else default session dir + "herdr-client.sock".
+This is DIFFERENT from and NOT what the API-socket-focused task cares about, but noted because
+it's easy to conflate the two `.sock` files.
+
+Nothing in session.rs / api/mod.rs is `#[cfg(unix)]`/`#[cfg(windows)]` gated — the path
+resolution logic (env vars, session dirs) is identical on Linux/macOS/Windows. The ONLY
+platform difference is inside src/ipc.rs's `connect_local_stream`/`bind_local_listener`, where
+Unix uses `GenericFilePath` (a real AF_UNIX socket file at that exact path) and Windows uses
+`GenericNamespaced` (a named pipe whose name embeds that exact path string, see 2b). No
+handshake on either OS's API socket (section 4's server.rs code is not cfg-gated at all).
+
+=====================================================================
+6. FRAMING: NDJSON, one-shot-per-connection (except subscribe/wait), size limits
+=====================================================================
+- Every request line and every response/event line is a single JSON value terminated by a
+  single `\n`. Confirmed both directions:
+    - server reads: src/api/server.rs:513-568 `read_initial_request_line_with_limits` — reads
+      byte-by-byte via `poll_local_stream_read` until it sees `b'\n'` (line 543).
+    - server writes: src/api/server.rs:765-769 `write_text_line` — `stream.write_all(value)` +
+      `stream.write_all(b"\n")` + `flush()`.
+    - client reads: src/api/client.rs:165-174 `read_json_line` — `BufReader::read_line`.
+    - client writes: src/api/client.rs:158-163 `write_request` — same `+ b"\n" + flush()`
+      pattern.
+- Max line length: ONLY the server's read of the very first/only request line is capped, at
+  `MAX_INITIAL_REQUEST_BYTES = 1024 * 1024` (1 MiB) — src/api/server.rs:32, enforced at
+  server.rs:548-553 (returns `io::ErrorKind::InvalidData`, message "api request line is too
+  large", if exceeded before the newline arrives). No corresponding cap was found on: the
+  client's read of a response line (api/client.rs `read_json_line` uses unbounded
+  `BufReader::read_line`), or on lines written by the server for `events.subscribe` push frames
+  (server.rs `write_json_line` in the `stream_subscriptions` loop, server.rs:700-763) — those
+  are implicitly bounded only by whatever payload size limits exist upstream (e.g.
+  `PANE_GRAPHICS_SET_MAX_BYTES` for graphics-set requests, schema/panes.rs) but that is a
+  request-content limit, not a line-framing limit.
+- ONE METHOD PER CONNECTION (this directly answers the "pending request vs subscription push
+  interleaving" question): `start_server_inner`'s accept loop (server.rs:93-122) spawns exactly
+  one thread per accepted connection, and that thread calls `handle_connection_with_stop`
+  EXACTLY ONCE. That function reads exactly one initial request line (never loops back to read
+  a second one), then dispatches based on `request.method`:
+    - Most methods ("method_body" catch-all, server.rs:276-303): write exactly one response
+      line, then return -> connection ends.
+    - `Method::EventsWait / AgentPrompt / AgentWait / PaneWaitForOutput` (server.rs:238-275):
+      block (polling internally) until a match/timeout, write exactly one response line, then
+      return -> connection ends. No further request lines are ever read on this connection.
+    - `Method::EventsSubscribe` (-> `stream_subscriptions`, server.rs:700-763): writes one ack
+      line (`SubscriptionStarted`), then loops forever writing zero-or-more event lines per
+      poll tick (100ms, `CONNECTION_POLL_INTERVAL`) until the peer disconnects or the server
+      stops (`should_stop_connection`, server.rs:796-805, which polls `local_stream_peer_closed`
+      — itself Windows: `PeekNamedPipe`-based, ipc.rs:236-261). It NEVER reads any further
+      input from the client on this connection either.
+    - `Method::PaneGraphicsStream` -> a dedicated sub-protocol in
+      src/api/server/pane_graphics_stream.rs (not inspected in depth — out of this task's
+      scope, flagged as "not read").
+  CONSEQUENCE: a client can never observe "a normal request response" and "a subscription
+  push" interleaved on the SAME connection, because each connection is permanently committed
+  to exactly one Method for its whole lifetime. To do "call some methods" + "get push events"
+  concurrently, a client MUST open at least two separate connections (one to
+  events.subscribe-and-hold, others short-lived for everything else) — this matches section
+  3c's observation that even ordinary sequential CLI commands open a fresh connection per call.
+
+=====================================================================
+7. EVENT FRAME ROUTING: snake_case EventEnvelope vs dot-named SubscriptionEventEnvelope
+=====================================================================
+Two DIFFERENT top-level pushed-frame shapes exist, chosen by WHICH Subscription variant the
+client asked for in `events.subscribe`'s `params.subscriptions` (src/api/schema/events.rs,
+src/api/subscriptions.rs):
+
+(A) "Lifecycle" subscriptions — WorkspaceCreated/Updated/.../PaneCreated/Closed/Updated/
+    Focused/Moved/Exited/AgentDetected, LayoutUpdated, etc. (the fieldless `Subscription::*{}`
+    variants) -> routed to `ActiveSubscription::Event` (subscriptions.rs:99-104, 122-160) ->
+    `ActiveEventSubscription::poll` (subscriptions.rs:282-292) returns
+    `serde_json::to_value(event)` where `event: EventEnvelope` (schema/events.rs:361-365):
+        pub struct EventEnvelope { pub event: EventKind, pub data: EventData }
+    `EventKind` (schema/events.rs:192-221) is `#[serde(rename_all = "snake_case")]` with NO
+    `tag` attribute (plain fieldless enum) -> serializes as a bare SNAKE_CASE STRING, e.g.
+    "workspace_focused", "pane_agent_status_changed", "pane_output_changed". Confirmed by test
+    subscriptions.rs:659 `assert_eq!(live_event["data"]["workspace_id"], "after_setup")` for a
+    WorkspaceFocused subscription (wire shape: {"event":"workspace_focused","data":
+    {"type":"workspace_focused","workspace_id":"after_setup"}}; the "type" tag inside `data`
+    comes from `EventData`'s own `#[serde(tag = "type", rename_all = "snake_case")]`,
+    schema/events.rs:420-421).
+
+(B) The three PARAMETERIZED/filtered subscription types — `Subscription::PaneOutputMatched
+    {pane_id, source, lines, match, strip_ansi}`, `Subscription::PaneAgentStatusChanged
+    {pane_id, agent_status}`, `Subscription::PaneScrollChanged{pane_id}` -> routed to
+    `ActiveSubscription::OutputMatched / AgentStatusChanged / ScrollChanged`
+    (subscriptions.rs:161-245) -> their `poll()` methods (subscriptions.rs:294-328, 330-458,
+    460-491) all construct and return a `SubscriptionEventEnvelope` (schema/events.rs:377-381):
+        pub struct SubscriptionEventEnvelope { pub event: SubscriptionEventKind, pub data: SubscriptionEventData }
+    `SubscriptionEventKind` (schema/events.rs:367-375) gives each variant an EXPLICIT DOT-NAMED
+    rename:
+        #[serde(rename = "pane.output_matched")]      PaneOutputMatched,
+        #[serde(rename = "pane.agent_status_changed")] PaneAgentStatusChanged,
+        #[serde(rename = "pane.scroll_changed")]      ScrollChanged,
+    -> wire shape example: {"event":"pane.output_matched","data":{"pane_id":"...",
+    "matched_line":"...","read":{...}}} (constructed at subscriptions.rs:313-320).
+
+So the routing rule a Rust client must implement: on any `events.subscribe` connection, each
+pushed line's `"event"` field is a plain string; if it contains a literal `.` it is a
+`SubscriptionEventEnvelope` (one of exactly 3 known dot-named kinds, all under `pane.*`); if it
+has no dot (pure snake_case with `_`) it is a lifecycle `EventEnvelope` (one of the `EventKind`
+variants, schema/events.rs:192-221 — 26 variants at HEAD, full list in that file). Do not
+conflate this with `EventMatch`'s wire tag used in `events.wait`'s `match_event` REQUEST
+parameter (schema/events.rs:114-190), which is `#[serde(tag = "event", rename_all =
+"snake_case")]` — i.e. request-side matching always uses snake_case with underscores (e.g.
+"pane_agent_status_changed"), even for the pane.* concepts; only the RESPONSE/push side for the
+3 parameterized subscriptions uses dots.
+
+=====================================================================
+NOT CHECKED / OUT OF SCOPE (say so plainly, do not guess)
+=====================================================================
+- src/api/server/pane_graphics_stream.rs internal framing — not read.
+- Exact default Windows named-pipe security descriptor that `interprocess` 2.4.2's
+  `ListenerOptions::create_sync()` applies when no explicit `security_descriptor(...)` is given
+  (relevant to section 2d) — not chased into interprocess's Windows FFI layer; flagged as a gap,
+  not fabricated.
+- Whether commit 62431dbd033b (the local preview build's exact source) differs from the cloned
+  HEAD bafbc0949dd996cf7fd0848c8965e254348cc11e in any of the above files — could not check,
+  shallow clone has no history before HEAD. Risk window: ~5 days (2026-09-08 to 2026-09-13).
+- herdr.dev/docs/socket-api/ was NOT fetched in this task (source code was available and is
+  authoritative per the task's own preference order); no claim is made about what the docs say
+  beyond what the task prompt already quoted.

@@ -1,0 +1,55 @@
+== protocol ==
+windows: 22  wsl: 20  wsl herdr: herdr 0.8.2
+== methods: win=102 wsl=91 ==
+-- only in windows:
+client_shell.surface.set command.invoke integration.list pane.copy_motion pane.copy_search pane.edit_scrollback pane.link.activate pane.scroll pane.selection.read product_announcement.dismiss release_notes.dismiss 
+-- only in wsl:
+
+== enum EventKind ==
+win=26 wsl=26
+-- only win: 
+-- only wsl: 
+== enum SubscriptionEventKind ==
+win=3 wsl=3
+-- only win: 
+-- only wsl: 
+== enum AgentStatus ==
+win=5 wsl=5
+-- only win: 
+-- only wsl: 
+== enum ReadSource ==
+win=4 wsl=4
+-- only win: 
+-- only wsl: 
+== props SessionSnapshot ==
+win=10 wsl=10
+-- only win: 
+-- only wsl: 
+== props WorkspaceInfo ==
+win=10 wsl=10
+-- only win: 
+-- only wsl: 
+== props PaneInfo ==
+win=19 wsl=19
+-- only win: 
+-- only wsl: 
+== props AgentInfo ==
+win=22 wsl=22
+-- only win: 
+-- only wsl: 
+== props PaneReadResult ==
+win=8 wsl=8
+-- only win: 
+-- only wsl: 
+== props PaneReadParams ==
+win=5 wsl=5
+-- only win: 
+-- only wsl: 
+== props EventsSubscribeParams ==
+win=1 wsl=1
+-- only win: 
+-- only wsl: 
+== subscription kinds (win) ==
+layout.updated pane.agent_detected pane.agent_status_changed pane.closed pane.created pane.exited pane.focused pane.moved pane.output_matched pane.scroll_changed pane.updated tab.closed tab.created tab.focused tab.moved tab.renamed workspace.closed workspace.created workspace.focused workspace.metadata_updated workspace.moved workspace.renamed workspace.reordered workspace.updated worktree.created worktree.opened worktree.removed
+== subscription kinds (wsl) ==
+layout.updated pane.agent_detected pane.agent_status_changed pane.closed pane.created pane.exited pane.focused pane.moved pane.output_matched pane.scroll_changed pane.updated tab.closed tab.created tab.focused tab.moved tab.renamed workspace.closed workspace.created workspace.focused workspace.metadata_updated workspace.moved workspace.renamed workspace.reordered workspace.updated worktree.created worktree.opened worktree.removed

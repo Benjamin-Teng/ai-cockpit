@@ -1,0 +1,10 @@
+{
+  // CJK 散文專案慣例：關行長與表格 pipe 對齊，其餘保留
+  "config": {
+    "MD013": false,
+    "MD060": false,
+    // 不同章節下允許同名小節（例如 §19 與 §27 都有 "Runtime"）
+    "MD024": { "siblings_only": true }
+  },
+  "ignores": ["target/**", "node_modules/**"]
+}
