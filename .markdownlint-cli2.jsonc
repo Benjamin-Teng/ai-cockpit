@@ -6,5 +6,6 @@
     // 不同章節下允許同名小節（例如 §19 與 §27 都有 "Runtime"）
     "MD024": { "siblings_only": true }
   },
-  "ignores": ["target/**", "node_modules/**"]
+  // .claude/ 與 .agents/ 內是 openspec init 產生的 skill 檔，不由本 repo 維護
+  "ignores": ["target/**", "node_modules/**", ".claude/**", ".agents/**"]
 }

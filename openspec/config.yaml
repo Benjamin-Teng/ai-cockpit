@@ -1,0 +1,40 @@
+schema: spec-driven
+
+# 專案脈絡：只寫指標，不複製內容（規則改了這裡不用跟著改）
+context: |
+  產品：AI Agent Cockpit，建立在 HERDR 之上的 Rust 觀測台（observer first）。
+  語言：所有 artifact 用台灣慣用繁體中文，技術術語（crate、method、event 名）保留英文。
+  權威文件（先讀再寫 artifact）：
+  - 架構設計：docs/superpowers/specs/2026-09-13-cockpit-mvp-design.md
+  - 詞彙表：CONTEXT.md（Runtime 層與 Domain 層分開，Cockpit 不用 Space 一詞）
+  - 決策理由：docs/adr/
+  - HERDR 查證證據：docs/research/2026-09-13/
+  - 跨 session 交接：docs/handover.md
+  技術棧：Rust edition 2024、tokio、axum（ws）、serde、toml、tracing；cargo workspace 四個 crate
+  （herdr-client、cockpit-core、cockpit-herdr、cockpit），依賴方向見 ADR-0003。
+  品質 gate：cargo fmt --check、cargo clippy --all-targets -- -D warnings、cargo test --workspace、
+  markdownlint-cli2 "**/*.md"（在 repo 根執行）。
+  Code review 一律 Codex（見 AGENTS.md），Claude subagent 只驗非 diff 內容。
+
+rules:
+  proposal:
+    - 必含「非目標」一節，並指出對應設計文件的章節
+    - 涉及 HERDR 行為的論斷要引用設計文件 §2 或 docs/research 的證據，不憑記憶
+  specs:
+    - 需求用「系統必須…」句型，每條需求至少一個 Given/When/Then 情境
+    - 不把 HERDR 的 AgentStatus 直接當 Cockpit 的完成狀態
+  design:
+    - 不重述設計文件；只寫本 change 特有的取捨，並連結設計文件章節
+  tasks:
+    - 每個 task 可獨立驗收，附驗收指令或測試名稱
+    - 第一批 task 必須是設計文件 §11 的 spike（change herdr-client 適用）
+    - 每個 task 結尾要跑該 crate 的 fmt、clippy、test
+
+operations:
+  apply:
+    guidance:
+      - 先記基線測試結果再動手；改 .rs 必跑 fmt、clippy、test，改 .md 必跑 markdownlint
+      - 完成宣稱前要貼驗證指令輸出
+  archive:
+    guidance:
+      - archive 走獨立 PR，不與功能 PR 混合

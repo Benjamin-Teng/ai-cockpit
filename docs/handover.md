@@ -7,34 +7,37 @@
 
 ## 0. 三十秒版本
 
-1. 使用者要先審 `docs/superpowers/specs/2026-09-13-cockpit-mvp-design.md`；未點頭前
-   不可 `openspec init`、不可寫程式。
-2. 點頭後的第一步是 `openspec init --tools claude,codex,agents`，接著
-   `/opsx:propose herdr-client`（不是直接做 attach）；tasks 第一批必須是設計文件 §11 的五個 spike。
+1. 設計文件已由使用者核可（2026-09-13），`openspec init` 已做完。
+2. 下一步是 `/opsx:propose herdr-client`（不是直接做 attach）；tasks 第一批必須是設計文件
+   §11 的五個 spike。propose 只產計畫 artifact，不寫程式；寫程式要使用者另外下 apply。
 
 ## 1. 現在的狀態
 
 - 已有：`docs/cockpit-spec.md`（概念）、設計文件 v2、`CONTEXT.md`、`docs/adr/0001`–`0005`、
-  `docs/research/2026-09-13/`（兩份 HERDR schema、兩份研究報告、schema 比對腳本與輸出）。
-  沒有任何程式碼、沒有 `openspec/`。
+  `docs/research/2026-09-13/`（兩份 HERDR schema、兩份研究報告、schema 比對腳本與輸出、
+  本機實測輸出）、`openspec/`（config.yaml 已填 context 與 rules，尚無 change）、
+  `.claude/` 與 `.agents/` 的 opsx 指令與 skill（openspec 1.12.0 產生）、`AGENTS.md`。
+  沒有任何程式碼。
 - 可用指令：`herdr api snapshot`（Windows 端目前狀態）、`herdr api schema --json`（匯出 schema）、
   `wsl.exe -e bash -lc '~/.local/bin/herdr status server'`（WSL 端狀態）、
   `markdownlint-cli2 "**/*.md"`（在 repo 根執行）。
 - 測試與 gate：尚無測試。`.md` 2026-09-13 全 repo 0 issue。
 - 版控：本機 git repo，main 分支，無 remote。
 
-## 2. 立刻要做：使用者審閱設計文件 v2
+## 2. 立刻要做：change 1a `herdr-client` 的 propose
 
-看什麼：§1 切片（change 1 拆成 1a、1b 是審閱後的改動，使用者尚未確認）；§2.3 與 §4.2
-「每 pane 訂閱狀態」的機制；§8.2 設定檔；§10.2 三個 Scenario 的通過條件。
-使用者要求修改 → 改設計文件與對應 ADR，重跑 markdownlint，再請審。
+- 指令：`/opsx:propose herdr-client`。若本 session 認不得這個指令，重開 session 讓它載入
+  `.claude/commands/opsx/`，或照 `.claude/skills/openspec-propose/SKILL.md` 的步驟用
+  `openspec new change` 與 `openspec instructions` 手動走。
+- artifact 內容依 `openspec/config.yaml` 的 rules：proposal 要有非目標、spec 用
+  Given/When/Then、tasks 第一批是 §11 五個 spike。
+- 產完 artifact 就停，等使用者下 apply。
 
-## 3. 接著要做：`openspec init` 與 change 1a propose
+## 3. 接著要做：change 1a apply、再 propose change 1b
 
-- `openspec/config.yaml` 的 `context` 寫指標：設計文件、`CONTEXT.md`、`docs/adr/`、
-  `docs/research/2026-09-13/`。
 - change 1a `herdr-client`：spike（§11 五項）→ Connector 三實作 → Client（request／subscribe，
   含每 pane 訂閱型別）→ observer 子集型別 → contract test → 假 HERDR（client 層）。
+  分支名 ＝ change 名；Codex review 通過、archive 後才開 1b。
 - change 1b `attach-herdr-runtimes`：`cockpit-core`（模型、store、投影）→ `cockpit-herdr`
   （六階段連線迴圈、ReopenStatus、WSL 探測、假 HERDR 迴圈測試）→ `cockpit`（axum、WS、
   畫面、PWA）→ 真機驗收 A／B／F。
@@ -65,8 +68,8 @@
 
 | 決策 | 狀態 |
 |---|---|
-| 計畫層走 OpenSpec | 使用者已選，待設計審閱後執行 |
-| MVP 三個功能切片，第一片拆 1a／1b 兩個 change | 拆分為審閱後的建議，待使用者確認 |
+| 計畫層走 OpenSpec | 已執行 `openspec init --tools claude,codex,agents`（2026-09-13） |
+| MVP 三個功能切片，第一片拆 1a／1b 兩個 change | 使用者 2026-09-13 核可設計文件，含此拆分 |
 | 兩個 HERDR 第一天都接 | 已定；審閱者建議「Windows 先行」已否決，因使用者明確要兩端 |
 | 五個 ADR | 已寫 |
 | Tauri | 決定 MVP 後再評估，不做 |
