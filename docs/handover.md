@@ -1,25 +1,23 @@
 # 交接：下一段任務
 
-> **建立日期**：2026-09-14　|　**上一段做完的事**：change 1a `herdr-client` 18 個 task 全部
-> 完成；Codex 整支分支最終 review 的 4 個 findings 已修，替代的 fresh opus scoped re-review
-> 全部 ADDRESSED（Codex 額度用盡，03:55 重置後可補跑）。全部未 commit，等使用者決定收尾。
+> **建立日期**：2026-09-14　|　**上一段做完的事**：change 1a `herdr-client` 全部完成、Codex
+> review 通過、squash 併回 main（`fd5f5d3`）並 archive（`e543d77`），主規格 4 份已在
+> `openspec/specs/`。下一步是 change 1b `attach-herdr-runtimes` 的 propose。
 > **性質**：接手用文件，會過期，每段重寫。
 > 為什麼做看 `docs/cockpit-spec.md`、怎麼做看 `~/.claude/CLAUDE.md`（本 repo 精簡版在
 > `AGENTS.md`）、待辦看 `openspec/changes/herdr-client/tasks.md`。
 
 ## 0. 三十秒版本
 
-1. change 1a 已完成、可收尾：全 workspace gate 174 passed／0 failed／7 ignored（真機，需
-   兩端 HERDR）、fmt／`clippy -D warnings`／markdownlint 0 issue、`openspec validate
-   herdr-client` valid、真機 7/7 通過。最終 review 修正波經 fresh opus scoped re-review 全部
-   ADDRESSED；**Codex 額度於 02:16 用盡（03:55 重置），建議補跑一次同 focus 的 Codex
-   scoped re-review 作二次確認**（指令見第 2 節）。
-2. 全部程式碼仍未 commit（分支 `feat/herdr-client`）；五件事等使用者決定（第 3 節），其中
-   commit 授權擋住併回 main 與 archive。
+1. 下一步：`/opsx:propose attach-herdr-runtimes`（change 1b）。propose 前先讀第 2 節的
+   前置工作（設計文件 §2.3 表格要補兩個欄位）與第 3 節「1b 要沿用的 1a 事實」。沒有時效性
+   任務。
+2. 環境注意：Codex review gate 已開（回合內改過 code 就強制 review；Codex 額度用盡時回合會
+   卡住，重置時間看錯誤訊息）；WSL 端測試 server 已停，1b 真機測試前用第 1 節指令重啟。
 
 ## 1. 現在的狀態
 
-- 已產出（`herdr-client/` 內，均未 commit）：`src/connector/`（`NamedPipeConnector`／
+- 已產出（`herdr-client/`，已在 main）：`src/connector/`（`NamedPipeConnector`／
   `UnixSocketConnector`／`ChildStdioConnector`、`ConnectError`）、`src/types/`（observer
   子集型別、`AgentStatus`、事件 payload、`pane.read` 型別）、`src/client/`
   （`Client::request`／`Client::subscribe`、sealed `Request`、`EventStream`、
@@ -38,61 +36,52 @@
   - WSL 端測試 server（headless，非使用者日常那個）啟動：`wsl.exe -d Ubuntu-24.04 -e bash -lc "setsid -f ~/.local/bin/herdr server >/tmp/herdr-server.log 2>&1 </dev/null"`
   - OpenSpec 進度：`openspec status --change herdr-client`
   - Codex scoped review：`node "C:/Users/<user>/.claude/plugins/cache/openai-codex/codex/1.0.6/scripts/codex-companion.mjs" adversarial-review "<focus 說明>"`（**沒有 `--help`**，見第 4 節）
-- 測試與 gate：以 `cargo test --workspace` 當場輸出為準，不要抄本檔舊數字。上一次全綠
-  時是 174 passed／0 failed／7 ignored（真機）＋fmt／`clippy -D warnings`／
+- 測試與 gate：以 `cargo test --workspace` 當場輸出為準，不要抄本檔舊數字。main 上最後
+  一次是 181 passed／0 failed／7 ignored（真機）＋fmt／`clippy -D warnings`／
   markdownlint 皆 0 issue／`openspec validate herdr-client` valid；本輪修正後這些數字
   會變。
-- 版控：分支 `feat/herdr-client`（base main `a39354b`），**全部未 commit**。使用者規則
-  是 commit 要授權，目前尚未回覆「每個 task 完成後各一個 commit」的授權請求（見
-  `.superpowers/sdd/tasks/progress.md` 開頭 Preflight rulings 最後一條）。
+- 版控：main 領先 openspec init 的 `a39354b` 兩個 commit：`fd5f5d3`（squash 併入 change 1a
+  的 6 個 commit）、`e543d77`（archive 與 4 份主規格）；feature 分支已刪；沒有 remote。SDD
+  ledger（每次 review、修正輪次、全部裁決與使用者決定）永久存於
+  `openspec/changes/archive/2026-09-14-herdr-client/sdd-ledger.md`；本機 `.superpowers/sdd/`
+  已刪。
 
-## 2. 立刻要做：收尾 change 1a（等使用者決定的部分見第 3 節）
+## 2. 立刻要做：change 1b `attach-herdr-runtimes` 的 propose
 
-1. **03:55 後補跑 Codex scoped re-review**（替代審查已過，這是二次確認）：
+前置（小、但要先做，否則 1b 的 spec 會抄到過時的表）：
 
-   ```bash
-   node "C:/Users/<user>/.claude/plugins/cache/openai-codex/codex/1.0.6/scripts/codex-companion.mjs" adversarial-review "SDD final-review scoped re-review：只審最終修正波，範圍 herdr-client/src/types/events.rs、tests/events.rs、tests/common/mod.rs、src/client/{mod.rs,subscribe.rs,error.rs}、src/connector/child_stdio.rs、src/bin/test_child.rs、tests/child_bridge.rs、tests/request.rs、tests/subscribe.rs、README.md；修正報告 .superpowers/sdd/tasks/final-fix-report.md；四個 finding：payload 容器 default 移除（D13）、EventsSubscribeRequest 改 crate-private、橋接握手後非零退出回 StreamError::Io、Remote 保留 response_id。只在修正 diff 內找新破壞。唯讀沙箱只能跑 cargo fmt --check。"
-   ```
+- [ ] 設計文件 `docs/superpowers/specs/2026-09-13-cockpit-mvp-design.md` §2.3 payload 表補
+  `pane_moved` 的四個選填欄位（`created_workspace`、`created_tab`、`closed_workspace_id`、
+  `closed_tab_id`）與 `pane_agent_detected` 的 `final_status`；證據：兩份 schema
+  （`herdr-client/tests/fixtures/schema-p22.json`、`schema-p20.json`）與 1a 的 spec
+  `openspec/specs/herdr-observer-types/spec.md`。改完 `markdownlint-cli2 "**/*.md"` 0 issue。
+- [ ] 重讀設計文件 §4.2（連線迴圈六階段、ReopenStatus、WSL 探測）、§6（`RuntimeSnapshot`／
+  `RuntimeEvent`／`RuntimeStore`／`ProjectedState`）、§7（HERDR 事件對照）、§8（三個 crate、
+  axum、WS、PWA）、§10.2（Scenario A／B／F），確認章節號仍準確。
 
-   判讀：預期 approve／無 material findings（替代審查結論在 ledger 最後一段）；若回
-   Important，走一次修正＋一次 scoped re-review，不要重跑 whole-branch。
-2. **補 1 個 deferred minor**（替代審查發現，未修）：`WorkspaceFocusedPayload`
-   （`herdr-client/src/types/events.rs:354` 附近）是 16 個 payload 中唯一沒有表格化必填
-   缺席測試的；照 `tests/events.rs` 其他 15 個的寫法補一個
-   `assert_required_fields_detected_for_event_variant::<WorkspaceFocusedPayload>`（p22／p20
-   的 required 皆為 `["type","workspace_id"]`）。行為本身已正確，只是缺守門測試。
-3. 補完後重跑全 workspace gate（第 1 節指令），把實際輸出貼進回報。
-4. 之後依第 3 節：使用者決定 → commit → 併回 main → `/opsx:archive herdr-client`
-   → 刪 `.superpowers/sdd/tasks/`（ledger 內容已進 git 歷史與本檔後才刪）。
+propose：`/opsx:propose attach-herdr-runtimes`。判讀 checklist：
 
-## 3. 接著要做：change 1a 收尾與 change 1b propose
+- [ ] proposal 有「非目標」並指向設計文件章節；HERDR 行為論斷引用 §2 或 `docs/research`
+  （`openspec/config.yaml` 的 rules）。
+- [ ] design 只寫 1b 特有取捨，並明確引用 1a 的公開 API（`herdr-client/README.md`）與第 3 節
+  列的事實（D12 後綴、L 訂閱舊事件、idle／Done 跳動、UTF-16LE、`ConnectionAborted` 的
+  reason 字串）。
+- [ ] tasks 每個附驗收指令或測試名、結尾跑 crate gate；三個新 crate 依 ADR-0003 依賴方向
+  （`cockpit-core` 不得依賴 `herdr-client`）。
+- [ ] `openspec validate attach-herdr-runtimes` 無 ERROR（strict 的 SHALL/MUST 警告不算）。
+- [ ] propose 產完就停；apply 要另起，而且 **apply 的第一個動作是載入
+  `superpowers:subagent-driven-development`**（memory：`apply-phase-must-run-through-sdd-skill`），
+  之後逐 task fresh 實作者＋Codex review，不平行派工。
 
-**先問使用者、不要自行決定**（對應第 5 節表格，這裡只點出時機）：
+## 3. 接著要做：change 1b apply 與真機驗收
 
-1. 是否授權在 feature 分支 commit——這件事現在直接影響 Codex review 品質：沒有 git
-   基準，review 沒辦法核實「這一輪只改了聲稱要改的檔案」，只能整份重看。建議在
-   task 5.2 收尾前問一次。
-2. spike 4（無新視窗）的目視複驗：請使用者在 HERDR pane 內跑
-   `cargo run -p herdr-client --example spike4_no_window`（與 `-- --with-window`
-   對照組），確認沒有閃現的主控台視窗。
-3. spike 5(a)（虛擬機停止時探測不喚醒）要不要重驗：需要 `wsl.exe --shutdown`，會關掉
-   WSL 端 HERDR 與所有 pane（含這段仍在跑的測試 server）。
-4. 要不要開 Codex review gate（`/codex:setup --enable-review-gate`）：目前是流程內
-   手動跑 scoped review，沒有 stop-time gate 強制擋。
-5. 這段用 `setsid -f` 起的 WSL 端測試 server（帶著使用者存檔的 workspace `wD`）要不要
-   `herdr server stop` 收掉。
-
-**收尾流程**（等 task 5.2 完成、Codex review clean 之後）：
-
-1. 依 `git-branch-workflow.md` 併回 main：分支目前未 commit，要先在分支上 commit 一次
-   才有東西可 squash-merge——這跟上面決策 1 是同一件事，使用者到這時才授權 commit 就
-   一併做。
-2. `/opsx:archive herdr-client`：archive 走獨立 PR／commit，不與功能改動混在一起
-   （`openspec-workflow.md`「archive 走獨立 PR」）。
-3. `/opsx:propose attach-herdr-runtimes`（change 1b）：內容依設計文件 §4.2（連線迴圈、
-   ReopenStatus、WSL 探測）、§6（`RuntimeSnapshot`／`RuntimeEvent`／`RuntimeStore`）、
-   §7（事件對照）、§8（`cockpit-core`／`cockpit-herdr`／`cockpit` 三個 crate、axum、
-   WS、PWA）。propose 前重新核對這些章節號是否還準確，設計文件可能已有小幅修訂。
+- apply 走 SDD（見第 2 節最後一條）；每個 task 一次 Codex review；review gate 已開，額度用盡
+  時改 fresh subagent 對抗式審查並在本檔註明（本段 1a 用過一次）。
+- 真機驗收（設計文件 §10.2 Scenario A／B／F）前：用第 1 節指令重啟 WSL 端測試 server；
+  spike 4 的目視複驗（HERDR pane 內啟動 cockpit.exe 不出現新視窗）併在 Scenario A 做。
+- 1a 留下、由使用者決定不做的事：spike 5(a) 重驗（需 `wsl.exe --shutdown`，會關
+  docker-desktop）；若 1b 期間剛好會 shutdown，順手用
+  `cargo run -p herdr-client --example spike5_wsl_probe` 補驗並記進 spike 紀錄。
 
 change 1b 要直接沿用、不用重新推導的 change 1a 產出：
 
@@ -207,3 +196,4 @@ change 1b `attach-herdr-runtimes`（下一步 propose，見第 3 節）之後：
 | 2 | 2026-09-13 | 找碴審閱後：每 pane 狀態訂閱、change 1 拆 1a／1b、研究證據進 repo |
 | 3 | 2026-09-14 | change 1a `herdr-client` 18 task 完成 17；SDD＋Codex 逐 task review 全程記錄於 `.superpowers/sdd/tasks/progress.md`；5.2 全 workspace gate 已全綠一次，Codex 全分支 review 回 3 Important＋1 low，修正進行中；記錄 spike 1–5 真機結論、D12／D13 兩個 review 觸發的設計修正、假 HERDR／子程序橋接測試機制、待使用者的 5 項決定 |
 | 4 | 2026-09-14 | change 1a 全部完成：最終 review 修正波、Codex 額度用盡改替代審查、deferred minor 與待決事項 |
+| 5 | 2026-09-14 | change 1a 併回 main 並 archive；下一步改為 1b propose；使用者五項決定的結果（commit 授權、只關 WSL server、spike 4 留 1b、開 review gate、全套收尾） |
