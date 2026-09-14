@@ -1,0 +1,209 @@
+{
+  "id": "1",
+  "result": {
+    "type": "session_snapshot",
+    "snapshot": {
+      "version": "0.8.2",
+      "protocol": 20,
+      "focused_workspace_id": "wD",
+      "focused_tab_id": "wD:t1",
+      "focused_pane_id": "wD:p1",
+      "workspaces": [
+        {
+          "workspace_id": "wD",
+          "number": 1,
+          "label": "LABEL_1",
+          "focused": true,
+          "pane_count": 4,
+          "tab_count": 1,
+          "active_tab_id": "wD:t1",
+          "agent_status": "unknown"
+        }
+      ],
+      "tabs": [
+        {
+          "tab_id": "wD:t1",
+          "workspace_id": "wD",
+          "number": 1,
+          "label": "LABEL_2",
+          "focused": true,
+          "pane_count": 4,
+          "agent_status": "unknown"
+        }
+      ],
+      "panes": [
+        {
+          "pane_id": "wD:p8",
+          "terminal_id": "term_65b5920ccb3c17",
+          "workspace_id": "wD",
+          "tab_id": "wD:t1",
+          "focused": false,
+          "cwd": "/PROJECT_1",
+          "foreground_cwd": "/PROJECT_1",
+          "label": "LABEL_3",
+          "terminal_title": "TITLE_1",
+          "terminal_title_stripped": "TITLE_1",
+          "agent_status": "unknown",
+          "tokens": {
+            "herdr-sidebar-git": "0",
+            "herdr-sidebar-explorer": "0"
+          },
+          "scroll": {
+            "offset_from_bottom": 0,
+            "max_offset_from_bottom": 0,
+            "viewport_rows": 39
+          },
+          "revision": 189
+        },
+        {
+          "pane_id": "wD:p1",
+          "terminal_id": "term_65b590545d6e02",
+          "workspace_id": "wD",
+          "tab_id": "wD:t1",
+          "focused": true,
+          "cwd": "/PROJECT_1",
+          "foreground_cwd": "/PROJECT_1",
+          "terminal_title": "TITLE_1",
+          "terminal_title_stripped": "TITLE_1",
+          "agent_status": "unknown",
+          "scroll": {
+            "offset_from_bottom": 0,
+            "max_offset_from_bottom": 0,
+            "viewport_rows": 24
+          },
+          "revision": 1
+        },
+        {
+          "pane_id": "wD:p3",
+          "terminal_id": "term_65b590545db783",
+          "workspace_id": "wD",
+          "tab_id": "wD:t1",
+          "focused": false,
+          "cwd": "/PROJECT_1",
+          "foreground_cwd": "/PROJECT_1",
+          "label": "LABEL_4",
+          "terminal_title": "TITLE_1",
+          "terminal_title_stripped": "TITLE_1",
+          "agent_status": "unknown",
+          "scroll": {
+            "offset_from_bottom": 0,
+            "max_offset_from_bottom": 0,
+            "viewport_rows": 24
+          },
+          "revision": 1
+        },
+        {
+          "pane_id": "wD:p4",
+          "terminal_id": "term_65b590545e04b4",
+          "workspace_id": "wD",
+          "tab_id": "wD:t1",
+          "focused": false,
+          "cwd": "/PROJECT_1",
+          "foreground_cwd": "/PROJECT_1",
+          "label": "LABEL_5",
+          "terminal_title": "TITLE_1",
+          "terminal_title_stripped": "TITLE_1",
+          "agent_status": "unknown",
+          "scroll": {
+            "offset_from_bottom": 0,
+            "max_offset_from_bottom": 0,
+            "viewport_rows": 24
+          },
+          "revision": 1
+        }
+      ],
+      "layouts": [
+        {
+          "workspace_id": "wD",
+          "tab_id": "wD:t1",
+          "zoomed": false,
+          "area": {
+            "x": 26,
+            "y": 1,
+            "width": 94,
+            "height": 39
+          },
+          "focused_pane_id": "wD:p1",
+          "panes": [
+            {
+              "pane_id": "wD:p8",
+              "focused": false,
+              "rect": {
+                "x": 26,
+                "y": 1,
+                "width": 32,
+                "height": 39
+              }
+            },
+            {
+              "pane_id": "wD:p1",
+              "focused": true,
+              "rect": {
+                "x": 58,
+                "y": 1,
+                "width": 34,
+                "height": 39
+              }
+            },
+            {
+              "pane_id": "wD:p3",
+              "focused": false,
+              "rect": {
+                "x": 92,
+                "y": 1,
+                "width": 28,
+                "height": 20
+              }
+            },
+            {
+              "pane_id": "wD:p4",
+              "focused": false,
+              "rect": {
+                "x": 92,
+                "y": 21,
+                "width": 28,
+                "height": 19
+              }
+            }
+          ],
+          "splits": [
+            {
+              "id": "split_0_root",
+              "direction": "right",
+              "ratio": 0.70000005,
+              "rect": {
+                "x": 26,
+                "y": 1,
+                "width": 94,
+                "height": 39
+              }
+            },
+            {
+              "id": "split_1_0",
+              "direction": "right",
+              "ratio": 0.484848,
+              "rect": {
+                "x": 26,
+                "y": 1,
+                "width": 66,
+                "height": 39
+              }
+            },
+            {
+              "id": "split_2_1",
+              "direction": "down",
+              "ratio": 0.5,
+              "rect": {
+                "x": 92,
+                "y": 1,
+                "width": 28,
+                "height": 39
+              }
+            }
+          ]
+        }
+      ],
+      "agents": []
+    }
+  }
+}

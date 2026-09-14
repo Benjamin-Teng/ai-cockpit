@@ -17,3 +17,9 @@
 報告內的檔案路徑指向產生當時的 session 暫存目錄（`...\scratchpad\herdr-research\`），
 對應關係：`schema.json` ＝ 本資料夾的 Windows schema；`schema_dump_full.txt` 是該 schema
 的逐字展開版，未保存，行號引用可用 Windows schema 的 JSON 路徑重新定位。
+
+## change 1a spike 追加（2026-09-13）
+
+- `change-1a-spikes.md`：設計文件 §11 五個 spike 的執行紀錄與 go/no-go。
+- `deidentify-fixture.py`：把真機 snapshot 回應去識別化成 `herdr-client/tests/fixtures/` 用的 fixture。
+- 兩份 schema 的複本在 `herdr-client/tests/fixtures/schema-p22.json`、`schema-p20.json`，供合約測試使用；重新匯出時兩處都要更新。

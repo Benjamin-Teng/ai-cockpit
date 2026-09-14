@@ -1,0 +1,4 @@
+{"data":{"agent":"claude","agent_status":"working","pane_id":"wD:pS","workspace_id":"wD"},"event":"pane.agent_status_changed"}
+{"data":{"agent":"claude","agent_status":"blocked","pane_id":"wD:pS","workspace_id":"wD"},"event":"pane.agent_status_changed"}
+{"data":{"agent":"claude","agent_status":"idle","pane_id":"wD:pS","workspace_id":"wD"},"event":"pane.agent_status_changed"}
+{"data":{"agent_status":"unknown","pane_id":"wD:pS","workspace_id":"wD"},"event":"pane.agent_status_changed"}

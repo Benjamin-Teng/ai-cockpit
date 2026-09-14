@@ -1,0 +1,39 @@
+[package]
+name = "herdr-client"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[dev-dependencies]
+jsonschema = "0.56.0"
+# 開自己的 test-support feature，讓 `cargo test` 建置假對端子程序 test_child（task 2.2、
+# design Open Questions）；edition 2024 預設 resolver 會隔離這個 feature，不進正常建置
+# （見 `herdr-client/README.md`「假對端」節的實測結果）。
+herdr-client = { path = ".", features = ["test-support"] }
+
+[[bin]]
+name = "herdr-client-test-child"
+path = "src/bin/test_child.rs"
+required-features = ["test-support"]
+
+# task 5.1 fix round 2 finding 1：`test = true` 讓 `cargo test -p herdr-client` 建置並執行
+# 這個 example 檔裡 `#[cfg(test)] mod tests` 的 `#[test]` 函式（驗證 `capture_with_deadline`
+# 的 grace-period 行為），不需要額外的 `cargo test --example capture_events` 呼叫；已實測
+# 確認這個 metadata 確實有效，見 `.superpowers/sdd/tasks/task-5.1-report.md`「Fix round 2」
+# 的 `cargo test` 輸出證據。
+[[example]]
+name = "capture_events"
+path = "examples/capture_events.rs"
+test = true
+
+[dependencies]
+async-trait = "0.1.92"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+tokio = { version = "1", features = ["net", "io-util", "io-std", "rt-multi-thread", "macros", "process", "time", "sync"] }
+tracing = "0.1.44"
+
+[features]
+# 假 HERDR（herdr_client::testing）只在測試時開啟；change 1b 以 dev-dependency 重用。
+test-support = []
