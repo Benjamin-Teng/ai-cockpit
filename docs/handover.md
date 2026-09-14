@@ -169,11 +169,11 @@ change 1b 要直接沿用、不用重新推導的 change 1a 產出：
 
 | 決策 | 狀態 |
 |---|---|
-| 每個 task 完成後各一個 commit（方便 Codex 用 git 基準做 diff review） | **待使用者決定**（尚未回覆）；目前全部 review 用 working-tree diff 代替 |
-| spike 4 目視複驗（HERDR pane 內跑 `spike4_no_window` 與 `--with-window` 對照組） | 待使用者執行 |
-| spike 5(a) 重驗需 `wsl.exe --shutdown` | 待使用者決定（會關掉 WSL 端 HERDR 與所有 pane，含測試 server） |
-| 開 Codex review gate（`/codex:setup --enable-review-gate`） | 待使用者決定 |
-| WSL 端測試 server（本段以 `setsid -f` 啟動、仍在跑）是否 `herdr server stop` | 待使用者決定 |
+| Claude 在 feature 分支 commit | **已授權**（2026-09-14）：本段以 6 個邏輯 commit 收尾；1b 起每個 task 完成且 review 通過後各一個 commit，讓 Codex 能用 git 基準審 |
+| spike 4 目視複驗 | **已決**：留到 1b 真機驗收（Scenario A 從 HERDR pane 啟動 cockpit.exe 時一併看）；`CREATE_NO_WINDOW` 維持 |
+| spike 5(a) 重驗（需 `wsl.exe --shutdown`） | **已決不做**，沿用 9/13 實測；日後若剛好 shutdown，用 `spike5_wsl_probe` example 順手補驗 |
+| Codex review gate | **已開**（2026-09-14，`reviewGateEnabled = true`）；額度用盡時回合會卡在 gate，改 fresh subagent 審查並在本檔註明 |
+| WSL 端測試 server | **已 stop**（2026-09-14）；1b 真機測試前用第 1 節指令以 `setsid -f` 重啟 |
 | f2a「為偵測缺席而建模 Cockpit 用不到的 required 欄位」（task 3.1–3.3 review finding） | **已否決**：違反 §5.2 observer 子集原則，D13 已限縮為「已建模的必填欄位」；代價是 HERDR 若少送 Cockpit 不用的欄位不會被察覺（本來就不影響功能） |
 | 2.x／3.x 平行派工，違反 SDD「不可平行」原則 | 已定為一次性例外：檔案完全分離（`src/connector` vs `src/types`），第 4 組起不再平行 |
 | （舊）計畫層走 OpenSpec | 已執行（`openspec init --tools claude,codex,agents`） |
