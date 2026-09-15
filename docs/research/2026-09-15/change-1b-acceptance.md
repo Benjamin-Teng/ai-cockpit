@@ -158,11 +158,13 @@ test real_zero_config_connects_and_pane_count_matches_herdr_snapshot ... ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
 ```
 
-### 待使用者親自做的部分
+### 使用者親自做的部分（2026-09-15 完成，使用者回報）
 
-- 在 HERDR pane 內執行 `cargo run -p cockpit`（或 release 的 `cockpit.exe`），目視確認沒有跳出新視窗
-  （spike 4 目視複驗；自動化的 `Get-Process | Where MainWindowHandle -ne 0` 前後比對抓不到瞬間視窗）。
-- 以 Chrome 開 `http://127.0.0.1:7770/`，從選單「安裝」成獨立視窗的應用程式（PWA 手動驗收）。
+- 在 HERDR pane 內執行 release 的 `cockpit.exe`（commit `d58ea18` 建置），目視確認**沒有跳出新視窗**
+  （spike 4 目視複驗通過，`CREATE_NO_WINDOW` 維持；自動化的 `Get-Process | Where MainWindowHandle -ne 0`
+  前後比對抓不到瞬間視窗，所以需要目視）。
+- 以 Chrome 開 `http://127.0.0.1:7770/`，有「安裝 Cockpit」選項，**可安裝成獨立視窗**的應用程式
+  （PWA 手動驗收通過）。
 
 真機畫面的截圖含本機 cwd 路徑與使用者名稱，不進 repo；版面依據以 task 3.6 的 `ui-preview.png` 為準，
 真機差異只在資料內容。
@@ -246,11 +248,11 @@ RESULT: PASS
   `pane_updated` 到達投影（0.2 s 內），但 S 訂閱尚未重開完成所以最近事件沒有 `pane.agent_status_changed`；
   等 0.5 s 再報告就正常。真實 agent 不會在 pane 建立後 200 ms 內變狀態，不視為問題。
 
-### Windows 端：待使用者親自做
+### Windows 端：使用者親自做（2026-09-15 完成，使用者回報）
 
-在 Windows 端某個 agent pane 對 agent 下一句指令，觀察該 pane 一秒內變 `working`、頁尾最近事件出現
-`pane.agent_status_changed`；全程 Cockpit 不會送任何 prompt 給 agent（只有 `session.snapshot` 與
-`events.subscribe`）。這需要真人在 HERDR 的 pane 裡操作，無法由腳本代替。
+在 Windows 端某個 agent pane 對 agent 下一句指令：畫面上該 pane **一秒內變 `working`**、頁尾最近事件出現
+`pane.agent_status_changed`（通過；判讀門檻 ≤1 s）。全程 Cockpit 不會送任何 prompt 給 agent（只有
+`session.snapshot` 與 `events.subscribe`）。這需要真人在 HERDR 的 pane 裡操作，無法由腳本代替。
 
 ## Scenario F Reconnect（task 4.3，只在 WSL 端）
 
@@ -334,9 +336,15 @@ RESULT: PASS
    2 個 workspace、2 個 tab、5 個 pane；L 的前幾行與全程 20 秒都沒有任何 tab／pane 的建立或移除事件，
    也沒有任何一筆指向 snapshot 中不存在的 tab／pane。原始檔在 `target/capture/`（gitignored，含本機路徑，
    不進 repo）。Windows 端 HERDR 版本 0.9.0-preview（protocol 22）。
+4. **自動化複跑**（Windows 端，2026-09-15 22:29，一次性腳本，不進 repo）：用
+   `herdr tab create --workspace <workspace_id> --label cockpit_4_4_<n> --no-focus` 在同一個 workspace 開
+   3 個 tab（snapshot 多出 3 個 tab、6 個 pane），逐一 `herdr tab close <tab_id>` 後立刻跑
+   `capture_events.exe --seconds 20`：L 收到 16 筆，全部是既有兩個 Sidebar pane 的 `pane_updated`，
+   **0 筆**提到剛關掉的 3 個 tab 或 6 個 pane；S 0 筆；結束後 snapshot 回到基線（2 tab、5 pane），
+   只關了自己建立的 tab。與第 3 點使用者手動操作的結果一致。
 
-結論：**WSL 0.8.2 有補推、已被丟棄規則吸收；Windows 0.9.0 不補推**（第 3 點在指定前提下擷取，訂閱建立
-瞬間與其後 20 秒都沒有指向已關 tab／pane 的事件）。設計文件 §2.3 的加註已由「無法判定」改成這個結論
+結論：**WSL 0.8.2 有補推、已被丟棄規則吸收；Windows 0.9.0 不補推**（第 3 點手動、第 4 點自動化，都在
+指定前提下擷取，訂閱建立瞬間與其後 20 秒都沒有指向已關 tab／pane 的事件）。設計文件 §2.3 的加註已由「無法判定」改成這個結論
 （本次回寫）；因為沒有補推，不需要再開 cockpit 確認幽靈 pane。丟棄規則（設計 §4.2）對兩側都保留，
 不因 Windows 端不補推而簡化。無需 `/opsx:update`。
 

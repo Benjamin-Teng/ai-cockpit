@@ -208,14 +208,14 @@
 
 ## 4. 真機驗收與收尾（設計文件 §10.2；`docs/handover.md` §3）
 
-- [ ] 4.1 Scenario A Attach：啟動 WSL 端測試 server；寫本機 `cockpit.toml`（`win` 省略端點、`wsl`
+- [x] 4.1 Scenario A Attach：啟動 WSL 端測試 server；寫本機 `cockpit.toml`（`win` 省略端點、`wsl`
   指 `Ubuntu-24.04` 與 WSL 端 socket 路徑）；**在 HERDR pane 內**執行 `cargo run -p cockpit`
   （spike 4 目視複驗：不出現新視窗，由使用者目視；自動化補充
   `Get-Process | Where MainWindowHandle -ne 0` 前後比對）；以瀏覽器工具開
   `http://127.0.0.1:7770/`。驗收：兩張卡皆 `connected`；兩側 pane／workspace 清單與各自
   `herdr api snapshot` 一致（`real_attach` 測試通過）；Chrome 選單可安裝；截圖與比對輸出（去識別
   化）存 `docs/research/<執行日期>/change-1b-acceptance.md`。
-- [ ] 4.2 Scenario B Live state：Windows 端在某 agent pane 由使用者下一句指令，觀察該 pane 一秒內
+- [x] 4.2 Scenario B Live state：Windows 端在某 agent pane 由使用者下一句指令，觀察該 pane 一秒內
   變 `working`、最近事件出現 `pane.agent_status_changed`；WSL 端以 `HERDR_CLIENT_TEST_ALLOW_WSL_WRITES=1`
   用 1a 真機測試的寫入鷹架（`pane.report_agent`）製造 working→blocked→idle；新建一個 pane 後其
   狀態變化同樣即時出現（驗 ReopenStatus）。順手記錄：關 tab 時 Windows 0.9.0 的事件序列（design

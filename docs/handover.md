@@ -3,7 +3,7 @@
 > **建立日期**：2026-09-15　|　**上一段做完的事**：change 1b `attach-herdr-runtimes` 以 SDD 完成 30 個
 > task 中的 27 個（第 1–3 組 24 個程式 task、4.3、4.5、4.6），三個 crate `cockpit-core`／`cockpit-herdr`／
 > `cockpit` 全部建好並在真機（Windows HERDR 0.9.0 ＋ WSL 0.8.2 測試 server）通過 Scenario A／B（WSL 端）／F
-> 的自動化驗收，已 squash 併回 `main` 並 archive；4.4 已定案，4.1、4.2 只剩使用者親自做的部分。
+> 的自動化驗收，已 squash 併回 `main` 並 archive；4.1、4.2、4.4 的使用者部分已於 2026-09-15 全部完成，30 個 task 全勾。
 > **性質**：接手用文件，會過期，每段重寫。
 > 為什麼做看 `docs/cockpit-spec.md` 與設計文件 `docs/superpowers/specs/2026-09-13-cockpit-mvp-design.md`、
 > 怎麼做看 `~/.claude/CLAUDE.md`（本 repo 精簡版在 `AGENTS.md`）、1b 的 task 清單（含未勾三項）看
@@ -14,11 +14,10 @@
 1. **分支已收尾**（2026-09-15，使用者遠端授權）：squash 併回 `main`（`2a4893b`）、分支已刪、change 已
    archive 到 `openspec/changes/archive/2026-09-15-attach-herdr-runtimes/`（含去識別化的 `sdd-ledger.md`），
    7 份 delta spec 已同步成 `openspec/specs/` 的主規格；本機 `.superpowers/sdd/` 已刪。
-2. **使用者親自做的四件事**（第 2 節有指令與判讀）：4.4 已於 2026-09-15 由使用者在 Windows 端開關 tab
-   後重擷取定案（Windows 0.9.0 不補推；acceptance.md、設計文件 §2.3、archive 內 tasks.md 4.4 已回寫）；
-   剩 4.1 的 spike 4 目視與 PWA 安裝、4.2 的 Windows 端 Scenario B 三件，做完把結果補進
-   `docs/research/2026-09-15/change-1b-acceptance.md` 對應小節並勾 tasks.md 的 4.1／4.2；使用者已決不放寬
-   標準、不擋 change 2。
+2. **使用者親自做的四件事已全部完成**（2026-09-15）：spike 4 目視無跳窗、PWA 可安裝成獨立視窗、Windows 端
+   agent pane 一秒內變 `working`、4.4 定案「Windows 0.9.0 不補推」（使用者手動與 Claude 用 `herdr tab`
+   自動化複跑結果一致）。結果都在 `docs/research/2026-09-15/change-1b-acceptance.md` 對應小節，設計文件
+   §2.3 已改成結論，archive 內 tasks.md 30 個 task 全勾。**change 1b 完全結案。**
 3. 下一步：change 2 `pipeline-projection`——範圍已口頭討論完（第 3 節六條結論＋假設），下一段直接
    `/opsx:propose pipeline-projection`（在 main 上先開分支 `feat/pipeline-projection`）。沒有時效性任務。
 4. 環境：WSL 端 headless 測試 server **已停**（下次真機測試用第 1 節指令啟動；多輪 tab 開關後會累積補推，
@@ -99,14 +98,15 @@
    刪本機 `.superpowers/sdd/`。tasks.md 內 4.1／4.2／4.4 當時仍未勾（使用者已決照實保留；4.4 已於
    之後定案勾選，見下方第 4 件）。
 
-使用者親自做的四件事（判讀寫在括號內；結果補進 acceptance.md 對應小節；第 4 件已完成）：
+使用者親自做的四件事（**已於 2026-09-15 全部完成**，結果在 acceptance.md 對應小節；指令與判讀保留供下次
+change 收尾照抄）：
 
-1. **spike 4 目視**：在 HERDR 的某個 pane 內執行 `target\release\cockpit.exe`（或 `cargo run -p cockpit`），
+1. **spike 4 目視**（已完成：無跳窗）：在 HERDR 的某個 pane 內執行 `target\release\cockpit.exe`（或 `cargo run -p cockpit`），
    看有沒有跳出新視窗（正常：沒有任何新視窗，只在該 pane 印 `listening on 127.0.0.1:7770`；若跳窗，
    `CREATE_NO_WINDOW` 旗標失效，走 `/opsx:update`）。
-2. **PWA 安裝**：Chrome 開 `http://127.0.0.1:7770/`，網址列右側或選單應有「安裝 Cockpit」（正常：可安裝成
+2. **PWA 安裝**（已完成：可安裝成獨立視窗）：Chrome 開 `http://127.0.0.1:7770/`，網址列右側或選單應有「安裝 Cockpit」（正常：可安裝成
    獨立視窗；沒有安裝選項時先看 DevTools Application → Manifest 的錯誤）。
-3. **Scenario B Windows 端**：在 Windows 端某個 agent pane 對 agent 下一句指令，畫面上該 pane 應在一秒內
+3. **Scenario B Windows 端**（已完成：一秒內變 `working`，有事件）：在 Windows 端某個 agent pane 對 agent 下一句指令，畫面上該 pane 應在一秒內
    變 `working`、頁尾最近事件出現 `pane.agent_status_changed`（正常：≤1 s；超過 1 s 或沒有事件 → 看
    `RUST_LOG=debug` 的 S 訂閱日誌，可能是 per-pane 訂閱沒開成）。Cockpit 不會送任何 prompt 給 agent。
 4. **4.4 定案**（**已完成**，2026-09-15 22:21）：使用者在 Windows 端開兩三個 tab 再關掉、立刻跑
@@ -251,13 +251,13 @@ change 2 要直接沿用、不用重新推導的 1b 產出：
 | 決策 | 狀態 |
 |---|---|
 | Claude 在 feature 分支 commit | **已授權**（2026-09-14，逐 task 一個 commit）；1b 的 squash 併回 main 與 archive **已於 2026-09-15 授權並執行**（見第 1 節版控） |
-| 4.1／4.2 的使用者部分 | **待使用者**（第 2 節前三件；第 4 件 4.4 已完成）；使用者已決：維持未勾、不放寬標準、archive 照實帶警告；不擋 change 2 |
+| 4.1／4.2／4.4 的使用者部分 | **已全部完成**（2026-09-15，第 2 節四件事）；archive 內 tasks.md 30 個 task 全勾，change 1b 完全結案 |
 | deferred minor（第 3 節清單） | **已決全部帶進 change 2 待辦**，不單獨開 change |
 | change 2 的啟動 | **已決**：範圍已於 2026-09-15 遠端口頭討論完（第 3 節六條結論＋假設），下一步直接 `/opsx:propose pipeline-projection` |
 | change 2 進度來源 | **已決用畫面按鈕**（否決「改設定檔」與「自動偵測」）：Cockpit 加自己的寫入 API 與狀態檔；對 HERDR 仍唯讀 |
 | change 2 Binding | **已決 TOML 穩定特徵為主、畫面可臨時改綁**（否決「畫面點選 pane 為主」，因 pane id 會變） |
 | change 2 畫面 | **已決 Stage×Workstream 網格、不畫依賴箭頭**；多 Project 分區顯示 |
-| spike 4 目視複驗 | **待使用者**（第 2 節第 1 項）；`CREATE_NO_WINDOW` 維持 |
+| spike 4 目視複驗 | **已完成，無跳窗**（2026-09-15）；`CREATE_NO_WINDOW` 維持 |
 | spike 5(a) 重驗（需 `wsl.exe --shutdown`） | **已決不做**，沿用 9/13 實測 |
 | Codex review gate | **已開**；本段全程用路徑②（Bash 直接跑 `adversarial-review`）逐 task 審，額度沒有用盡 |
 | WSL 端測試 server | **在跑**（2026-09-15）；跑驗收腳本前重啟一次清補推積壓；不用時可停 |
@@ -290,3 +290,4 @@ change 2 `pipeline-projection`（domain 層：pipeline TOML 設定、`RuntimeBin
 | 7 | 2026-09-15 | change 1b apply：30 task 完成 27（三個 crate、真機 Scenario A／B／F 自動化證據、設計文件回寫）；Codex 逐 task review 全部通過；最終全分支 review 的兩條 Important（初始 S handle 覆蓋、shutdown 不等 task）已修並經兩輪 scoped re-review approve；4.1／4.2／4.4 剩使用者部分；新增本段 15 條坑與 deferred minor 清單 |
 | 8 | 2026-09-15 | 使用者遠端四項決定後：1b squash 併回 main（`2a4893b`）、archive 並同步 7 份主規格、分支刪除、WSL 測試 server 停；下一步改為 change 2 範圍討論與 propose |
 | 9 | 2026-09-15 | 4.4 定案：使用者在 Windows 端開關 tab 後重擷取，Windows 0.9.0 不補推；acceptance.md、設計文件 §2.3、archive tasks.md 回寫；剩 4.1／4.2 三件手動驗收 |
+| 10 | 2026-09-15 | 4.1／4.2 三件手動驗收通過（無跳窗、PWA 可安裝、agent pane 一秒內 `working`）；4.4 以 `herdr tab create/close` 自動化複跑與手動一致；tasks.md 30 個 task 全勾，change 1b 完全結案 |
