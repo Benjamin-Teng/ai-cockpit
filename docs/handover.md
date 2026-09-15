@@ -17,7 +17,8 @@
 2. **使用者親自做的四件事**（第 2 節有指令與判讀），做完把結果補進
    `docs/research/2026-09-15/change-1b-acceptance.md` 對應小節並勾 archive 內 tasks.md 的 4.1／4.2／4.4；
    使用者已決不放寬標準、不擋 change 2，但 4.4 的 Windows 端結論在做完前會一直是「無法判定」。
-3. 下一步：change 2 `pipeline-projection`——先口頭討論範圍（第 3 節），再 `/opsx:propose`。沒有時效性任務。
+3. 下一步：change 2 `pipeline-projection`——範圍已口頭討論完（第 3 節六條結論＋假設），下一段直接
+   `/opsx:propose pipeline-projection`（在 main 上先開分支 `feat/pipeline-projection`）。沒有時效性任務。
 4. 環境：WSL 端 headless 測試 server **已停**（下次真機測試用第 1 節指令啟動；多輪 tab 開關後會累積補推，
    跑驗收腳本前重啟一次）；本機 `cockpit.toml`（gitignored）已指向兩側；`target/release/cockpit.exe` 對應
    commit `d58ea18`（分支上最後的程式碼版本，與 main 的 `2a4893b` 內容相同；三個驗收腳本在這版重跑皆 PASS）。
@@ -124,6 +125,37 @@ propose 前置：
   變體、§6.2 `subscribe()` 簽章、§6.4 `protocol_warning` 與 `recent_events` 規則、§7.2 事件對照、§9
   「server is shutting down」。change 2 的 spec 直接引用這些，不要再從 1b 的 delta spec 抄。
 
+change 2 範圍（2026-09-15 與使用者遠端口頭討論的結論；propose 直接以此為輸入，不要重問）：
+
+1. **使用者的 HERDR 用法**：workspace＝專案；tab／pane＝平行工作線（Backend／Frontend／Docs 這種）；
+   「現在在哪個階段」只存在於與 agent 的對話裡，HERDR 看不出來 → Stage 資訊由 Cockpit 自己管理。
+2. **進度來源＝畫面按鈕**：「推進到下一 Stage」「標 Completed」「標 Failed」在畫面上按，Cockpit 新增自己的
+   寫入 API（HTTP）與狀態檔（重啟不掉）。這是 Cockpit 自己的狀態，對 HERDR 仍完全唯讀（ADR-0001 不變）。
+3. **結構來源＝TOML**：`cockpit.toml` 加 `[[project]]`，每個 project 列 stages（線性順序）、workstreams、
+   tasks（含所屬 workstream 與起始 stage）；按鈕只改進度、不改結構。
+4. **Binding＝TOML 穩定特徵為主，畫面可臨時改綁**：每條 workstream 寫 runtime id、workspace 標籤、再加
+   pane 標籤或 cwd 子路徑、可選 agent 種類，Cockpit 自動解析到當下的 pane（pane 換 id 也能重新對上；
+   對不到或對到多個時畫面顯示「未綁定／歧義」）；畫面可點選 pane 覆蓋，覆蓋存狀態檔、該 pane 消失即
+   失效回到自動解析。符合設計文件 §12「不綁 pane id」。
+5. **畫面＝每個 Project 一塊 Factory Floor 網格**：橫軸 Stage、縱軸 Workstream，Task 節點放在目前 Stage
+   的格子裡，顏色顯示 StageStatus，綁定的 agent 在動就亮；**不畫依賴箭頭**（模型保留 Dependency 欄位，
+   視覺留給之後）。
+6. **多個 Project 分區顯示**（上下排列），不做切換選單。
+
+我在討論後補的假設（propose 時可翻，翻了要改這裡）：
+
+- 一條 Workstream 只對到一個 runtime 的一個 workspace（一對一）；多對多留 Phase 2。
+- Worktree 不建模，靠 cwd 子路徑匹配就涵蓋。
+- 狀態檔放 `cockpit.toml` 旁（例如 `cockpit.state.json`，路徑可在 TOML 指定），啟動時讀、每次按鈕寫。
+- StageStatus 推導：Pending（上游 Stage 未完成）、Ready（上游完成、綁定 agent 未動）、Running（綁定 agent
+  working）、Blocked（綁定 agent blocked，或人工）、Failed／Completed 只來自按鈕；Runtime 層的 `done`／`idle`
+  不推任何 Domain 狀態（`CONTEXT.md` 禁用規則）。
+- `/api/state` 加頂層 `projects[]`（含 pipeline、workstreams、tasks 與各 task 解析出的 binding 結果），既有
+  欄位不動；`/ws` 照舊全量推送。
+- 設定檔驗證沿用 `deny_unknown_fields`，`[[project]]` 的錯誤以 `project.<id>.<欄位>` 識別。
+- Scenario C／D 的具體驗法（假 HERDR＋fixture、比對哪個 JSON 欄位）在 propose 的 design／tasks 補齊，設計
+  文件 §10.2 目前只有 1b 的 A／B／F。
+
 change 2 要直接沿用、不用重新推導的 1b 產出：
 
 - **驅動器介面**：`cockpit_core::runtime::AgentRuntime`（`snapshot()`／`subscribe() -> RuntimeEvents`）
@@ -218,7 +250,10 @@ change 2 要直接沿用、不用重新推導的 1b 產出：
 | Claude 在 feature 分支 commit | **已授權**（2026-09-14，逐 task 一個 commit）；1b 的 squash 併回 main 與 archive **已於 2026-09-15 授權並執行**（見第 1 節版控） |
 | 4.1／4.2／4.4 的使用者部分 | **待使用者**（第 2 節四件事）；使用者已決：維持未勾、不放寬標準、archive 照實帶警告；不擋 change 2 |
 | deferred minor（第 3 節清單） | **已決全部帶進 change 2 待辦**，不單獨開 change |
-| change 2 的啟動 | **已決**：先口頭討論範圍（2026-09-15 遠端），併回後再 `/opsx:propose` |
+| change 2 的啟動 | **已決**：範圍已於 2026-09-15 遠端口頭討論完（第 3 節六條結論＋假設），下一步直接 `/opsx:propose pipeline-projection` |
+| change 2 進度來源 | **已決用畫面按鈕**（否決「改設定檔」與「自動偵測」）：Cockpit 加自己的寫入 API 與狀態檔；對 HERDR 仍唯讀 |
+| change 2 Binding | **已決 TOML 穩定特徵為主、畫面可臨時改綁**（否決「畫面點選 pane 為主」，因 pane id 會變） |
+| change 2 畫面 | **已決 Stage×Workstream 網格、不畫依賴箭頭**；多 Project 分區顯示 |
 | spike 4 目視複驗 | **待使用者**（第 2 節第 1 項）；`CREATE_NO_WINDOW` 維持 |
 | spike 5(a) 重驗（需 `wsl.exe --shutdown`） | **已決不做**，沿用 9/13 實測 |
 | Codex review gate | **已開**；本段全程用路徑②（Bash 直接跑 `adversarial-review`）逐 task 審，額度沒有用盡 |
