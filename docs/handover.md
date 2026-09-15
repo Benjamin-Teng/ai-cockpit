@@ -1,28 +1,26 @@
 # 交接：下一段任務
 
-> **建立日期**：2026-09-15　|　**上一段做完的事**：change 1b `attach-herdr-runtimes` 在分支
-> `feat/attach-herdr-runtimes` 上以 SDD 完成 30 個 task 中的 27 個（第 1–3 組 24 個程式 task、4.3、
-> 4.5、4.6），三個 crate `cockpit-core`／`cockpit-herdr`／`cockpit` 全部建好並在真機（Windows HERDR
-> 0.9.0 ＋ WSL 0.8.2 測試 server）通過 Scenario A／B（WSL 端）／F 的自動化驗收；4.1、4.2、4.4 只剩
-> 使用者親自做的部分。
+> **建立日期**：2026-09-15　|　**上一段做完的事**：change 1b `attach-herdr-runtimes` 以 SDD 完成 30 個
+> task 中的 27 個（第 1–3 組 24 個程式 task、4.3、4.5、4.6），三個 crate `cockpit-core`／`cockpit-herdr`／
+> `cockpit` 全部建好並在真機（Windows HERDR 0.9.0 ＋ WSL 0.8.2 測試 server）通過 Scenario A／B（WSL 端）／F
+> 的自動化驗收，已 squash 併回 `main` 並 archive；4.1、4.2、4.4 只剩使用者親自做的部分。
 > **性質**：接手用文件，會過期，每段重寫。
 > 為什麼做看 `docs/cockpit-spec.md` 與設計文件 `docs/superpowers/specs/2026-09-13-cockpit-mvp-design.md`、
-> 怎麼做看 `~/.claude/CLAUDE.md`（本 repo 精簡版在 `AGENTS.md`）、待辦看
-> `openspec/changes/attach-herdr-runtimes/tasks.md`。
+> 怎麼做看 `~/.claude/CLAUDE.md`（本 repo 精簡版在 `AGENTS.md`）、1b 的 task 清單（含未勾三項）看
+> `openspec/changes/archive/2026-09-15-attach-herdr-runtimes/tasks.md`；change 2 的待辦要等 propose 產出。
 
 ## 0. 三十秒版本
 
-1. **先把分支收尾走完**（第 2 節）：最終全分支 Codex review 的結果與修正 → squash 併回 `main` →
-   `/opsx:archive attach-herdr-runtimes`（把 `.superpowers/sdd/tasks/progress.md` 複製成 archive 內的
-   `sdd-ledger.md` 再刪本機目錄，與 1a 相同）。併回 main **要使用者點頭**（handover 第 5 節的授權只到
-   分支上逐 task commit）。
+1. **分支已收尾**（2026-09-15，使用者遠端授權）：squash 併回 `main`（`2a4893b`）、分支已刪、change 已
+   archive 到 `openspec/changes/archive/2026-09-15-attach-herdr-runtimes/`（含去識別化的 `sdd-ledger.md`），
+   7 份 delta spec 已同步成 `openspec/specs/` 的主規格；本機 `.superpowers/sdd/` 已刪。
 2. **使用者親自做的四件事**（第 2 節有指令與判讀），做完把結果補進
-   `docs/research/2026-09-15/change-1b-acceptance.md` 對應小節並勾 tasks.md 的 4.1／4.2／4.4；不做也不
-   擋 change 2，但 4.4 的 Windows 端結論會一直是「無法判定」。
-3. 之後才是 change 2 `pipeline-projection` 的 propose（第 3 節）。沒有時效性任務。
-4. 環境：WSL 端 headless 測試 server 目前**在跑**（多輪 tab 開關後會累積補推，跑驗收腳本前先用第 1 節
-   指令重啟一次）；本機 `cockpit.toml`（gitignored）已指向兩側；`target/release/cockpit.exe` 對應
-   commit `d58ea18`（最終修正波後重建，三個驗收腳本在這版重跑皆 PASS）。
+   `docs/research/2026-09-15/change-1b-acceptance.md` 對應小節並勾 archive 內 tasks.md 的 4.1／4.2／4.4；
+   使用者已決不放寬標準、不擋 change 2，但 4.4 的 Windows 端結論在做完前會一直是「無法判定」。
+3. 下一步：change 2 `pipeline-projection`——先口頭討論範圍（第 3 節），再 `/opsx:propose`。沒有時效性任務。
+4. 環境：WSL 端 headless 測試 server **已停**（下次真機測試用第 1 節指令啟動；多輪 tab 開關後會累積補推，
+   跑驗收腳本前重啟一次）；本機 `cockpit.toml`（gitignored）已指向兩側；`target/release/cockpit.exe` 對應
+   commit `d58ea18`（分支上最後的程式碼版本，與 main 的 `2a4893b` 內容相同；三個驗收腳本在這版重跑皆 PASS）。
 
 ## 1. 現在的狀態
 
@@ -61,20 +59,23 @@
     - Scenario F（會停／重啟 WSL 測試 server）：`HERDR_CLIENT_TEST_ALLOW_WSL_WRITES=1 COCKPIT_ACCEPT_STOP_WSL_DISTRO=Ubuntu-24.04 uv run --no-project python docs/research/2026-09-15/reconnect-real-check.py`
   - WSL 端測試 server 啟動：`wsl.exe -d Ubuntu-24.04 -e bash -lc "setsid -f ~/.local/bin/herdr server >/tmp/herdr-server.log 2>&1 </dev/null"`；停：`wsl.exe -d Ubuntu-24.04 -e bash -lc "~/.local/bin/herdr server stop"`（**只能停 WSL 端**）
   - Windows 端事件擷取（唯讀）：`cargo run -p herdr-client --example capture_events -- --seconds 20`
-  - OpenSpec：`openspec status --change attach-herdr-runtimes`、`openspec validate attach-herdr-runtimes`
+  - OpenSpec：`openspec list`（目前沒有進行中的 change）、`openspec validate --all`（11 份主規格；SHALL/MUST
+    警告不算 ERROR）；change 2 propose 後改用 `openspec status --change pipeline-projection`
   - Codex scoped review：`node ~/.claude/plugins/cache/openai-codex/codex/1.0.6/scripts/codex-companion.mjs adversarial-review "<focus>"`（沒有 `--help`；focus 字串不要放反引號，bash 會當命令替換）
 - 測試與 gate：以當場輸出為準。最終修正波後（`d58ea18`）`cargo test --workspace` 為 327 passed／0 failed／
   10 ignored（真機 ignored）；fmt／clippy `-D warnings`／markdownlint（`Linting: 37 files`）皆 0；
-  `openspec validate attach-herdr-runtimes` 無 ERROR；
+  `openspec validate --all` 11 passed／0 failed（只有 SHALL/MUST 警告）；
   去識別化 grep（tasks.md 4.6 那條：使用者名稱、email、家目錄；對 `docs/research/2026-09-15/`、
   `cockpit/tests/fixtures/`、`cockpit.example.toml`）為空。
-- 版控：分支 `feat/attach-herdr-runtimes` 領先 `main`（`a575842`）59 個 commit（每個 task 一個
-  加上文件與修正），沒有 remote。SDD ledger 在 `.superpowers/sdd/tasks/progress.md`（git-excluded，含
-  每輪 review、fix round、全部 `Ruling:`、deferred minor），archive 時複製進 archive 目錄。
+- 版控：`main` 在 1a 收尾的 `a575842` 之後多了 `2a4893b`（squash 併入 1b 分支的 66 個 commit）與
+  archive commit（見 `git log`）；feature 分支已刪；沒有 remote。SDD ledger（每輪 review、fix round、
+  全部 `Ruling:`、deferred minor、使用者決定）永久存於
+  `openspec/changes/archive/2026-09-15-attach-herdr-runtimes/sdd-ledger.md`。
 
-## 2. 立刻要做：change 1b 收尾（分支併回與使用者驗收）
+## 2. 立刻要做：change 1b 的使用者驗收（分支收尾已完成）
 
-分支收尾（控制端做，依 SDD 收尾流程與 `~/.claude/guides/git-branch-workflow.md`）：
+分支收尾已於 2026-09-15 做完（squash 併回、archive、規格同步、分支刪除）；下面第 1–3 點留作紀錄，
+供下一次 change 收尾照抄：
 
 1. 最終全分支 Codex review（對 `34dd6bc`）已做：無 Critical；Important 三條——(F1) `HerdrRuntime::subscribe()`
    最後無條件寫回初始 S handle，可能蓋掉 200 ms 去抖動內已提交的新一代 S handle（兩條 S 同時送事件）；
@@ -87,12 +88,12 @@
    反覆接受後立刻斷線會以 1 秒重連）、`JSON.parse` 沒包 try/catch（只吃自家 server 的合法 JSON）、
    driver 逾時逐一計算最壞 10 s×N、逾時後的 `await` 沒有上限（被 abort 的 task 若卡在阻塞 `Drop` 會
    一直等，目前驅動器沒有這種程式碼）。
-2. 使用者同意後：`git checkout main && git merge --squash feat/attach-herdr-runtimes && git commit`
-   （訊息列 1b 的 7 個 capability 與 crate；trailer 統一），`git branch -D feat/attach-herdr-runtimes`。
-3. `/opsx:archive attach-herdr-runtimes`：ledger 已去識別化複製到
-   `openspec/changes/attach-herdr-runtimes/sdd-ledger.md`（archive 會一起搬；若 archive 前 ledger 又有
-   新增，重複製一次），sync 7 份 delta spec 到 `openspec/specs/`，再刪本機 `.superpowers/sdd/`。archive 前
-   tasks.md 仍有 4.1／4.2／4.4 未勾（使用者部分），archive 會警告，照實確認。
+2. 已做：`git switch main && git merge --squash feat/attach-herdr-runtimes && git commit -F <msg>`
+   （`2a4893b`），`git diff main <branch> --stat` 為空後 `git branch -D`。
+3. 已做：archive——ledger 去識別化複製成 `sdd-ledger.md`；7 份 delta spec 都是純 ADDED，同步只需把標題
+   `# <cap>（delta）` 改 `# <cap> Specification`、`## ADDED Requirements` 改 `## Requirements` 後放到
+   `openspec/specs/<cap>/spec.md`；change 目錄 `git mv` 到 `openspec/changes/archive/2026-09-15-attach-herdr-runtimes/`；
+   刪本機 `.superpowers/sdd/`。tasks.md 內 4.1／4.2／4.4 仍未勾（使用者已決照實保留）。
 
 使用者親自做的四件事（判讀寫在括號內；結果補進 acceptance.md 對應小節）：
 
@@ -248,4 +249,5 @@ change 2 `pipeline-projection`（domain 層：pipeline TOML 設定、`RuntimeBin
 | 4 | 2026-09-14 | change 1a 全部完成：最終 review 修正波、Codex 額度用盡改替代審查、deferred minor 與待決事項 |
 | 5 | 2026-09-14 | change 1a 併回 main 並 archive；下一步改為 1b propose；使用者五項決定的結果（commit 授權、只關 WSL server、spike 4 留 1b、開 review gate、全套收尾） |
 | 6 | 2026-09-14 | change 1b propose 完成並經 fresh reviewer 修正、設計文件 §2.3 補欄位、分支 `feat/attach-herdr-runtimes` 建立；下一步改為 1b apply（SDD） |
-| 7 | 2026-09-15 | change 1b apply：30 task 完成 27（三個 crate、真機 Scenario A／B／F 自動化證據、設計文件回寫）；Codex 逐 task review 全部通過；最終全分支 review 的兩條 Important（初始 S handle 覆蓋、shutdown 不等 task）已修並經兩輪 scoped re-review approve；4.1／4.2／4.4 剩使用者部分；下一步為分支併回 main／archive（待使用者）與 change 2 propose；新增本段 15 條坑與 deferred minor 清單 |
+| 7 | 2026-09-15 | change 1b apply：30 task 完成 27（三個 crate、真機 Scenario A／B／F 自動化證據、設計文件回寫）；Codex 逐 task review 全部通過；最終全分支 review 的兩條 Important（初始 S handle 覆蓋、shutdown 不等 task）已修並經兩輪 scoped re-review approve；4.1／4.2／4.4 剩使用者部分；新增本段 15 條坑與 deferred minor 清單 |
+| 8 | 2026-09-15 | 使用者遠端四項決定後：1b squash 併回 main（`2a4893b`）、archive 並同步 7 份主規格、分支刪除、WSL 測試 server 停；下一步改為 change 2 範圍討論與 propose |
