@@ -105,8 +105,10 @@ Cargo.toml version 0.9.0；此 commit 可能比本機安裝的 preview 新數日
 
 **L 訂閱建立瞬間的補推**（change 1b task 4.4 查證，2026-09-15）：WSL 0.8.2 會在 authoritative
 snapshot 前推送少量剛發生過的事件（實測 2 筆），已由 §4.2「5 之前從 L／S 收到的事件一律丟棄」
-的規則吸收；Windows 0.9.0 在無 tab 增刪活動的 20 秒擷取中未見補推，是否會補推仍無法判定，需在
-剛開關過 tab 後再擷取才能判斷。
+的規則吸收；Windows 0.9.0 **不補推**——使用者在 Windows 端剛開關兩三個 tab 之後幾秒內建立 L 訂閱並
+擷取 20 秒，只收到既有 Sidebar pane 的 `pane_updated`，沒有任何指向已關 tab／pane 的事件（證據見
+`docs/research/2026-09-15/change-1b-acceptance.md` task 4.4 節第 3 點）。丟棄規則對兩側都保留，
+不因 Windows 端不補推而簡化。
 
 **Payload 完整性**（`src/api/schema/events.rs` 的 `EventData`）：
 

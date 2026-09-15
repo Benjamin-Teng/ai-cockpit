@@ -228,7 +228,7 @@ HERDR 回 `server is shutting down`），重連
   期間的原因含 `herdr-client` 的 `ServerNotRunning` 描述並顯示重試秒數；重啟後回到 `connected`，
   內容與重新取得的 snapshot 一致；Windows 端全程不受影響；實際原因字串與退避序列數字記入
   acceptance 紀錄。
-- [ ] 4.4 L 訂閱補推舊事件查證（`docs/handover.md` §3 待查證項）：在 Windows 端有近期 tab
+- [x] 4.4 L 訂閱補推舊事件查證（`docs/handover.md` §3 待查證項）：在 Windows 端有近期 tab
   建立／關閉活動後（使用者日常操作即可）跑 `cargo run -p herdr-client --example capture_events -- --seconds 20`，
   檢查 L 的前幾行是否含 snapshot 中不存在的 tab／pane 事件；另看 cockpit 以 `RUST_LOG=debug`
   啟動時的「snapshot 前丟棄事件數」（1.7 的 debug 日誌）。驗收：結論（有／無／無法判定）與證據

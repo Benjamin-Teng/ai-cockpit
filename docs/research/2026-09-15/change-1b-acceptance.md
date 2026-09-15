@@ -307,14 +307,14 @@ RESULT: PASS
 
 ## L 訂閱補推舊事件查證（task 4.4，`docs/handover.md` §3 待查證項）
 
-兩個觀察點：
+三個觀察點（第 3 點是定案擷取）：
 
 1. `cargo run -p herdr-client --example capture_events -- --seconds 20`（Windows 端，2026-09-15 13:57）：
    L 收到 16 筆，**全部**是既有 pane（`wJ:p2`、`wM:p2`，sidebar 的 token 更新）的 `pane_updated`；S 收到
    0 筆。當下 snapshot 有 2 個 tab、4 個 pane，沒有任何一筆事件指向 snapshot 中不存在的 tab／pane。
    但這 20 秒前後 Windows 端**沒有** tab 建立／關閉活動（spike 3 觀察到的補推是針對剛建立又關閉的 tab），
    所以 Windows 0.9.0 是否會補推舊 tab 事件**無法判定**；要在使用者剛開關過幾個 tab 之後再跑一次
-   `capture_events` 才能定案。
+   `capture_events` 才能定案（已於第 3 點定案）。
 2. `RUST_LOG=debug cockpit.exe`（同時連兩側）啟動 8 秒的驅動器日誌：
 
    ```text
@@ -327,13 +327,21 @@ RESULT: PASS
    （task 4.2 已驗關 tab 後投影在 1.9 秒內與重新取得的 snapshot 逐欄位一致、4.3 驗重連後與 snapshot 逐欄位
    一致）。
 
-結論：**WSL 0.8.2 有補推、已被丟棄規則吸收；Windows 0.9.0 無法判定**（缺少觸發條件），設計文件 §2.3
-的加註已寫成這個結論（task 4.5，commit `5bfcb11`）。無需 `/opsx:update`。
+3. **定案擷取**（Windows 端，2026-09-15 22:21，同一指令；使用者親自在 Windows 端開兩三個 tab、關掉後
+   幾秒內執行，滿足任務要求的「近期 tab 建立／關閉活動後」前提）：L 收到 14 筆，**全部**是既有兩個
+   Sidebar pane（`wJ:p2`、`wM:p2`，各在 `wJ:t1`、`wM:t1` 底下）的 `pane_updated`，內容只是 sidebar token
+   每 5 秒的例行刷新；S 收到 0 筆（期間沒有 agent 狀態變化，正常）。擷取當下 `herdr api snapshot` 有
+   2 個 workspace、2 個 tab、5 個 pane；L 的前幾行與全程 20 秒都沒有任何 tab／pane 的建立或移除事件，
+   也沒有任何一筆指向 snapshot 中不存在的 tab／pane。原始檔在 `target/capture/`（gitignored，含本機路徑，
+   不進 repo）。Windows 端 HERDR 版本 0.9.0-preview（protocol 22）。
 
-**task 4.4 尚未勾選**：任務要求的前提是「Windows 端有近期 tab 建立／關閉活動後」再擷取，這次擷取時沒有
-這個活動，「無法判定」不是在指定前提下得到的結果（Codex review 指出）。要定案得請使用者在 Windows 端
-開關幾個 tab 之後立刻再跑一次 `cargo run -p herdr-client --example capture_events -- --seconds 20`，看
-L 的前幾行有沒有指向已關 tab／pane 的事件；有的話再開 cockpit 確認畫面沒有幽靈 pane。
+結論：**WSL 0.8.2 有補推、已被丟棄規則吸收；Windows 0.9.0 不補推**（第 3 點在指定前提下擷取，訂閱建立
+瞬間與其後 20 秒都沒有指向已關 tab／pane 的事件）。設計文件 §2.3 的加註已由「無法判定」改成這個結論
+（本次回寫）；因為沒有補推，不需要再開 cockpit 確認幽靈 pane。丟棄規則（設計 §4.2）對兩側都保留，
+不因 Windows 端不補推而簡化。無需 `/opsx:update`。
+
+**task 4.4 已勾選**（2026-09-15）：第 1 點的擷取因缺前提被 Codex review 指為不能定案；第 3 點由使用者
+親自補齊前提後定案，結論與證據如上。
 
 Scenario B 的多輪執行補充了 0.8.2 補推的精確模式（見上節）：關閉 tab N 時補推 tab N-1 的
 `tab_upserted`＋`tab_removed`，以及更早幾輪已關 tab／pane 的零星事件；這些都指向 snapshot 中不存在的
