@@ -1,0 +1,24 @@
+[package]
+name = "cockpit"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1.0.104"
+axum = { version = "0.8.9", features = ["ws"] }
+cockpit-core = { version = "0.1.0", path = "../cockpit-core" }
+cockpit-herdr = { version = "0.1.0", path = "../cockpit-herdr" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time"] }
+toml = "1.1.6"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]
+futures-util = { version = "0.3.34", features = ["sink"] }
+http-body-util = "0.1.5"
+tokio-tungstenite = "0.30.0"
+tower = { version = "0.5.3", features = ["util"] }

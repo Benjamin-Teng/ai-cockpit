@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Agent Cockpit</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="stylesheet" href="/app/style.css" />
+  </head>
+  <body>
+    <!-- app 容器：初始內容是靜態的頂列（產品名稱、通道狀態、version 占位），在第一則
+         /ws 訊息抵達前就先顯示；收到第一份投影後，render.js 會用 replaceChildren 整個換掉
+         （含這個頂列），之後每次都整頁重畫。 -->
+    <div id="app">
+      <div id="topbar" class="topbar">
+        <span id="app-name" class="app-name">AI Agent Cockpit</span>
+        <span id="channel-status" class="channel-status channel-connecting">connecting</span>
+        <span id="version" class="version"></span>
+      </div>
+    </div>
+    <!-- 載入順序：render.js 先，channel.js 後——這樣 channel.js 收到第一則訊息時，
+         window.onState／window.onChannel 一定已經綁好，不需要暫存訊息等 render.js 補齊。 -->
+    <script src="/app/render.js"></script>
+    <script src="/app/channel.js"></script>
+  </body>
+</html>

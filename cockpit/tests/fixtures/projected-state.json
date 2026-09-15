@@ -1,0 +1,114 @@
+{
+  "version": 7,
+  "generated_at": "2026-09-15T02:00:00Z",
+  "runtimes": [
+    {
+      "id": "win",
+      "kind": "herdr",
+      "endpoint": "named-pipe cockpit-win",
+      "connection": {
+        "state": "connected",
+        "since": "2026-09-15T01:50:00Z",
+        "server_version": "0.9.0-preview.3",
+        "protocol": 22,
+        "last_snapshot_at": "2026-09-15T01:59:00Z",
+        "protocol_warning": null
+      },
+      "focused": {
+        "workspace_id": "wJ",
+        "tab_id": "wJ:t1",
+        "pane_id": "wJ:p1"
+      },
+      "workspaces": [
+        {
+          "id": "wJ",
+          "label": "ai-cockpit",
+          "number": 1,
+          "agent_status": "working",
+          "focused": true,
+          "tabs": [
+            {
+              "id": "wJ:t1",
+              "number": 1,
+              "agent_status": "working",
+              "focused": true,
+              "panes": [
+                {
+                  "id": "wJ:p1",
+                  "agent": "claude",
+                  "agent_status": "working",
+                  "title": "claude - working",
+                  "cwd": "D:\\projects\\<user>\\ai-cockpit",
+                  "label": null,
+                  "focused": true,
+                  "exited": false,
+                  "updated_at": "2026-09-15T01:59:30Z"
+                },
+                {
+                  "id": "wJ:p2",
+                  "agent": null,
+                  "agent_status": "done",
+                  "title": "shell",
+                  "cwd": "D:\\projects\\<user>\\ai-cockpit",
+                  "label": null,
+                  "focused": false,
+                  "exited": true,
+                  "updated_at": "2026-09-15T01:58:00Z"
+                },
+                {
+                  "id": "wJ:p3",
+                  "agent": "codex",
+                  "agent_status": "unknown",
+                  "title": "codex - unclear",
+                  "cwd": "D:\\projects\\<user>\\ai-cockpit\\sub",
+                  "label": "third pane",
+                  "focused": false,
+                  "exited": false,
+                  "updated_at": "2026-09-15T01:57:00Z"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "wsl",
+      "kind": "herdr",
+      "endpoint": "tcp://127.0.0.1:4102",
+      "connection": {
+        "state": "disconnected",
+        "reason": "WSL 發行版 Ubuntu-24.04 未啟動",
+        "retry_in_secs": 60
+      },
+      "focused": {
+        "workspace_id": null,
+        "tab_id": null,
+        "pane_id": null
+      },
+      "workspaces": []
+    }
+  ],
+  "recent_events": [
+    {
+      "at": "2026-09-15T01:59:30Z",
+      "runtime": "win",
+      "kind": "pane.agent_status_changed",
+      "pane_id": "wJ:p1",
+      "detail": "working"
+    },
+    {
+      "at": "2026-09-15T01:58:00Z",
+      "runtime": "win",
+      "kind": "pane.exited",
+      "pane_id": "wJ:p2",
+      "detail": "exit code 0"
+    },
+    {
+      "at": "2026-09-15T01:50:00Z",
+      "runtime": "wsl",
+      "kind": "drift",
+      "detail": "WSL 發行版 Ubuntu-24.04 未啟動"
+    }
+  ]
+}

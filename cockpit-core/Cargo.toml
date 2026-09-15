@@ -1,0 +1,20 @@
+[package]
+name = "cockpit-core"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+async-trait = "0.1.92"
+chrono = "0.4.45"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["sync", "time", "rt", "macros"] }
+tracing = "0.1.44"
+
+# Task 1.6：`tokio::time::pause`／`advance`／`#[tokio::test(start_paused = true)]` 都在
+# tokio 的 `test-util` feature 之後（一般 `[dependencies]` 沒有這個 feature，故意不讓正式
+# 建置帶到）。只加在 `[dev-dependencies]`，不影響正式相依集合。
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["test-util"] }

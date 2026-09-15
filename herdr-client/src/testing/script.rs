@@ -26,6 +26,8 @@ pub enum Step {
     /// `UnixStream` 也沒公開 `SO_LINGER`），降級為與 `Close` 相同的乾淨 EOF——這是平台限制，
     /// 不是本 crate 的疏漏。
     Abort,
-    /// 保持連線開著，直到整個 `FakeHerdr` 被 drop 為止。
+    /// 保持連線開著，直到對端關閉連線、或整個 `FakeHerdr` 被 drop 為止（後者靠
+    /// `abort_all()` 取消 handler）。對端關閉時 handler 會結束，這條連線在
+    /// `FakeHerdr::closed_connections` 變成 `true`。
     Hold,
 }

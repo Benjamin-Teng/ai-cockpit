@@ -26,29 +26,58 @@ use crate::connector::UnixSocketConnector;
 use super::config::FakeHerdrConfig;
 use super::connection::handle_connection;
 
-/// 每條連線收到的行，依連線建立順序排列（`FakeHerdr::received`）。
+/// 一條連線的觀察紀錄：收到的行，以及假 HERDR 這端是否已經關閉這條連線。
+#[derive(Default, Clone)]
+struct ConnectionRecord {
+    lines: Vec<String>,
+    closed: bool,
+}
+
+/// 每條連線的觀察紀錄，依連線建立順序排列（`FakeHerdr::received`／
+/// `FakeHerdr::closed_connections` 用同一組索引）。
 #[derive(Default)]
 pub(super) struct SharedState {
-    received: Mutex<Vec<Vec<String>>>,
+    connections: Mutex<Vec<ConnectionRecord>>,
 }
 
 impl SharedState {
     fn new_connection(&self) -> usize {
-        let mut guard = self.received.lock().expect("received mutex poisoned");
-        guard.push(Vec::new());
+        let mut guard = self.connections.lock().expect("connections mutex poisoned");
+        guard.push(ConnectionRecord::default());
         guard.len() - 1
     }
 
     pub(super) fn record_line(&self, index: usize, line: String) {
-        let mut guard = self.received.lock().expect("received mutex poisoned");
-        guard[index].push(line);
+        let mut guard = self.connections.lock().expect("connections mutex poisoned");
+        guard[index].lines.push(line);
     }
 
-    fn snapshot(&self) -> Vec<Vec<String>> {
-        self.received
+    /// 標記第 `index` 條連線已經在假 HERDR 這端結束（handler 正常跑完、或被
+    /// `FakeHerdr::drop` 的 `abort_all()` 取消）。由 `handle_connection` 的 drop guard 呼叫，
+    /// 所以兩種結束方式都會走到這裡。
+    pub(super) fn mark_closed(&self, index: usize) {
+        let mut guard = self.connections.lock().expect("connections mutex poisoned");
+        if let Some(record) = guard.get_mut(index) {
+            record.closed = true;
+        }
+    }
+
+    fn received(&self) -> Vec<Vec<String>> {
+        self.connections
             .lock()
-            .expect("received mutex poisoned")
-            .clone()
+            .expect("connections mutex poisoned")
+            .iter()
+            .map(|record| record.lines.clone())
+            .collect()
+    }
+
+    fn closed(&self) -> Vec<bool> {
+        self.connections
+            .lock()
+            .expect("connections mutex poisoned")
+            .iter()
+            .map(|record| record.closed)
+            .collect()
     }
 }
 
@@ -152,11 +181,23 @@ impl FakeHerdr {
         &self.endpoint_path
     }
 
-    /// 每條連線收到的行，依連線建立順序排列；每個內層 `Vec` 目前只會有一行（假 HERDR 只讀
-    /// 第一行決定 method，之後不再讀取）。
+    /// 每條連線收到的行，依連線建立順序排列；每個內層 `Vec` 目前只會有一行（假 HERDR 只把
+    /// 第一行——決定 method 的那一行——記錄下來，之後讀到的內容不記錄）。
     #[must_use]
     pub fn received(&self) -> Vec<Vec<String>> {
-        self.shared.snapshot()
+        self.shared.received()
+    }
+
+    /// 每條連線在假 HERDR 這端是否已經關閉，索引與 [`FakeHerdr::received`] 對齊。
+    ///
+    /// `true` 代表這條連線的 handler 已經結束（回完 request 就收工、腳本跑到
+    /// `Step::Close`／`Step::Abort`、對端把連線關掉讓 `Step::Hold` 讀到 EOF，或整個
+    /// `FakeHerdr` 被 drop 時被 `abort_all()` 取消），底層連線隨之釋放。供呼叫端驗證
+    /// 「失敗時已開的連線要關閉」「釋放事件流時連線要關閉」這類行為；對端關閉是非同步觀察到
+    /// 的，呼叫端通常要輪詢加逾時，不能假設 drop 之後立刻為 `true`。
+    #[must_use]
+    pub fn closed_connections(&self) -> Vec<bool> {
+        self.shared.closed()
     }
 }
 

@@ -59,12 +59,28 @@ struct IncomingRequest {
     params: serde_json::Value,
 }
 
+/// 這條連線結束時（handler 正常返回，或被 `FakeHerdr::drop` 的 `abort_all()` 取消而讓整個
+/// future 被 drop）在 `SharedState` 記下「已關閉」，供 `FakeHerdr::closed_connections` 觀察。
+///
+/// 用 drop guard 而不是在函式結尾寫一行：被 abort 的 task 不會跑到函式結尾，只會被 drop，
+/// 兩種結束方式都要能標記到。
+struct CloseGuard {
+    shared: Arc<SharedState>,
+    conn_index: usize,
+}
+
+impl Drop for CloseGuard {
+    fn drop(&mut self) {
+        self.shared.mark_closed(self.conn_index);
+    }
+}
+
 /// 處理一條連線：讀第一行決定 method，記錄下來，再依 method 分派。
 ///
 /// fix round 1 finding 2：不再接收協作式的 shutdown 訊號——`FakeHerdr::drop` 改成直接
 /// `abort_all()` 這個 task（透過 listener 收集的 `JoinSet`），不論卡在讀第一行、
-/// `Step::Delay` 的 sleep、還是 `Step::Hold` 的 `pending().await`，都會在下一個排程點被
-/// 強制取消並 drop 掉底層連線，不需要這個函式自己配合檢查訊號。
+/// `Step::Delay` 的 sleep、還是 `Step::Hold` 的等待，都會在下一個排程點被強制取消並 drop 掉
+/// 底層連線，不需要這個函式自己配合檢查訊號。
 pub(super) async fn handle_connection<T>(
     mut io: BufReader<T>,
     config: Arc<FakeHerdrConfig>,
@@ -73,6 +89,11 @@ pub(super) async fn handle_connection<T>(
 ) where
     T: AsyncRead + AsyncWrite + Unpin + BestEffortAbort + Send + 'static,
 {
+    let _close_guard = CloseGuard {
+        shared: shared.clone(),
+        conn_index,
+    };
+
     let Ok(Some(first_line)) = read_one_line(&mut io).await else {
         return;
     };
@@ -184,9 +205,16 @@ async fn handle_subscribe<T>(
                 return;
             }
             Step::Hold => {
-                // fix round 1 finding 2：不再自己等待協作式的 shutdown 訊號，單純掛著；
+                // fix round 1 finding 2：不再自己等待協作式的 shutdown 訊號；
                 // `FakeHerdr::drop` 的 `abort_all()` 會強制終止這個 task。
-                std::future::pending::<()>().await;
+                //
+                // 這裡等的是「對端把連線關掉」而不是 `std::future::pending()`：訂閱連線上
+                // client 送完 `events.subscribe` 之後不會再送任何一行，所以這個讀取迴圈實際
+                // 上就是掛著等對端關閉——差別在於對端關閉時 handler 會真的結束，
+                // `CloseGuard` 才能把這條連線標記成已關閉（`FakeHerdr::closed_connections`）。
+                // 對端一直開著時行為與過去相同：永遠不返回，直到 task 被 abort。
+                while let Ok(Some(_)) = read_one_line(io).await {}
+                return;
             }
         }
     }

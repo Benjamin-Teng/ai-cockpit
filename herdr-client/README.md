@@ -238,16 +238,22 @@ let client = Client::new(Arc::from(fake.connector()));
 let result = client.request(SessionSnapshotRequest {}).await?;
 ```
 
-`FakeHerdrConfig` 用 builder 風格組裝：`with_method_response`／`with_snapshot_result`／
-`with_snapshot_fixture_line`（直接吃 `tests/fixtures/snapshot-p22.json` 這類整行 fixture，取
-其 `result` 欄位）、`with_subscribe_script`（不分訂閱內容一律重播同一組 `Step`）／
-`with_subscribe_rule`（依 `SubscribeMatcher` 讓不同連線依訂閱內容收到不同腳本）、
-`with_failing_probe_pane_ids`（design D12：讓指定 `pane_id` 的訂閱探測失敗，回 `error`）。
+`FakeHerdrConfig` 用 builder 風格組裝：`with_method_response`（單一回應，每次呼叫都回同一個）／
+`with_method_responses`（依呼叫序回應：第 n 次收到該 method 的 request 回第 n 筆，用完最後一筆
+後持續重複，跨連線累積計數；用於 Drift 重拿 `session.snapshot` 要回不同內容的測試——對同一個
+method，這兩個 builder 後呼叫者勝出）／`with_snapshot_result`／`with_snapshot_fixture_line`
+（直接吃 `tests/fixtures/snapshot-p22.json` 這類整行 fixture，取其 `result` 欄位）、
+`with_subscribe_script`（不分訂閱內容一律重播同一組 `Step`）／`with_subscribe_rule`（依
+`SubscribeMatcher` 讓不同連線依訂閱內容收到不同腳本）、`with_failing_probe_pane_ids`
+（design D12：讓指定 `pane_id` 的訂閱探測失敗，回 `error`）。
 `Step` 描述一條 `events.subscribe` 連線在 `subscription_started` 之後依序執行的步驟：
 `Event`（推一行合法事件）／`Malformed`（推一行壞資料）／`Delay`／`Close`（乾淨關閉）／
-`Abort`（非乾淨中斷，平台行為不同見 `src/testing/script.rs`）／`Hold`（掛著直到
-`FakeHerdr` 被 drop）。`fake.received()` 回傳每條連線收到的行，`fake.endpoint_path()` 回傳
-端點路徑，`fake.connector()` 回傳指向這個假端點、可直接交給 `Client::new` 的 `Connector`。
+`Abort`（非乾淨中斷，平台行為不同見 `src/testing/script.rs`）／`Hold`（掛著直到對端關閉
+連線、或 `FakeHerdr` 被 drop）。`fake.received()` 回傳每條連線收到的行，
+`fake.closed_connections()` 回傳每條連線在假 HERDR 這端是否已關閉（索引與 `received()`
+對齊，供「失敗時已開的連線要關閉」「釋放事件流時連線要關閉」這類驗證用；對端關閉是非同步
+觀察到的，要輪詢加逾時），`fake.endpoint_path()` 回傳端點路徑，`fake.connector()` 回傳指向
+這個假端點、可直接交給 `Client::new` 的 `Connector`。
 
 ## 真機測試
 

@@ -1,0 +1,307 @@
+/* style.css：深色配色，沿用 docs/cockpit-dashboard-concept.png 的用色精神（設計文件
+   §8.3；本檔不重做那張圖的版面）。整頁沒有任何可點的互動——沒有按鈕、沒有 cursor:
+   pointer、沒有 hover 態要不要點的暗示。 */
+
+:root {
+  --bg: #0f1115;
+  --bg-raised: #161a21;
+  --bg-inset: #1c212b;
+  --text: #e6e6e6;
+  --text-dim: #9aa4b2;
+  --border: #2a2f3a;
+
+  --status-working: #3fb950;
+  --status-blocked: #d29922;
+  --status-done: #58a6ff;
+  --status-idle: #8b949e;
+  --status-unknown: #484f58;
+
+  --conn-connecting: #d29922;
+  --conn-connected: #3fb950;
+  --conn-disconnected: #f85149;
+
+  --focused-tint: rgba(230, 230, 230, 0.06);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    -apple-system, "Segoe UI", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+  font-size: 14px;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+}
+
+/* 頂列：產品名稱、通道狀態、version。 */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.app-name {
+  font-weight: 600;
+  font-size: 16px;
+}
+
+.channel-status {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.channel-connecting {
+  background: rgba(210, 153, 34, 0.18);
+  color: var(--conn-connecting);
+}
+
+.channel-connected {
+  background: rgba(63, 185, 80, 0.18);
+  color: var(--conn-connected);
+}
+
+.channel-disconnected {
+  background: rgba(248, 81, 73, 0.18);
+  color: var(--conn-disconnected);
+}
+
+.version {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Runtime 卡片。 */
+.runtime-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.runtime-card {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.runtime-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.runtime-id {
+  font-weight: 600;
+}
+
+.runtime-endpoint {
+  color: var(--text-dim);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.connection {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border-left: 3px solid transparent;
+}
+
+.conn-connecting {
+  border-left-color: var(--conn-connecting);
+}
+
+.conn-connected {
+  border-left-color: var(--conn-connected);
+}
+
+.conn-disconnected {
+  border-left-color: var(--conn-disconnected);
+}
+
+.connection-state {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+
+.protocol-warning {
+  color: var(--status-blocked);
+}
+
+/* Workspace／tab 分組。 */
+.workspace {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+  margin-top: 4px;
+}
+
+.workspace.focused,
+.tab.focused,
+.pane-row.focused {
+  background: var(--focused-tint);
+}
+
+.workspace-header,
+.tab-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 4px;
+}
+
+.workspace-label {
+  font-weight: 600;
+}
+
+.workspace-number,
+.tab-number {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.tab {
+  margin-top: 6px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+}
+
+/* Pane 一列：id、agent、狀態色塊、標題、cwd。 */
+.pane-row {
+  display: grid;
+  grid-template-columns: minmax(80px, auto) minmax(60px, auto) auto 1fr minmax(120px, auto);
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+
+.pane-agent {
+  color: var(--text-dim);
+}
+
+.pane-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-cwd {
+  color: var(--text-dim);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-row.exited .pane-id,
+.pane-row.exited .pane-title {
+  text-decoration: line-through;
+}
+
+/* 狀態色塊：working 綠、blocked 琥珀、done 藍、idle 灰、unknown（含任何未知字串）暗灰。 */
+.status {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: #0f1115;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.status-working {
+  background: var(--status-working);
+}
+
+.status-blocked {
+  background: var(--status-blocked);
+}
+
+.status-done {
+  background: var(--status-done);
+}
+
+.status-idle {
+  background: var(--status-idle);
+  color: #0f1115;
+}
+
+.status-unknown {
+  background: var(--status-unknown);
+  color: var(--text);
+}
+
+/* 頁尾：最近事件。 */
+.recent-events {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 16px;
+}
+
+.recent-events-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.recent-events-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.event-row {
+  display: grid;
+  grid-template-columns: minmax(140px, auto) minmax(60px, auto) minmax(140px, auto) minmax(80px, auto) 1fr;
+  gap: 10px;
+  padding: 3px 4px;
+  border-radius: 4px;
+  font-size: 12px;
+  background: var(--bg-inset);
+}
+
+.event-at,
+.event-runtime {
+  color: var(--text-dim);
+}

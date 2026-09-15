@@ -1,0 +1,18 @@
+[package]
+name = "cockpit-herdr"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+async-trait = "0.1.92"
+cockpit-core = { version = "0.1.0", path = "../cockpit-core" }
+herdr-client = { version = "0.1.0", path = "../herdr-client" }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["sync", "time", "rt", "macros", "process"] }
+tracing = "0.1.44"
+
+[dev-dependencies]
+herdr-client = { path = "../herdr-client", features = ["test-support"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread"] }

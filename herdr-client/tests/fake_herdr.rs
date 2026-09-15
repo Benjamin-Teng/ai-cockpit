@@ -239,6 +239,94 @@ async fn generic_request_close_before_reply_is_configurable() {
 }
 
 // ---------------------------------------------------------------------------
+// Task 2.4：`with_method_responses` 依呼叫序回應、最後一筆重複（design D14）。
+// ---------------------------------------------------------------------------
+
+/// 取一個回應 `result` 值裡的 `snapshot.version`，作為可辨識、能區分 A／B 的欄位。
+fn snapshot_version_of(result: &serde_json::Value) -> String {
+    result
+        .get("snapshot")
+        .and_then(|s| s.get("version"))
+        .and_then(|v| v.as_str())
+        .expect("result 應有 snapshot.version")
+        .to_string()
+}
+
+#[tokio::test]
+async fn method_responses_are_served_in_order_then_repeat_last() {
+    let result_a = snapshot_result_fixture(); // snapshot-p22.json
+    let fixture_b = load_json("snapshot-p20.json");
+    let result_b = fixture_b
+        .get("result")
+        .cloned()
+        .expect("snapshot-p20.json 應有 result 欄位");
+
+    let version_a = snapshot_version_of(&result_a);
+    let version_b = snapshot_version_of(&result_b);
+    assert_ne!(
+        version_a, version_b,
+        "測試前提：兩筆 fixture 的 version 應不同"
+    );
+
+    let config = FakeHerdrConfig::new().with_method_responses(
+        "session.snapshot",
+        vec![
+            MethodResponse::Success(result_a),
+            MethodResponse::Success(result_b),
+        ],
+    );
+    let fake = FakeHerdr::start(config).await.expect("啟動假 HERDR 失敗");
+
+    // 每個 request 用一條新連線（假 HERDR 一條連線只回一次），驗證計數跨連線累積。
+    let mut versions = Vec::new();
+    for i in 1..=3 {
+        let mut stream = connect(&fake).await;
+        send_snapshot_request(&mut stream, &i.to_string()).await;
+        let line = recv_required_line(&mut stream).await;
+        let response: ResponseEnvelope = serde_json::from_str(&line).expect("回應應為合法 JSON");
+        let result = response.result.expect("應有 result");
+        versions.push(snapshot_version_of(&result));
+    }
+
+    assert_eq!(
+        versions,
+        vec![version_a, version_b.clone(), version_b],
+        "第一、二次應依序回 A、B，第三次起應重複最後一筆 B"
+    );
+}
+
+#[tokio::test]
+async fn with_method_response_after_responses_overrides() {
+    // 對同一個 method，後呼叫的 builder 勝出：先設 with_method_responses，再用
+    // with_method_response 覆寫，之後每次呼叫都應該回覆寫後的單一回應（不再依序）。
+    let queued = snapshot_result_fixture();
+    let overridden = load_json("snapshot-p20.json")
+        .get("result")
+        .cloned()
+        .expect("snapshot-p20.json 應有 result 欄位");
+
+    let config = FakeHerdrConfig::new()
+        .with_method_responses("session.snapshot", vec![MethodResponse::Success(queued)])
+        .with_method_response(
+            "session.snapshot",
+            MethodResponse::Success(overridden.clone()),
+        );
+    let fake = FakeHerdr::start(config).await.expect("啟動假 HERDR 失敗");
+
+    for i in 1..=2 {
+        let mut stream = connect(&fake).await;
+        send_snapshot_request(&mut stream, &i.to_string()).await;
+        let line = recv_required_line(&mut stream).await;
+        let response: ResponseEnvelope = serde_json::from_str(&line).expect("回應應為合法 JSON");
+        let result = response.result.expect("應有 result");
+        assert_eq!(
+            result, overridden,
+            "後呼叫的 with_method_response 應該覆蓋先前的 with_method_responses"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // events.subscribe：探測失敗、腳本各步驟
 // ---------------------------------------------------------------------------
 
@@ -679,4 +767,53 @@ async fn subscribe_rule_precedence_uses_first_matching_rule() {
         received, first_event,
         "兩條規則都符合時，應該套用先加入的 PerPane，不是後面也符合的 Any"
     );
+}
+
+// ---------------------------------------------------------------------------
+// change 1b task 2.5：觀察連線是否已關閉（`FakeHerdr::closed_connections`）。
+// ---------------------------------------------------------------------------
+
+/// 輪詢等到第 `index` 條連線在假 HERDR 這端被標記為關閉；逾時即失敗（對端關閉是非同步
+/// 觀察到的，不能假設 drop 之後立刻成立）。
+async fn wait_closed(fake: &FakeHerdr, index: usize) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let closed = fake.closed_connections();
+        if closed.get(index).copied().unwrap_or(false) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "第 {index} 條連線應在 5 秒內被標記為關閉，實際各連線關閉狀態: {closed:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+/// `closed_connections()` 與 `received()` 同一組索引：一般 request 的連線回完就關；
+/// `Step::Hold` 的訂閱連線在對端還開著時保持未關閉，對端關閉之後才翻成 `true`
+/// （change 1b 用它驗證「失敗時已開的連線要關閉」「釋放事件流時連線要關閉」）。
+#[tokio::test]
+async fn closed_connections_tracks_hold_until_client_closes() {
+    let config = FakeHerdrConfig::new()
+        .with_snapshot_result(snapshot_result_fixture())
+        .with_subscribe_script(vec![Step::Hold]);
+    let fake = FakeHerdr::start(config).await.expect("啟動假 HERDR 失敗");
+
+    let mut request_stream = connect(&fake).await;
+    send_snapshot_request(&mut request_stream, "1").await;
+    let _ = recv_required_line(&mut request_stream).await;
+    wait_closed(&fake, 0).await;
+
+    let mut subscribe_stream = connect(&fake).await;
+    send_subscribe_request(&mut subscribe_stream, "2", vec![Subscription::PaneCreated]).await;
+    let _ = recv_required_line(&mut subscribe_stream).await; // subscription_started
+    assert_eq!(
+        fake.closed_connections(),
+        vec![true, false],
+        "Step::Hold 的連線在對端還開著時不該被標記為關閉"
+    );
+
+    drop(subscribe_stream);
+    wait_closed(&fake, 1).await;
 }

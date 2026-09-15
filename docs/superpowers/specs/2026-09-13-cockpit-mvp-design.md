@@ -103,6 +103,11 @@ Cargo.toml version 0.9.0；此 commit 可能比本機安裝的 preview 新數日
 判別規則：`event` 字串含 `.` 即每 pane 訂閱的推送。`pane.agent_status_changed` payload 兩軌相同：
 `pane_id*`、`workspace_id*`、`agent_status*`、`agent`、`display_agent`、`state_labels`、`title`。
 
+**L 訂閱建立瞬間的補推**（change 1b task 4.4 查證，2026-09-15）：WSL 0.8.2 會在 authoritative
+snapshot 前推送少量剛發生過的事件（實測 2 筆），已由 §4.2「5 之前從 L／S 收到的事件一律丟棄」
+的規則吸收；Windows 0.9.0 在無 tab 增刪活動的 20 秒擷取中未見補推，是否會補推仍無法判定，需在
+剛開關過 tab 後再擷取才能判斷。
+
 **Payload 完整性**（`src/api/schema/events.rs` 的 `EventData`）：
 
 | 事件 | payload |
@@ -115,11 +120,11 @@ Cargo.toml version 0.9.0；此 commit 可能比本機安裝的 preview 新數日
 | `tab.created` | 完整 `TabInfo` |
 | `tab.closed`、`tab.renamed` | id（renamed 另帶 `label`） |
 | `pane.created`、`pane.updated` | 完整 `PaneInfo` |
-| `pane.moved` | `previous_pane_id`、`previous_workspace_id`、`previous_tab_id` 加新的完整 `PaneInfo`；**pane id 在移動後會變** |
+| `pane.moved` | `previous_pane_id`、`previous_workspace_id`、`previous_tab_id` 加新的完整 `PaneInfo`；**pane id 在移動後會變**。另有 4 個選填欄位，只在移動跨 workspace／tab 邊界時出現、缺席為 `None`：`created_workspace: Option<WorkspaceInfo>`（移動同時新建了 workspace）、`created_tab: Option<TabInfo>`（移動同時新建了 tab）、`closed_workspace_id: Option<String>`（移動後原 workspace 被關閉）、`closed_tab_id: Option<String>`（移動後原 tab 被關閉） |
 | `tab.moved` | `tab_id`、`workspace_id`、`insert_index`、`tabs: Vec<TabInfo>`（整份順序，與 `workspace.moved` 同構） |
 | `pane.focused`、`tab.focused`、`workspace.focused` | id |
 | `pane.closed`、`pane.exited` | `pane_id`、`workspace_id` |
-| `pane.agent_detected` | `pane_id`、`workspace_id`、`agent: Option<String>`、`released: bool`（agent 離開時 `released` 為 true） |
+| `pane.agent_detected` | `pane_id`、`workspace_id`、`agent: Option<String>`、`released: bool`（agent 離開時 `released` 為 true）。另有選填欄位 `final_status: Option<AgentStatus>`，值域同 §2.4 五值（`idle`／`working`／`blocked`／`done`／`unknown`），缺席為 `None`；語意（推測為 agent 離開瞬間的最後狀態）schema 與程式碼註解皆未進一步說明，由欄位命名推論，未查證 |
 | `layout.updated` | `layout: PaneLayoutSnapshot` |
 
 ### 2.4 Agent 狀態語意
@@ -191,14 +196,20 @@ observer 子集在 protocol 20 與 22 是同一份合約。
 
 ```text
 cockpit            程式本體：讀設定、啟動 runtime、axum HTTP + WebSocket、靜態網頁（內嵌）
-  ├─ cockpit-herdr 接合層：HerdrRuntime 實作 AgentRuntime；HERDR 型別 → core 型別；連線迴圈
+  ├─ cockpit-herdr 接合層：HerdrRuntime 實作 AgentRuntime；HERDR 型別 → core 型別；
+  │    │              HERDR 特有連線順序（Probe→seed→L→S，封裝在 subscribe() 內）
   │    ├─ herdr-client   只懂 HERDR：協定型別（observer 子集）、Connector、request／subscribe
-  │    └─ cockpit-core   只懂 Cockpit：RuntimeId、runtime 模型、AgentRuntime trait、RuntimeStore、ProjectedState
+  │    └─ cockpit-core   只懂 Cockpit：RuntimeId、runtime 模型、AgentRuntime trait、RuntimeStore、
+  │                       ProjectedState、driver::run（與 runtime 種類無關的連線驅動器）
   └─ cockpit-core
 ```
 
-規則：`cockpit-core` 的 `Cargo.toml` 不得依賴 `herdr-client`；`herdr-client` 不得依賴任何
-`cockpit-*`。change 2 的 domain（Project、Pipeline、Task）與投影加在 `cockpit-core`。
+規則：`cockpit-core` 不得依賴 `herdr-client` 或任何 `cockpit-*`（它是最底層，天然不會有這種
+依賴，這裡重申是為了讓 change 2、3 的 domain 型別也守住）；`herdr-client` 不得依賴任何
+`cockpit-*`；`cockpit` 不直接依賴 `herdr-client`，只透過 `cockpit-herdr` 的工廠函式取得
+`Arc<dyn AgentRuntime>`（ADR-0003、設計文件 D16）。change 2 的 domain（Project、Pipeline、
+Task）與投影加在 `cockpit-core`。「連線驅動器與 HERDR 特有連線順序分屬 `cockpit-core` 與
+`cockpit-herdr`」見 §4.2、§7.1（設計文件 D1）。
 
 Rust edition 2024。依賴（版本實作時取當時穩定版，不在此鎖定）：`tokio`、`axum`（開 `ws`
 feature）、`serde`、`serde_json`、`toml`、`tracing`、`tracing-subscriber`、`thiserror`；
@@ -225,6 +236,15 @@ RuntimeStore 每次變動 → 重算 ProjectedState → 內容有變才 version+
         ↓
 每個 WebSocket 客戶端收到整張圖，整頁重畫
 ```
+
+**步驟歸屬**（設計文件 D1）：步驟 1–4（Probe、seed snapshot、開 L、開 S）是 HERDR 特有的連線
+順序，封裝在 `HerdrRuntime::subscribe()` 內部，對外只回傳合併後的單一事件流；步驟 5–7
+（authoritative snapshot、Streaming 套用事件、Drift／定期重拿、失敗退避重來）與 runtime 種類
+無關，由 `cockpit-core::driver::run(runtime, store, policy, cancel)` 執行，只認得
+`AgentRuntime` 的 `snapshot()`／`subscribe()`。上圖寫的「每個 runtime 一個 tokio task
+（cockpit-herdr）」因此更精確地說是「一個 tokio task 跑 `cockpit-core` 的驅動器，驅動器內部
+呼叫的 `subscribe()` 才是 `cockpit-herdr` 的程式碼」；讓 change 2、3 與未來其他 runtime 只需
+實作 `AgentRuntime`，不必重寫 Drift、定期重拿、退避這些邏輯。
 
 seed snapshot 只為了在開 S 之前知道有哪些 pane，讓 S 在 authoritative snapshot 之前就開好，
 agent 狀態變化的空窗只剩一次 snapshot 來回。change 1 只呼叫兩個 HERDR method：
@@ -297,6 +317,9 @@ pub struct Pane      { id, workspace_id, tab_id, agent: Option<String>, agent_st
                        focused: bool, exited: bool, updated_at: SystemTime }
 pub struct Agent     { agent: String, pane_id, workspace_id, tab_id, agent_status }
 pub struct Focused   { workspace_id: Option<WorkspaceId>, tab_id: Option<TabId>, pane_id: Option<PaneId> }
+// FocusChanged 事件用；每個 Option 表示「該層本次是否隨事件一起改變」，None 表示不變
+// （與 Focused 語意不同：Focused 的 None 表示「目前沒有東西被聚焦」）。
+pub struct FocusChange { workspace_id: Option<WorkspaceId>, tab_id: Option<TabId>, pane_id: Option<PaneId> }
 
 pub struct RuntimeSnapshot { server_version: String, protocol: u32,
                              workspaces: Vec<Workspace>, tabs: Vec<Tab>, panes: Vec<Pane>, agents: Vec<Agent>,
@@ -305,11 +328,13 @@ pub struct RuntimeSnapshot { server_version: String, protocol: u32,
 
 pub enum RuntimeEvent {
     WorkspaceUpserted(Workspace), WorkspacesReplaced(Vec<Workspace>), WorkspaceRemoved(WorkspaceId),
-    TabUpserted(Tab), TabsReplaced(Vec<Tab>), TabRemoved(TabId),
+    WorkspaceRelabeled { id: WorkspaceId, label: String },
+    TabUpserted(Tab), TabsReplaced { workspace_id: WorkspaceId, tabs: Vec<Tab> }, TabRemoved(TabId),
+    TabRelabeled { id: TabId, label: String },
     PaneUpserted(Pane), PaneMoved { previous: PaneId, pane: Pane }, PaneRemoved(PaneId), PaneExited(PaneId),
-    AgentDetected { pane_id, agent: String },
+    AgentDetected { pane_id, agent: Option<String> },
     AgentStatusChanged { pane_id, status: AgentStatus, title: Option<String>, agent: Option<String> },
-    FocusChanged(Focused),
+    FocusChanged(FocusChange),
     Drift { reason: String },     // 見 §6.3
     Noted { kind: String },       // 只進 recent_events，不改狀態
 }
@@ -321,6 +346,15 @@ pub enum ConnectionState {
 }
 ```
 
+翻譯層是無狀態的純函數，手上只有 HERDR 給的 id 與新值，組不出完整物件，所以
+`workspace_renamed`／`tab_renamed` 各自補一個只帶 id 與新 label 的變體
+（`WorkspaceRelabeled`、`TabRelabeled`），由狀態庫改標籤、目標不存在則 `Drift`；
+`workspace_focused`／`tab_focused`／`pane_focused` 各只帶一個 id，`FocusChanged` 因此用
+`FocusChange`（三個 `Option`，`None` 表示該層不變）而非完整的 `Focused`；`TabsReplaced` 帶
+`workspace_id`（`tab_moved` payload 只有該 workspace 的 tabs，組不出跨 workspace 的整份
+tabs）；`pane_agent_detected` 的 `agent` 欄位本身是 `Option<String>`（agent 離開時可能為
+`null`），`AgentDetected` 照樣帶 `Option`（設計文件 D3）。
+
 ### 6.2 AgentRuntime trait
 
 ```rust
@@ -328,13 +362,26 @@ pub enum ConnectionState {
 pub trait AgentRuntime: Send + Sync {
     fn id(&self) -> &RuntimeId;
     async fn snapshot(&self) -> Result<RuntimeSnapshot, RuntimeError>;
-    async fn subscribe(&self) -> Result<BoxStream<'static, RuntimeEvent>, RuntimeError>;
+    async fn subscribe(&self) -> Result<RuntimeEvents, RuntimeError>;
+}
+
+pub struct RuntimeEvents { /* mpsc::Receiver<Result<RuntimeEvent, RuntimeError>> 加一個
+                              drop 時 abort() 內部 reader task 的 guard */ }
+
+pub enum RuntimeError {
+    Unavailable { reason: String, retry_after: Duration }, // 固定間隔重試，不進退避序列
+    Failed(String),                                        // 進退避序列
 }
 ```
 
-`subscribe` 回傳的是接合層已合併 L 與 S 兩條連線後的單一事件流；每 pane 訂閱的管理
-（§7.1）是接合層內部的事，`cockpit-core` 看不到。change 3 再加 `read_output`；Phase 2
-再加 `prompt` 等寫入方法，並以 capability 宣告。
+`subscribe` 回傳 `RuntimeEvents`：`tokio::sync::mpsc::Receiver<Result<RuntimeEvent, RuntimeError>>`
+加一個 abort-on-drop guard——drop 掉事件流即 `abort()` 內部 reader task，保證釋放連線與子程序；
+不引入 `futures`／`tokio-stream`，只提供 `async fn next()`（設計文件 D2）。它是接合層已合併 L
+與 S 兩條連線後的單一事件流；每 pane 訂閱的管理（§7.1）是接合層內部的事，`cockpit-core`
+看不到。`RuntimeError::Unavailable { reason, retry_after }` 表示探測類失敗要用固定間隔重試
+（例如 §7.1 的 WSL 探測），驅動器不進退避序列；其餘失敗用 `Failed(String)`，走一般的退避序列
+（設計文件 D4）。change 3 再加 `read_output`；Phase 2 再加 `prompt` 等寫入方法，並以
+capability 宣告。
 
 ### 6.3 RuntimeStore 與 ProjectedState
 
@@ -364,7 +411,7 @@ pub trait AgentRuntime: Send + Sync {
       "id": "win",
       "kind": "herdr",
       "endpoint": "named-pipe C:\\Users\\<user>\\AppData\\Roaming\\herdr\\herdr.sock",
-      "connection": { "state": "connected", "since": "...", "server_version": "0.9.0-preview...", "protocol": 22, "last_snapshot_at": "..." },
+      "connection": { "state": "connected", "since": "...", "server_version": "0.9.0-preview...", "protocol": 22, "last_snapshot_at": "...", "protocol_warning": null },
       "focused": { "workspace_id": "wJ", "tab_id": "wJ:t1", "pane_id": "wJ:p1" },
       "workspaces": [
         { "id": "wJ", "label": "ai-cockpit", "number": 2, "agent_status": "working", "focused": true,
@@ -378,12 +425,26 @@ pub trait AgentRuntime: Send + Sync {
     }
   ],
   "recent_events": [
-    { "at": "...", "runtime": "win", "kind": "pane.agent_status_changed", "pane_id": "wJ:p1", "detail": "working" }
+    { "at": "...", "runtime": "win", "kind": "pane.agent_status_changed", "pane_id": "wJ:p1", "detail": "working" },
+    { "at": "...", "runtime": "win", "kind": "tab_removed", "tab_id": "wJ:t2" },
+    { "at": "...", "runtime": "win", "kind": "focus_changed", "pane_id": "wJ:p1" },
+    { "at": "...", "runtime": "win", "kind": "drift" }
   ]
 }
 ```
 
-`connection.state` 為 `disconnected` 時另帶 `reason` 與 `retry_in_secs`。
+`connection.state` 為 `disconnected` 時另帶 `reason` 與 `retry_in_secs`；`protocol` 不在已測
+範圍 20..=22 時 `protocol_warning` 帶警告文字，否則為 `null`（設計文件 D12）。
+
+`recent_events[].kind` 的填法（1b 執行時裁決）：`AgentStatusChanged` 一律記成
+`pane.agent_status_changed`（對齊 S 連線的原始事件名，即上面範例第一筆）；其餘
+`RuntimeEvent` 變體記成該變體名稱的 snake_case（`pane_upserted`、`tab_removed`、
+`workspace_relabeled`、`tabs_replaced`、`focus_changed`……）；`Noted` 記成原始 HERDR 事件名
+（例如 `layout_updated`）；`Drift` 記成 `drift`。每筆只填一個主體 id 欄位：pane 事件填
+`pane_id`、tab 事件填 `tab_id`、workspace 事件填 `workspace_id`；`TabsReplaced` 填
+`workspace_id`；`FocusChanged` 填 `FocusChange` 三個 `Option` 裡最深一層非 `None` 的那個
+（pane 優先於 tab、tab 優先於 workspace）；`Noted`、`Drift`、`WorkspacesReplaced` 不填任何
+主體 id。
 
 ## 7. `cockpit-herdr` 接合層
 
@@ -399,6 +460,13 @@ Backoff（1s, 2s, 4s … 上限 30s；成功後歸零）→ Probe               
                                                                                 │ L 或 S EOF／錯誤 → Backoff
 ```
 
+**crate 歸屬**（設計文件 D1）：左側 Probe→SeedSnapshot→SubscribeLifecycle(L)→SubscribeStatus(S)
+是 `HerdrRuntime::subscribe()` 內部完成的 HERDR 特有順序，對外只回傳合併後的單一事件流；右側
+Snapshot（authoritative）→Streaming（apply、ReopenStatus、定期重拿、Drift 重拿）與失敗後的
+Backoff→回到 Probe，屬於與 runtime 種類無關的驅動器 `cockpit-core::driver::run`，只透過
+`AgentRuntime` 的 `snapshot()`／`subscribe()` 呼叫左側；ReopenStatus 仍是 `HerdrRuntime`
+內部的事（S 管理器住在裡面，見 §6.2、§7.2）。
+
 - **與 spec §24 的順序刻意不同**：spec 寫「snapshot → reconcile → subscribe」，本設計改為
   「訂閱先開好、再拿 authoritative snapshot」，目的是把事件空窗縮到一次 snapshot 來回。
   reconcile 的角色由「authoritative snapshot 整份替換」承擔。
@@ -412,7 +480,11 @@ Backoff（1s, 2s, 4s … 上限 30s；成功後歸零）→ Probe               
 - **WSL 探測**：`wsl` 型 runtime 在 Probe 階段先跑 `wsl.exe --list --running --quiet`。
   發行版不在清單 → `Disconnected`，原因「WSL 發行版 <名稱> 未啟動」；探測指令本身失敗
   （wsl.exe 不存在、非零結束碼）→ `Disconnected`，原因「WSL 探測失敗：」加上 stderr 內容。兩者都以
-  `wsl_probe_secs` 間隔再探，不進退避序列。輸出為 UTF-16，解析時要轉碼。
+  `wsl_probe_secs` 間隔再探，不進退避序列。**編碼判別**：stdout 含 NUL byte 才是 UTF-16LE、用
+  `from_utf16_lossy` 解碼，否則當 UTF-8——使用者環境設了 `WSL_UTF8=1` 時輸出即為 UTF-8，且
+  `from_utf8().is_ok()` 對 UTF-16LE 內容也會回 `Ok`，判別只能靠 NUL byte（設計文件 D8）。探測只
+  在建立事件流（`subscribe()`）前做一次，`Connected` 期間與定期 snapshot 都不重探：L／S 連線
+  活著就代表虛擬機在跑，虛擬機關掉時 L／S 會 EOF 觸發下一輪重連才再探測。
 - **版本**：snapshot 回傳的 `protocol` 不在已測範圍 20..=22 時記 warn 並在畫面連線狀態旁標註，
   照常運作。
 
@@ -422,19 +494,20 @@ Backoff（1s, 2s, 4s … 上限 30s；成功後歸零）→ Probe               
 |---|---|
 | `workspace_created`、`workspace_updated`、`workspace_metadata_updated` | `WorkspaceUpserted` |
 | `workspace_moved`、`workspace_reordered` | `WorkspacesReplaced`（payload 帶整份 workspaces） |
-| `workspace_renamed` | `WorkspaceUpserted`（以現有物件改 label；不存在 → `Drift`） |
+| `workspace_renamed` | `WorkspaceRelabeled { id, label }`（不存在 → `Drift`） |
 | `workspace_closed` | `WorkspaceRemoved` |
 | `tab_created` | `TabUpserted` |
-| `tab_renamed` | `TabUpserted`（改 label；不存在 → `Drift`） |
+| `tab_renamed` | `TabRelabeled { id, label }`（不存在 → `Drift`） |
 | `tab_closed` | `TabRemoved` |
-| `tab_moved` | `TabsReplaced`（payload 帶該 workspace 整份 tabs） |
+| `tab_moved` | `TabsReplaced { workspace_id, tabs }`（payload 帶該 workspace 整份 tabs） |
 | `pane_created`、`pane_updated` | `PaneUpserted` |
 | `pane_moved` | `PaneMoved { previous, pane }`：移除舊 id、以新 `PaneInfo` upsert |
 | `pane_closed` | `PaneRemoved` |
 | `pane_exited` | `PaneExited` |
 | `pane_agent_detected` | `AgentDetected`；`released` 為 true 或 `agent` 為 null 時清掉該 pane 的 agent |
 | `pane.agent_status_changed`（S 連線） | `AgentStatusChanged` |
-| `workspace_focused`、`tab_focused`、`pane_focused` | `FocusChanged` |
+| `pane_agent_status_changed`（生命週期版，見 §2.3「沒有全域的 agent 狀態訂閱」） | 理論上不會出現在 L；若因故收到則忽略並記 debug |
+| `workspace_focused`、`tab_focused`、`pane_focused` | 部分 `FocusChanged`：只有對應那個 `Option` 欄位是 `Some`，其餘 `None` |
 | `layout_updated`、`worktree_*` | `Noted` |
 | `pane_output_changed` | 無對應訂閱，收不到；若出現則忽略並記 debug |
 | `pane.output_matched`、`pane.scroll_changed` | 不訂閱 |
@@ -512,6 +585,9 @@ wsl = { distro = "Ubuntu-24.04", socket = "/home/<user>/.config/herdr/herdr.sock
 - 不認得的 `AgentStatus` 字串 → `Unknown`；不認得的事件種類 → 忽略並記 debug；
   不認得的欄位 → 忽略；壞掉的 JSON 行 → 記 warn、跳過、連線不斷。
 - 任何連線錯誤都變成該 runtime 的 `Disconnected { reason }` 顯示在畫面，不吞掉。
+- HERDR 優雅關閉時，進行中的 `session.snapshot` 會回 `server_unavailable: server is shutting
+  down`；驅動器把這種請求失敗與 L／S EOF 同樣視為該 runtime 斷線，所以斷線的第一個原因不一定
+  反映連線本身結束，也可能是 snapshot 請求先收到這個回應——兩者都算對端關閉（task 4.3 實測）。
 - Cockpit 從不依 HERDR 狀態推論「任務完成」；change 1 沒有任務概念，change 2 的
   `StageStatus::Completed` 必須來自 Cockpit 自己的規則或人工。
 - change 1 對 HERDR 完全唯讀。

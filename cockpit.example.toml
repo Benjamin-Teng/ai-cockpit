@@ -1,0 +1,37 @@
+# cockpit 設定檔範例（設計文件 §8.2）。
+#
+# 用法：複製成 cockpit.toml 放在啟動 cockpit 的工作目錄，或用 `--config <path>` 指定。
+# cockpit.toml 在 .gitignore 裡，不會進 repo——裡面會有真實的使用者名稱與路徑。
+# 下面所有路徑的 <user> 都要換成自己的使用者名稱。
+#
+# 全部省略（連檔案都不放）＝零設定模式：等同一筆 id = "local"、自動找本機 HERDR 的 runtime。
+
+[server]
+# 只接受 loopback 位址。被占用時啟動失敗並印出位址與原因，不會自動換 port。
+listen = "127.0.0.1:7770"
+
+[polling]
+# Connected 期間距上次成功取得 snapshot 多久之後再重拿一次；不得為 0。
+resnapshot_secs = 30
+# WSL 發行版探測失敗後的固定重試間隔；不得為 0。
+wsl_probe_secs = 60
+
+# 每筆 runtime 的 socket、wsl、command 三選一；同時給兩個以上啟動時報錯並指出是哪一筆。
+# 三個都省略則自動找本機預設路徑（HERDR_SOCKET_PATH → HERDR_SESSION → 預設路徑）。
+# id 重複同樣啟動時報錯。Windows 路徑在 TOML 用單引號 literal string。
+
+[[runtime]]
+id = "win"
+kind = "herdr"
+# socket = 'C:\Users\<user>\AppData\Roaming\herdr\herdr.sock'   # 省略則照 HERDR 規則找預設
+
+[[runtime]]
+id = "wsl"
+kind = "herdr"
+wsl = { distro = "Ubuntu-24.04", socket = "/home/<user>/.config/herdr/herdr.sock" }
+
+# 通用逃生口：任何能把 stdio 接到 HERDR socket 的指令
+# [[runtime]]
+# id = "other"
+# kind = "herdr"
+# command = ["some-bridge", "--arg"]

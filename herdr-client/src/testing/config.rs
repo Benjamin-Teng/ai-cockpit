@@ -1,6 +1,7 @@
 //! 假 HERDR 的可設定行為（design D7、D12）。
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::types::Subscription;
 
@@ -56,6 +57,54 @@ impl SubscribeMatcher {
     }
 }
 
+/// 一個一般 method 的回應佇列：依呼叫序回應（第 n 次呼叫回第 n 筆，n 從 1 起），用完最後
+/// 一筆之後持續重複最後一筆（design D14，Drift 重拿 `session.snapshot` 要回不同內容）。
+/// `with_method_response`（單一回應）內部就是長度 1 的佇列，查表只有這一條路徑。
+#[derive(Debug)]
+struct MethodQueue {
+    responses: Vec<MethodResponse>,
+    /// 這個 method 已經被呼叫幾次；跨連線（每個 request 一條新連線）共用同一個計數，執行緒
+    /// 安全（`FakeHerdr` 的 handler 可能在多個 tokio task 上跑）。從 `FakeHerdr::start` 之後
+    /// 開始算，`FakeHerdrConfig` 本身不會在執行期間被重建，因此計數不會意外歸零。
+    calls: AtomicUsize,
+}
+
+impl MethodQueue {
+    fn single(response: MethodResponse) -> Self {
+        Self {
+            responses: vec![response],
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn from_responses(responses: Vec<MethodResponse>) -> Self {
+        Self {
+            responses,
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    /// 依呼叫序回下一筆：第 n 次呼叫（n 從 1 起）回第 n 筆，超過長度就一直回最後一筆。
+    fn next(&self) -> &MethodResponse {
+        let index = self.calls.fetch_add(1, Ordering::SeqCst);
+        let last = self.responses.len() - 1;
+        &self.responses[index.min(last)]
+    }
+}
+
+impl Clone for MethodQueue {
+    fn clone(&self) -> Self {
+        // `AtomicUsize` 不是 `Clone`：手動保留目前計數值，讓 `#[derive(Clone)]` 的
+        // `FakeHerdrConfig` 沒有既有呼叫者依賴的行為變化（目前 `FakeHerdrConfig` 值本身沒有
+        // 被 `.clone()` 過，只有外層 `Arc<FakeHerdrConfig>` 被 clone；這裡是為了不破壞
+        // `#[derive(Clone)]` 而補的合理語意，不是新增的公開行為）。
+        Self {
+            responses: self.responses.clone(),
+            calls: AtomicUsize::new(self.calls.load(Ordering::SeqCst)),
+        }
+    }
+}
+
 /// 一條 `events.subscribe` 分派規則：訂閱清單符合 `matcher` 時，通過探測的連線就重播
 /// `steps`。
 #[derive(Debug, Clone)]
@@ -72,7 +121,7 @@ const DEFAULT_SUBSCRIBE_STEPS: &[Step] = &[Step::Hold];
 /// 失敗的 `pane_id` 集合（design D12）。用 builder 風格組裝，欄位不公開以留設計彈性。
 #[derive(Debug, Clone, Default)]
 pub struct FakeHerdrConfig {
-    responses: HashMap<String, MethodResponse>,
+    responses: HashMap<String, MethodQueue>,
     subscribe_rules: Vec<SubscribeRule>,
     failing_probe_pane_ids: HashSet<String>,
 }
@@ -83,14 +132,44 @@ impl FakeHerdrConfig {
         Self::default()
     }
 
-    /// 設定某個一般 method（例如 `"session.snapshot"`）收到 request 後的回應行為。
+    /// 設定某個一般 method（例如 `"session.snapshot"`）收到 request 後的回應行為：每次呼叫
+    /// 都回同一個 `response`。與 `with_method_responses` 是同一張表——對同一個 method，
+    /// 後呼叫的 builder 勝出（覆蓋前者的設定）。
     #[must_use]
     pub fn with_method_response(
         mut self,
         method: impl Into<String>,
         response: MethodResponse,
     ) -> Self {
-        self.responses.insert(method.into(), response);
+        self.responses
+            .insert(method.into(), MethodQueue::single(response));
+        self
+    }
+
+    /// 設定某個一般 method 依呼叫序回應：第 n 次收到該 method 的 request（n 從 1 起）回
+    /// `responses[n - 1]`，呼叫次數超過 `responses.len()` 之後持續重複最後一筆（design D14，
+    /// 用於 Drift 重拿 `session.snapshot` 要回不同內容的測試）。呼叫次數的計數跨連線（每個
+    /// request 一條新連線）累積，且執行緒安全。
+    ///
+    /// 與 `with_method_response` 是同一張表——對同一個 method，後呼叫的 builder 勝出：
+    /// 這之後若再呼叫 `with_method_response`，會蓋掉這裡設定的佇列，回到「每次都回同一個」。
+    ///
+    /// 傳入空 `Vec` 視同沒有呼叫這個方法（不會覆蓋、也不會新增這個 method 的設定）；debug
+    /// build 下會額外用 `debug_assert!` 提醒呼叫端這通常是誤用。
+    #[must_use]
+    pub fn with_method_responses(
+        mut self,
+        method: impl Into<String>,
+        responses: Vec<MethodResponse>,
+    ) -> Self {
+        debug_assert!(
+            !responses.is_empty(),
+            "with_method_responses 不應傳入空 Vec；空 Vec 視同沒有設定，呼叫不會有效果"
+        );
+        if !responses.is_empty() {
+            self.responses
+                .insert(method.into(), MethodQueue::from_responses(responses));
+        }
         self
     }
 
@@ -140,7 +219,7 @@ impl FakeHerdrConfig {
     }
 
     pub(super) fn response_for(&self, method: &str) -> Option<&MethodResponse> {
-        self.responses.get(method)
+        self.responses.get(method).map(MethodQueue::next)
     }
 
     /// 依訂閱清單挑第一個符合的規則的腳本；沒有規則符合時回預設腳本（見

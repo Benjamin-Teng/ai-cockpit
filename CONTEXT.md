@@ -26,6 +26,7 @@ Cockpit 刻意把「HERDR 說的」與「Cockpit 自己認定的」分成兩層�
 | RuntimeEvent | 翻譯後的單筆變化，例如 AgentStatusChanged、PaneRemoved、Drift。 |
 | ConnectionState | Cockpit 與某個 Runtime 的連線狀態：Connecting、Connected、Disconnected。 |
 | Drift | 事件提到狀態庫裡不存在的物件、或 payload 不足以更新，代表狀態庫已與 HERDR 脫節，必須重拿 snapshot。 |
+| Driver（驅動器） | 對單一 Runtime 維持連線生命週期（訂閱、authoritative snapshot、逐筆套用、Drift 與定期重拿、退避）的 `cockpit-core` 元件，與 runtime 種類無關。 |
 
 ## Domain 層（Cockpit 自己的認定，change 2 起）
 

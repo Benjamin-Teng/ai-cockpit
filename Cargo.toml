@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["herdr-client"]
+members = ["herdr-client", "cockpit-core", "cockpit-herdr", "cockpit"]
 
 [workspace.package]
 edition = "2024"
