@@ -3,7 +3,7 @@
 ## Purpose
 
 定義 `cockpit` 的 HTTP／WebSocket 服務與畫面：路由、整張圖推送、只綁 loopback、內嵌靜態資源、
-PWA、畫面呈現規則與通道重連。證據：設計文件 §8.1、§8.3、§9、§15、ADR-0004、ADR-0005。
+PWA、畫面呈現規則與通道重連、Factory Floor 網格與畫面操作。證據：設計文件 §8.1、§8.3、§9、§15、ADR-0004、ADR-0005。
 
 ## Requirements
 

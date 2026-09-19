@@ -2,7 +2,7 @@
 
 ## Purpose
 
-定義 `cockpit` 執行檔的設定來源、格式、預設值與驗證。證據：設計文件 §8.2、§2.2 路徑規則、
+定義 `cockpit` 執行檔的設定來源、格式、預設值與驗證（Project／Pipeline 區段本身的規則見 `pipeline-config`）。證據：設計文件 §8.2、§2.2 路徑規則、
 `herdr-client/README.md`「本機預設 socket 路徑」。
 
 ## Requirements

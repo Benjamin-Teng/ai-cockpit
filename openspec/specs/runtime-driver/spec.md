@@ -3,7 +3,7 @@
 ## Purpose
 
 定義驅動器如何透過 `AgentRuntime` 抽象維持單一 runtime 的連線生命週期，讓狀態庫與 runtime 保持
-一致，與 runtime 種類無關。證據：設計文件 §4.2、§7.1、`docs/cockpit-spec.md` §24「Event loss」。
+一致（含 Drift 重拿、連線後沉降重拿、退避重試），與 runtime 種類無關。證據：設計文件 §4.2、§7.1、`docs/cockpit-spec.md` §24「Event loss」。
 
 ## Requirements
 

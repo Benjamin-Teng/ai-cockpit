@@ -2,7 +2,7 @@
 
 ## Purpose
 
-定義給畫面看的整張圖 `ProjectedState`：JSON 形狀、`version` 語意、合併廣播、最近事件。
+定義給畫面看的整張圖 `ProjectedState`：JSON 形狀、`version` 語意、合併廣播、最近事件、Project（Pipeline）投影。
 證據：設計文件 §6.3、§6.4、ADR-0004。
 
 ## Requirements
