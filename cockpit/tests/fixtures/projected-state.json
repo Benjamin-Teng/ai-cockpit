@@ -89,6 +89,212 @@
       "workspaces": []
     }
   ],
+  "projects": [
+    {
+      "id": "cockpit",
+      "name": "AI Cockpit",
+      "stages": ["Spec", "Implement", "Review"],
+      "warnings": ["task docs-1 的 stage \"Draft\" 已不在 stages，退回起始 stage"],
+      "workstreams": [
+        {
+          "id": "be",
+          "name": "Backend",
+          "binding": {
+            "state": "bound",
+            "runtime": "win",
+            "pane_id": "wJ:p1",
+            "source": "auto",
+            "agent": "claude",
+            "agent_status": "working"
+          }
+        },
+        {
+          "id": "docs",
+          "name": "Docs",
+          "binding": {
+            "state": "runtime_disconnected",
+            "runtime": "wsl"
+          }
+        },
+        {
+          "id": "ops",
+          "name": "ops",
+          "binding": {
+            "state": "none"
+          }
+        },
+        {
+          "id": "qa",
+          "name": "QA",
+          "binding": {
+            "state": "bound",
+            "runtime": "win",
+            "pane_id": "wJ:p3",
+            "source": "override",
+            "agent": "codex",
+            "agent_status": "unknown"
+          }
+        },
+        {
+          "id": "release",
+          "name": "Release",
+          "binding": {
+            "state": "unbound",
+            "runtime": "win"
+          }
+        }
+      ],
+      "tasks": [
+        {
+          "id": "be-1",
+          "title": "投影擴充",
+          "workstream": "be",
+          "stage": "Implement",
+          "mark": "none",
+          "status": "running",
+          "depends_on": []
+        },
+        {
+          "id": "docs-1",
+          "title": "README",
+          "workstream": "docs",
+          "stage": "Spec",
+          "mark": "none",
+          "status": "pending",
+          "depends_on": ["be-1"]
+        },
+        {
+          "id": "ops-1",
+          "title": "部署腳本",
+          "workstream": "ops",
+          "stage": "Review",
+          "mark": "completed",
+          "status": "completed",
+          "depends_on": []
+        },
+        {
+          "id": "qa-1",
+          "title": "程式碼審查",
+          "workstream": "qa",
+          "stage": "Implement",
+          "mark": "none",
+          "status": "blocked",
+          "depends_on": []
+        },
+        {
+          "id": "release-1",
+          "title": "發布準備",
+          "workstream": "release",
+          "stage": "Spec",
+          "mark": "none",
+          "status": "ready",
+          "depends_on": []
+        },
+        {
+          "id": "ops-2",
+          "title": "上線檢查",
+          "workstream": "ops",
+          "stage": "Spec",
+          "mark": "failed",
+          "status": "failed",
+          "depends_on": []
+        },
+        {
+          "id": "be-2",
+          "title": "介面草稿",
+          "workstream": "be",
+          "stage": "Spec",
+          "mark": "none",
+          "status": "ready",
+          "depends_on": []
+        },
+        {
+          "id": "docs-2",
+          "title": "變更紀錄",
+          "workstream": "docs",
+          "stage": "Review",
+          "mark": "none",
+          "status": "pending",
+          "depends_on": ["be-2"]
+        },
+        {
+          "id": "qa-2",
+          "title": "回歸清單",
+          "workstream": "qa",
+          "stage": "Review",
+          "mark": "none",
+          "status": "ready",
+          "depends_on": []
+        }
+      ]
+    },
+    {
+      "id": "p",
+      "name": "Scenario D Demo",
+      "stages": ["Plan", "Implement", "Test"],
+      "warnings": [],
+      "workstreams": [
+        {
+          "id": "backend",
+          "name": "Backend",
+          "binding": {
+            "state": "bound",
+            "runtime": "win",
+            "pane_id": "wJ:p1",
+            "source": "auto",
+            "agent": "claude",
+            "agent_status": "working"
+          }
+        },
+        {
+          "id": "frontend",
+          "name": "Frontend",
+          "binding": {
+            "state": "ambiguous",
+            "runtime": "win",
+            "candidates": ["wJ:p2", "wJ:p3"]
+          }
+        },
+        {
+          "id": "tests",
+          "name": "Tests",
+          "binding": {
+            "state": "runtime_disconnected",
+            "runtime": "wsl"
+          }
+        }
+      ],
+      "tasks": [
+        {
+          "id": "backend-1",
+          "title": "後端實作",
+          "workstream": "backend",
+          "stage": "Implement",
+          "mark": "none",
+          "status": "running",
+          "depends_on": []
+        },
+        {
+          "id": "frontend-1",
+          "title": "前端規劃",
+          "workstream": "frontend",
+          "stage": "Plan",
+          "mark": "none",
+          "status": "running",
+          "depends_on": []
+        },
+        {
+          "id": "tests-1",
+          "title": "測試執行",
+          "workstream": "tests",
+          "stage": "Test",
+          "mark": "none",
+          "status": "running",
+          "depends_on": []
+        }
+      ]
+    }
+  ],
   "recent_events": [
     {
       "at": "2026-09-15T01:59:30Z",

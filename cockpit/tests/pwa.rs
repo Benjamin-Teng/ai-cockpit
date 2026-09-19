@@ -16,9 +16,7 @@ const PNG_SIGNATURE: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
 
 fn new_app_state() -> (StoreHandle, AppState) {
     let handle = StoreHandle::new(RuntimeStore::new());
-    let state = AppState {
-        state: handle.subscribe(),
-    };
+    let state = AppState::new(handle.subscribe());
     (handle, state)
 }
 

@@ -30,9 +30,7 @@ type WsStream = tokio_tungstenite::WebSocketStream<MaybeTlsStream<tokio::net::Tc
 
 /// 起一個真的監聽 `127.0.0.1:0` 的 server，回傳它的位址與背景任務的 handle。
 async fn serve(handle: &StoreHandle) -> (SocketAddr, JoinHandle<()>) {
-    let state = AppState {
-        state: handle.subscribe(),
-    };
+    let state = AppState::new(handle.subscribe());
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind 127.0.0.1:0 不應該失敗");

@@ -100,11 +100,18 @@ impl Shutdown {
     /// handle，晚一步登記的 task 不會有人再收拾它（會一直抓著連線不放）。`closing` 的讀取與
     /// 清單的寫入都在同一把鎖內，`abort_all()` 也持同一把鎖，所以不存在「檢查時還沒收尾、
     /// 登記完卻已經 abort 完」的窗口。持鎖期間沒有 await。
+    ///
+    /// **登記前先修剪已結束的 handle**（design D11 1b deferred、task 6.3）：pane 集合反覆
+    /// 改變時每次重開都會 push 新 handle（去抖動 task 本身＋重開後的新 S reader），舊的
+    /// （已經結束或已 abort 的）handle 若不清掉，清單會隨重開次數只增不減。`retain` 保留的
+    /// 是「還沒結束」的 handle，不影響 `abort_all()` 的收尾範圍——已結束的 task 本來就不用
+    /// 再 abort 一次。行為不變（見 design D11），純粹避免清單無限增長。
     fn register(&self, handle: AbortHandle) {
         let mut registry = self.aborts.lock().expect("Shutdown.aborts mutex poisoned");
         if self.closing.load(Ordering::SeqCst) {
             handle.abort();
         } else {
+            registry.retain(|h| !h.is_finished());
             registry.push(handle);
         }
     }
@@ -255,6 +262,22 @@ impl HerdrRuntime {
 
     fn status(&self) -> MutexGuard<'_, StatusSubscription> {
         lock_status(&self.status)
+    }
+
+    /// 目前這一輪 `Shutdown.aborts` 的登記數；沒有活著的事件流（尚未 `subscribe()`，或已
+    /// `reset()`）時回 0。**僅供測試**觀察 task 6.3 的修剪行為（`register()` 是否讓登記數
+    /// 不隨重開次數無限增長），不是公開 API 的一部分。
+    #[doc(hidden)]
+    #[must_use]
+    pub fn aborts_registry_len(&self) -> usize {
+        self.status().session.as_ref().map_or(0, |session| {
+            session
+                .shutdown
+                .aborts
+                .lock()
+                .expect("Shutdown.aborts mutex poisoned")
+                .len()
+        })
     }
 }
 
@@ -657,6 +680,40 @@ fn schedule_reopen(status: &Arc<Mutex<StatusSubscription>>, state: &mut StatusSu
     session.shutdown.register(task.abort_handle());
 }
 
+/// [`decide_reopen_commit`] 的結果：剛開好的新 S 連線該提交、還是整條丟掉。
+///
+/// task 6.5（F4 session guard）：拆成純函數只為了讓「提交前 session 已經換過一輪」這個分支
+/// 能被直接測試到——真實時序下 `reset()` 的 `abort_all()` 會在重開 task 醒來之前就把它
+/// abort 掉，構造不出「task 活著跑到這裡、但 session 已經不是這一輪」的整合測試（1b ledger
+/// 「F4 提交前驗 session」）。純函數只讀 `&StatusSubscription`，不碰 spawn／abort 等副作用，
+/// 副作用留在呼叫端。
+#[derive(Debug, PartialEq, Eq)]
+enum ReopenCommitDecision {
+    /// 期間整個換過一輪（`reset()` 呼叫過）：新連線隨 `stream` 一起丟掉，不碰新一輪的狀態。
+    RoundChanged,
+    /// 還是本輪，但 `desired` 的 `generation` 在重開期間又變了：新連線已經過時，整條丟掉
+    /// 並重排一次。
+    GenerationChanged,
+    /// 兩項都沒變：可以提交（spawn reader、`replace` handle、寫 `current`）。
+    Proceed,
+}
+
+/// 重開的新 S 建立好之後、提交前的檢查（design D10 步驟 4；Codex review round 1
+/// findings 2、3）。
+fn decide_reopen_commit(
+    state: &StatusSubscription,
+    session: &Arc<Session>,
+    generation: u64,
+) -> ReopenCommitDecision {
+    if !state.is_current_round(session) {
+        return ReopenCommitDecision::RoundChanged;
+    }
+    if state.generation != generation {
+        return ReopenCommitDecision::GenerationChanged;
+    }
+    ReopenCommitDecision::Proceed
+}
+
 /// 去抖動之後真正重開 S（spec「pane 集合改變時重開狀態訂閱」；design D10）。
 ///
 /// 1. 睡 200 ms，讓這段期間的其他觸發併進同一次重開；
@@ -713,19 +770,22 @@ async fn reopen_after_debounce(status: Arc<Mutex<StatusSubscription>>, session: 
 
             let previous = {
                 let mut state = lock_status(&status);
-                if !state.is_current_round(&session) {
-                    // 期間整個換了一輪：這條新連線隨 `stream` 一起丟掉，也不要碰新一輪的狀態。
-                    return;
-                }
-                if state.generation != generation {
-                    // 期間目標集合又變了：我手上這條訂閱已經過時，整條丟掉並重排一次。
-                    tracing::debug!(
-                        runtime = %session.runtime_id,
-                        "重開期間目標集合又變了，丟掉這次剛開好的訂閱並重排"
-                    );
-                    state.reopen_scheduled = false;
-                    schedule_reopen(&status, &mut state);
-                    return;
+                match decide_reopen_commit(&state, &session, generation) {
+                    ReopenCommitDecision::RoundChanged => {
+                        // 期間整個換了一輪：這條新連線隨 `stream` 一起丟掉，也不要碰新一輪的狀態。
+                        return;
+                    }
+                    ReopenCommitDecision::GenerationChanged => {
+                        // 期間目標集合又變了：我手上這條訂閱已經過時，整條丟掉並重排一次。
+                        tracing::debug!(
+                            runtime = %session.runtime_id,
+                            "重開期間目標集合又變了，丟掉這次剛開好的訂閱並重排"
+                        );
+                        state.reopen_scheduled = false;
+                        schedule_reopen(&status, &mut state);
+                        return;
+                    }
+                    ReopenCommitDecision::Proceed => {}
                 }
 
                 let task = tokio::spawn(read_loop(
@@ -950,6 +1010,98 @@ mod tests {
         assert!(
             state.handle.is_none(),
             "不是本輪時不得碰新一輪的 handle 欄位"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // task 6.5：F4 session guard（`decide_reopen_commit` 的 `RoundChanged` 分支）補直接測試。
+    // 見 `decide_reopen_commit` 文件註解：真實時序下這個分支構造不出整合測試，理由同
+    // `install_initial_handle_skips_when_round_changed` 那組單元測試。
+    // -----------------------------------------------------------------------
+
+    /// F4：提交前 `session` 已經不是這一輪（期間 `reset()` 過）→ `RoundChanged`，不得碰
+    /// `generation`／`handle` 等新一輪的欄位（純函數本身不碰，這裡順便斷言呼叫後 state 沒變）。
+    ///
+    /// `state.generation`（7）刻意跟呼叫參數 `generation`（5）不同，釘住
+    /// `decide_reopen_commit` 先驗 session 再驗 generation 的順序：兩項檢查都會各自判定「不
+    /// 一致」，若順序顛倒（先驗 generation）就會誤回 `GenerationChanged`；只有 session 檢查排在
+    /// 前面才會在碰到 generation 之前就先回 `RoundChanged`。
+    #[test]
+    fn decide_reopen_commit_detects_round_changed() {
+        let (session, _tx, _shutdown) = test_session();
+        let (other_session, _other_tx, _other_shutdown) = test_session();
+        let state = StatusSubscription {
+            // 提交當下管理器已經是 other_session 這一輪：`session` 是重開 task 手上舊的那份。
+            session: Some(Arc::clone(&other_session)),
+            generation: 7,
+            ..StatusSubscription::default()
+        };
+
+        let decision = decide_reopen_commit(&state, &session, 5);
+
+        assert_eq!(
+            decision,
+            ReopenCommitDecision::RoundChanged,
+            "session 已經換過一輪時應回報 RoundChanged，即使 generation 也不同"
+        );
+    }
+
+    /// 沒有活著的事件流（`session` 為 `None`，例如只呼叫過 `snapshot()`）：同樣算「不是本輪」，
+    /// 回報 `RoundChanged`。
+    #[test]
+    fn decide_reopen_commit_detects_round_changed_when_no_session() {
+        let (session, _tx, _shutdown) = test_session();
+        let state = StatusSubscription {
+            session: None,
+            generation: 5,
+            ..StatusSubscription::default()
+        };
+
+        let decision = decide_reopen_commit(&state, &session, 5);
+
+        assert_eq!(
+            decision,
+            ReopenCommitDecision::RoundChanged,
+            "管理器沒有活著的 session 時應回報 RoundChanged"
+        );
+    }
+
+    /// 還是本輪，但 `generation` 在重開期間又變了（期間又有新的目標集合）→
+    /// `GenerationChanged`。
+    #[test]
+    fn decide_reopen_commit_detects_generation_changed() {
+        let (session, _tx, _shutdown) = test_session();
+        let state = StatusSubscription {
+            session: Some(Arc::clone(&session)),
+            generation: 7,
+            ..StatusSubscription::default()
+        };
+
+        let decision = decide_reopen_commit(&state, &session, 5);
+
+        assert_eq!(
+            decision,
+            ReopenCommitDecision::GenerationChanged,
+            "generation 在重開期間又變了時應回報 GenerationChanged"
+        );
+    }
+
+    /// 還是本輪、`generation` 也沒變 → `Proceed`（可以提交）。
+    #[test]
+    fn decide_reopen_commit_proceeds_when_unchanged() {
+        let (session, _tx, _shutdown) = test_session();
+        let state = StatusSubscription {
+            session: Some(Arc::clone(&session)),
+            generation: 5,
+            ..StatusSubscription::default()
+        };
+
+        let decision = decide_reopen_commit(&state, &session, 5);
+
+        assert_eq!(
+            decision,
+            ReopenCommitDecision::Proceed,
+            "還是本輪且 generation 沒變時應回報 Proceed"
         );
     }
 }

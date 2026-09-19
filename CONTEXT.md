@@ -33,13 +33,15 @@ Cockpit 刻意把「HERDR 說的」與「Cockpit 自己認定的」分成兩層�
 | 名詞 | 定義 |
 |---|---|
 | Project | 一個被 Cockpit 管理的工作整體，含一條 Pipeline 與若干 Workstream。 |
-| Pipeline | 工作依賴圖（DAG），由 Stage 與 Dependency 組成。第一版視覺可線性，模型從一開始允許 DAG。 |
+| Pipeline | Project 的 Stage 線性序列（MVP）；Stage 之間沒有依賴型別，依賴改為 Task 之間的 Dependency。Stage 層級 DAG 留待之後 change，模型上 `stages` 先維持 `Vec`。 |
 | Stage | Pipeline 上的一站，例如 Spec、Plan、Implement、Test、Review。 |
-| Dependency | Stage 之間的先後關係。 |
-| Workstream | Project 內平行推進的一條線，例如 Backend、Frontend、Docs。**是 Cockpit 概念，不是 HERDR 的 Workspace**；兩者的對應由設定決定，不強制一對一，是否允許多對多由 change 2 決定。 |
-| Task | 一個 Workstream 在某個 Stage 的具體工作單位。 |
+| Dependency | Task 之間的依賴（設定檔 `depends_on`，同一 Project 內的 task id 陣列）。依賴的 task 標記未達 `completed` 時，依賴它的 task 呈現 Pending，優先序高於綁定 agent 狀態。 |
+| Workstream | Project 內平行推進的一條線，例如 Backend、Frontend、Docs。**是 Cockpit 概念，不是 HERDR 的 Workspace**；兩者的對應由設定決定，MVP 為一對一（一條 Workstream 至多一個 binding，解析為至多一個 pane）。 |
+| Task | 一個 Workstream 在某個 Stage 的具體工作單位；隨進度操作（推進、標 Completed、標 Failed、清除標記）在 Stage 之間推進，並帶人工標記 Mark。同一 Workstream 可有多個 Task，共用同一個 RuntimeBinding 解析結果。 |
 | Artifact | Task 產出的東西：檔案、報告、測試結果。 |
-| RuntimeBinding | Task 與 Runtime 層物件的對應。至少含 RuntimeId；以穩定特徵（workspace 標籤、cwd、agent 種類）匹配，pane id 只是解析結果。 |
+| Mark | Task 的人工標記，三選一：`none`、`completed`、`failed`，初值 `none`，只能經由進度操作改變。Runtime 層的任何狀態（含 AgentStatus 的 `Done`）都不得改變 Mark。 |
+| RuntimeBinding | Workstream 與 Runtime 層 pane 的對應，掛在 Workstream 上，同一 Workstream 內的 Task 共用同一份解析結果。至少含 RuntimeId；以穩定特徵（workspace 標籤、cwd、agent 種類）匹配，pane id 只是解析結果，不是設定中的鍵。 |
+| Override | 畫面對某條 Workstream 的 RuntimeBinding 臨時改綁，指定一個 runtime 與 pane，取代自動解析。存進狀態檔、重啟保留；runtime 不是 `connected` 時保留覆蓋、呈現 `runtime_disconnected`，並非失效。只有 runtime 為 `connected` 但 pane 不存在或已 exited 才視為失效，立即回到自動解析，刪除以非同步方式落檔（design D3）。 |
 | StageStatus | Cockpit 投影出的狀態：Pending、Ready、Running、Blocked、Failed、Completed。Completed 只能來自 Cockpit 規則或人工，不可由 AgentStatus 推得。 |
 
 ## 投影層

@@ -1,5 +1,6 @@
-//! `RuntimeStore` → `ProjectedState` 的純函數投影（spec `state-projection`；設計文件
-//! §6.4、design D7、D9、D12）。不修改 `store`；`version` 由呼叫端決定，本模組只原樣
+//! `RuntimeStore`＋`DomainState` → `ProjectedState` 的純函數投影（spec `state-projection`；設計
+//! 文件 §6.4、design D7、D9、D12；change `pipeline-projection` design D2、D3）。綁定解析與
+//! StageStatus 推導在投影時即時計算、不快取。不修改 `store`／`domain`；`version` 由呼叫端決定，本模組只原樣
 //! 填入（1.6 的投影任務負責決定何時遞增）。所有時間欄位以 `chrono` 轉成 RFC 3339
 //! （UTC、秒精度），格式固定 `YYYY-MM-DDTHH:MM:SSZ`。
 
@@ -8,6 +9,12 @@ use std::time::SystemTime;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::domain::binding::{BindingResolution, BindingSource, Override, resolve_binding};
+use crate::domain::config::ProjectDef;
+use crate::domain::ids::{ProjectId, TaskId, WorkstreamId};
+use crate::domain::progress::{Mark, TaskProgress};
+use crate::domain::state::DomainState;
+use crate::domain::status::{StageStatus, derive_status};
 use crate::store::{RECENT_EVENTS_CAPACITY, RuntimeState, RuntimeStore};
 use crate::types::agent_status::AgentStatus;
 use crate::types::connection::ConnectionState;
@@ -23,6 +30,8 @@ pub struct ProjectedState {
     pub generated_at: String,
     /// 所有 runtime，依登記順序（＝設定檔順序）。
     pub runtimes: Vec<ProjectedRuntime>,
+    /// 所有 Project，依設定檔順序；沒有 Project 時為空陣列（spec 「Project 投影」）。
+    pub projects: Vec<ProjectedProject>,
     /// 所有 runtime 的最近事件合併結果，最新在前，最多
     /// [`RECENT_EVENTS_CAPACITY`] 筆。
     pub recent_events: Vec<ProjectedEvent>,
@@ -32,8 +41,111 @@ impl ProjectedState {
     /// 比較兩份投影的實質內容，忽略 `version` 與 `generated_at`（design D9）：1.6 用它
     /// 決定要不要遞增 `version`、要不要廣播。
     pub fn content_eq(&self, other: &ProjectedState) -> bool {
-        self.runtimes == other.runtimes && self.recent_events == other.recent_events
+        self.runtimes == other.runtimes
+            && self.projects == other.projects
+            && self.recent_events == other.recent_events
     }
+}
+
+/// 一個 Project 的投影（spec `state-projection` 「Project 投影」）。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectedProject {
+    /// project id。
+    pub id: ProjectId,
+    /// 顯示名稱。
+    pub name: String,
+    /// Stage 的線性順序（設定順序）。
+    pub stages: Vec<String>,
+    /// 載入狀態檔時產生的 warning；沒有就是空陣列。
+    pub warnings: Vec<String>,
+    /// 這個 Project 的 workstream，依設定順序。
+    pub workstreams: Vec<ProjectedWorkstream>,
+    /// 這個 Project 的 task，依設定順序。
+    pub tasks: Vec<ProjectedTask>,
+}
+
+/// 一條 Workstream 的投影。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectedWorkstream {
+    /// workstream id。
+    pub id: WorkstreamId,
+    /// 顯示名稱。
+    pub name: String,
+    /// 這次投影即時解析出的綁定。
+    pub binding: ProjectedBinding,
+}
+
+/// 綁定解析結果的投影：序列化為 `{"state": "none" | "runtime_disconnected" | "bound" |
+/// "unbound" | "ambiguous", ...}`（spec 「Project 投影」）。`bound` 另補上綁定 pane 目前的
+/// `agent`／`agent_status`。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ProjectedBinding {
+    /// 沒有 binding，也沒有覆蓋。
+    None,
+    /// 要使用的 runtime 目前不是 `connected`。
+    RuntimeDisconnected {
+        /// 未連線的 runtime id。
+        runtime: RuntimeId,
+    },
+    /// 恰好解析到一個 pane。
+    Bound {
+        /// 綁定所在的 runtime id。
+        runtime: RuntimeId,
+        /// 綁定的 pane id。
+        pane_id: PaneId,
+        /// 自動解析（`auto`）或畫面覆蓋（`override`）。
+        source: BindingSource,
+        /// 綁定 pane 目前的 agent 名稱；`None` 序列化為 `null`，不省略。
+        agent: Option<String>,
+        /// 綁定 pane 目前的 agent 狀態。
+        agent_status: AgentStatus,
+    },
+    /// 自動解析的候選為 0 個。
+    Unbound {
+        /// 嘗試解析的 runtime id。
+        runtime: RuntimeId,
+    },
+    /// 自動解析的候選超過 1 個。
+    Ambiguous {
+        /// 嘗試解析的 runtime id。
+        runtime: RuntimeId,
+        /// 候選 pane id，依狀態庫順序。
+        candidates: Vec<PaneId>,
+    },
+}
+
+/// 一個 Task 的投影。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectedTask {
+    /// task id。
+    pub id: TaskId,
+    /// 顯示標題。
+    pub title: String,
+    /// 所屬 workstream id。
+    pub workstream: WorkstreamId,
+    /// 目前所在的 Stage。
+    pub stage: String,
+    /// 目前的人工標記。
+    pub mark: Mark,
+    /// 這次投影即時推導出的 StageStatus。
+    pub status: StageStatus,
+    /// 依賴的 task id。
+    pub depends_on: Vec<TaskId>,
+}
+
+/// 一筆失效的覆蓋（design D3）：覆蓋的 runtime 已 `connected`，但 pane 不存在或已 `exited`。
+/// 投影已視同覆蓋不存在；刪除交給接收端（寫入服務）非同步完成。接收端刪除前應確認該
+/// workstream 目前的覆蓋仍等於 `override_`——同一筆失效可能在刪除完成前被再送一次，期間也
+/// 可能被使用者換成新的覆蓋。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StaleOverride {
+    /// 覆蓋所在的 project。
+    pub project: ProjectId,
+    /// 被覆蓋的 workstream。
+    pub workstream: WorkstreamId,
+    /// 判定失效當下的覆蓋內容。
+    pub override_: Override,
 }
 
 /// 單一 runtime 的投影。
@@ -162,9 +274,25 @@ pub struct ProjectedEvent {
     pub detail: String,
 }
 
-/// 由狀態庫純函數產生一份投影：不修改 `store`；`version` 原樣填入；`now` 用來產生
-/// `generated_at`。
-pub fn project(store: &RuntimeStore, version: u64, now: SystemTime) -> ProjectedState {
+/// 由狀態庫與 Domain 狀態純函數產生一份投影：不修改輸入；`version` 原樣填入；`now` 用來產生
+/// `generated_at`。需要失效覆蓋清單時用 [`project_with_stale`]。
+pub fn project(
+    store: &RuntimeStore,
+    domain: &DomainState,
+    version: u64,
+    now: SystemTime,
+) -> ProjectedState {
+    project_with_stale(store, domain, version, now).0
+}
+
+/// 同 [`project`]，另回傳這次解析判定失效的覆蓋（design D3，依 project、workstream 設定順序）；
+/// 投影任務把非空清單送給寫入服務。
+pub fn project_with_stale(
+    store: &RuntimeStore,
+    domain: &DomainState,
+    version: u64,
+    now: SystemTime,
+) -> (ProjectedState, Vec<StaleOverride>) {
     let runtime_ids = store.runtime_ids();
 
     let runtimes = runtime_ids
@@ -186,11 +314,156 @@ pub fn project(store: &RuntimeStore, version: u64, now: SystemTime) -> Projected
 
     let recent_events = project_recent_events(store, &runtime_ids);
 
-    ProjectedState {
+    let mut stale = Vec::new();
+    let projects = domain
+        .projects
+        .iter()
+        .map(|def| project_project(store, domain, def, &mut stale))
+        .collect();
+
+    let state = ProjectedState {
         version,
         generated_at: to_rfc3339(now),
         runtimes,
+        projects,
         recent_events,
+    };
+    (state, stale)
+}
+
+/// 一個 Project：每條 workstream 解析一次綁定（同 workstream 的多個 task 共用），再逐 task
+/// 推導 StageStatus；失效覆蓋附加到 `stale`。
+fn project_project(
+    store: &RuntimeStore,
+    domain: &DomainState,
+    def: &ProjectDef,
+    stale: &mut Vec<StaleOverride>,
+) -> ProjectedProject {
+    let overrides = domain.overrides.get(&def.id);
+    let progress = domain.progress.get(&def.id);
+    let progress_of = |task_id: &TaskId| progress.and_then(|map| map.get(task_id));
+
+    // 與 `def.workstreams` 同序：(解析結果, 綁定的 pane)。
+    let resolved: Vec<(BindingResolution, Option<&Pane>)> = def
+        .workstreams
+        .iter()
+        .map(|ws| {
+            let override_ = overrides.and_then(|map| map.get(&ws.id));
+            let (resolution, is_stale) = resolve_binding(ws, override_, store);
+            if let (true, Some(over)) = (is_stale, override_) {
+                stale.push(StaleOverride {
+                    project: def.id.clone(),
+                    workstream: ws.id.clone(),
+                    override_: over.clone(),
+                });
+            }
+            let pane = bound_pane(store, &resolution);
+            (resolution, pane)
+        })
+        .collect();
+
+    let workstreams = def
+        .workstreams
+        .iter()
+        .zip(&resolved)
+        .map(|(ws, (resolution, pane))| ProjectedWorkstream {
+            id: ws.id.clone(),
+            name: ws.name.clone(),
+            binding: project_binding(resolution, *pane),
+        })
+        .collect();
+
+    let tasks = def
+        .tasks
+        .iter()
+        .map(|task| {
+            let current = progress_of(&task.id)
+                .cloned()
+                .unwrap_or_else(|| TaskProgress::initial(task));
+            // 依賴的 task 沒有進度紀錄（設定驗證理論上已擋掉未知 id）視為 `Mark::None`。
+            let dependency_marks: Vec<Mark> = task
+                .depends_on
+                .iter()
+                .map(|dep| progress_of(dep).map_or(Mark::None, |p| p.mark))
+                .collect();
+            // 找不到所屬 workstream（設定驗證理論上已擋掉）視為沒有綁定。
+            let (resolution, pane) = def
+                .workstreams
+                .iter()
+                .position(|ws| ws.id == task.workstream)
+                .map_or((&BindingResolution::None, None), |i| {
+                    (&resolved[i].0, resolved[i].1)
+                });
+            let status = derive_status(
+                current.mark,
+                &dependency_marks,
+                resolution,
+                pane.map(|p| p.agent_status),
+            );
+            ProjectedTask {
+                id: task.id.clone(),
+                title: task.title.clone(),
+                workstream: task.workstream.clone(),
+                stage: current.stage,
+                mark: current.mark,
+                status,
+                depends_on: task.depends_on.clone(),
+            }
+        })
+        .collect();
+
+    ProjectedProject {
+        id: def.id.clone(),
+        name: def.name.clone(),
+        stages: def.stages.clone(),
+        warnings: domain.warnings.get(&def.id).cloned().unwrap_or_default(),
+        workstreams,
+        tasks,
+    }
+}
+
+/// `Bound` 時從狀態庫取出綁定的 pane；其餘結果為 `None`。
+fn bound_pane<'a>(store: &'a RuntimeStore, resolution: &BindingResolution) -> Option<&'a Pane> {
+    match resolution {
+        BindingResolution::Bound {
+            runtime, pane_id, ..
+        } => store
+            .state(runtime)
+            .and_then(|state| state.panes.get(pane_id)),
+        _ => None,
+    }
+}
+
+fn project_binding(resolution: &BindingResolution, pane: Option<&Pane>) -> ProjectedBinding {
+    match resolution {
+        BindingResolution::None => ProjectedBinding::None,
+        BindingResolution::RuntimeDisconnected { runtime } => {
+            ProjectedBinding::RuntimeDisconnected {
+                runtime: runtime.clone(),
+            }
+        }
+        BindingResolution::Bound {
+            runtime,
+            pane_id,
+            source,
+        } => ProjectedBinding::Bound {
+            runtime: runtime.clone(),
+            pane_id: pane_id.clone(),
+            source: *source,
+            // `resolve_binding` 只在 pane 存在時回 `Bound`，找不到 pane 屬防禦分支。
+            agent: pane.and_then(|p| p.agent.clone()),
+            agent_status: pane.map_or(AgentStatus::Unknown, |p| p.agent_status),
+        },
+        BindingResolution::Unbound { runtime } => ProjectedBinding::Unbound {
+            runtime: runtime.clone(),
+        },
+        BindingResolution::Ambiguous {
+            runtime,
+            candidates,
+        } => ProjectedBinding::Ambiguous {
+            runtime: runtime.clone(),
+            candidates: candidates.clone(),
+        },
     }
 }
 

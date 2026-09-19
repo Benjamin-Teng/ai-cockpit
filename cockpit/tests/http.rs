@@ -19,9 +19,7 @@ const PNG_SIGNATURE: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
 
 fn new_app_state() -> (StoreHandle, AppState) {
     let handle = StoreHandle::new(RuntimeStore::new());
-    let state = AppState {
-        state: handle.subscribe(),
-    };
+    let state = AppState::new(handle.subscribe());
     (handle, state)
 }
 
@@ -54,6 +52,7 @@ async fn routes_return_200_with_expected_content_types() {
         ("/app/render.js", "text/javascript"),
         ("/app/style.css", "text/css"),
         ("/app/channel.js", "text/javascript"),
+        ("/app/actions.js", "text/javascript"),
         ("/manifest.webmanifest", "application/manifest+json"),
         ("/icons/icon-192.png", "image/png"),
         ("/icons/icon-512.png", "image/png"),
@@ -187,6 +186,52 @@ async fn embedded_assets_are_the_final_files() {
     assert!(
         index_html.contains(r#"id="app""#),
         "index.html 應該有 id=\"app\" 的容器"
+    );
+}
+
+/// Task 5.3 驗收（design D9）：`index.html` 依序載入 render.js → actions.js → channel.js，
+/// 且 actions.js 已是正式內容（根節點委派 `pointerdown`、鍵盤另收 `detail === 0` 的
+/// `click`），不是 task 4.1 的佔位檔。只查文字標記；實際互動行為由
+/// `docs/research/2026-09-16/actions-check.js`（headless Chrome）驗。
+#[tokio::test]
+async fn index_loads_actions_js_between_render_and_channel() {
+    let (_handle, state) = new_app_state();
+
+    async fn body_text(router: axum::Router, path: &str) -> String {
+        let request = Request::builder()
+            .uri(path)
+            .body(Body::empty())
+            .expect("request 建構不應該失敗");
+        let response = router
+            .oneshot(request)
+            .await
+            .expect("oneshot 呼叫不應該失敗");
+        assert_eq!(response.status(), StatusCode::OK, "{path} 應該回 200");
+        String::from_utf8(body_bytes(response).await).expect("body 應該是合法 UTF-8")
+    }
+
+    let index_html = body_text(http::router(state.clone()), "/").await;
+    let position = |needle: &str| {
+        index_html
+            .find(needle)
+            .unwrap_or_else(|| panic!("index.html 應該引用 {needle}"))
+    };
+    let render = position(r#"<script src="/app/render.js"></script>"#);
+    let actions = position(r#"<script src="/app/actions.js"></script>"#);
+    let channel = position(r#"<script src="/app/channel.js"></script>"#);
+    assert!(
+        render < actions && actions < channel,
+        "載入順序應該是 render.js → actions.js → channel.js"
+    );
+
+    let actions_js = body_text(http::router(state.clone()), "/app/actions.js").await;
+    assert!(
+        actions_js.contains(r#"addEventListener("pointerdown""#),
+        "actions.js 應該以 pointerdown 委派"
+    );
+    assert!(
+        actions_js.contains("event.detail === 0"),
+        "actions.js 應該另收 detail === 0 的鍵盤 click"
     );
 }
 

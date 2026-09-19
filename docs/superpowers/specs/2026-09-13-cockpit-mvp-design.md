@@ -103,12 +103,20 @@ Cargo.toml version 0.9.0；此 commit 可能比本機安裝的 preview 新數日
 判別規則：`event` 字串含 `.` 即每 pane 訂閱的推送。`pane.agent_status_changed` payload 兩軌相同：
 `pane_id*`、`workspace_id*`、`agent_status*`、`agent`、`display_agent`、`state_labels`、`title`。
 
-**L 訂閱建立瞬間的補推**（change 1b task 4.4 查證，2026-09-15）：WSL 0.8.2 會在 authoritative
-snapshot 前推送少量剛發生過的事件（實測 2 筆），已由 §4.2「5 之前從 L／S 收到的事件一律丟棄」
-的規則吸收；Windows 0.9.0 **不補推**——使用者在 Windows 端剛開關兩三個 tab 之後幾秒內建立 L 訂閱並
-擷取 20 秒，只收到既有 Sidebar pane 的 `pane_updated`，沒有任何指向已關 tab／pane 的事件（證據見
-`docs/research/2026-09-15/change-1b-acceptance.md` task 4.4 節第 3 點）。丟棄規則對兩側都保留，
-不因 Windows 端不補推而簡化。
+**L 訂閱建立瞬間的重播**（change 1b task 4.4 初查「補推少量」；change 2 task 7.2 於 2026-09-17
+實測修正）：WSL 0.8.2 對每一條新 `events.subscribe` 重播「server 啟動以來」的**整段**事件歷史
+（不是少量），部分事件晚於 authoritative snapshot 才到，且都指向仍存在的 pane id、不觸發 §4.2
+的 Drift——原先「已由丟棄規則吸收」的結論不成立：投影會在連上或重連後，靠事件流套用把剛拿到的
+正確值又蓋回舊值，直到下一次定期重拿（30 秒）或 Drift 才收斂。change 2 的對策是驅動器「連線後
+沉降重拿」：進入 `Connected` 後等事件流靜默滿 1 秒才再取一次 snapshot、最晚第 5 秒強制拿一次
+（design D12；spec `runtime-driver`「連線後沉降重拿」）。實測 WSL 端啟動後 2.30 秒、重啟後
+4.20 秒即恢復正確且之後 10 秒不倒退；重播長度隨 server 存活期間累積的事件量增加。Windows 0.9.0
+**未見重播**——2026-09-17 以唯讀 `capture_events --seconds 5` 複驗長時間使用中的 server，只收到
+2 筆帶當前值的 `pane_updated`，與 change 1b task 4.4 的 20 秒擷取結果一致；本次未在 Windows 端跑
+沉降重拿驗證。§4.2「5 之前從 L／S 收到的事件一律丟棄」的規則對兩側都保留，但不足以吸收本節描述
+的重播，兩者是各自獨立的機制。證據：`docs/research/2026-09-16/pipeline-projection-acceptance.md`
+task 7.2 節（`docs/research/2026-09-15/change-1b-acceptance.md` task 4.4 節第 3 點的「少量」結論
+已被本節取代，僅保留其 Windows 側觀察）。
 
 **Payload 完整性**（`src/api/schema/events.rs` 的 `EventData`）：
 
@@ -531,6 +539,23 @@ Backoff→回到 Probe，屬於與 runtime 種類無關的驅動器 `cockpit-cor
 
 所有靜態檔以 `include_bytes!` 內嵌，單一執行檔。只綁 `127.0.0.1`。
 
+**寫入路由（change 2 `pipeline-projection`；spec `pipeline-progress`）：**
+
+| 路由 | 用途 | 成功 | 失敗 |
+|---|---|---|---|
+| `POST /api/projects/<project>/tasks/<task>/<op>` | 進度操作；`<op>` 為 `advance`／`complete`／`fail`／`clear` 四值之一（不需要請求本體） | 204，不回投影本體 | project／task 不存在或 `<op>` 不是四值之一 → 404；操作被拒絕 → 409 `{"error": "<原因>"}`；狀態檔寫入失敗 → 500 `{"error": "<原因>"}`，記憶體維持操作前的值 |
+| `PUT /api/projects/<project>/workstreams/<workstream>/override` | 設定畫面覆蓋；本體 `{"runtime": "<id>", "pane_id": "<pane id>"}` | 204 | project／workstream 不存在 → 404；本體不是含這兩個字串欄位的 JSON 物件 → 400；覆蓋被拒絕（runtime 未設定／未連線、pane 不存在或已 exited）→ 409；寫入失敗 → 500 |
+| `DELETE /api/projects/<project>/workstreams/<workstream>/override` | 取消畫面覆蓋 | 204（覆蓋本來就不存在也是 204） | 同上（404／500） |
+
+這兩條路由額外套一層來源檢查 middleware，只放行本機同源請求：`Host` 標頭必須是
+`127.0.0.1:<port>`、`localhost:<port>`、`[::1]:<port>` 三者之一（`<port>` 為服務實際監聽的埠，不是
+設定裡寫的 `listen`——`listen = "127.0.0.1:0"` 時以 `TcpListener::local_addr()` 拿到的才是真正的
+埠）；有 `Origin` 標頭時其值必須逐字等於 `http://` 加上通過驗證的 `Host` 值。不符合一律 403、完全不
+進到 handler、不改任何狀態；沒有 `Origin` 但 `Host` 合格（例如命令列工具）照常放行。`/api/state`、
+`/ws` 等讀路由不受這層檢查影響——`/ws` 可被任意網站以 WebSocket 讀取投影（含 pane 標題與 cwd），
+這是 1b 既有行為，change 2 不擴大也不修，只在寫入路由加了來源檢查（`openspec/changes/
+pipeline-projection/design.md` Risks／`docs/handover.md`）。
+
 ### 8.2 設定檔
 
 ```toml
@@ -565,7 +590,54 @@ wsl = { distro = "Ubuntu-24.04", socket = "/home/<user>/.config/herdr/herdr.sock
   （等於一筆自動找本機的 runtime，id 為 `local`）。
 - Windows 路徑在 TOML 用單引號 literal string。
 
-### 8.3 畫面（change 1b）
+**`[[project]]` 與 `[state]`（change 2 `pipeline-projection`；spec `pipeline-config`）：**
+
+零到多筆 `[[project]]`，每筆是一條 Pipeline（`stages` 的線性順序）加若干 workstream 與 task；選填
+的 `[state]` 指定狀態檔位置。`[[project]]`／`[state]` 都省略時行為與 1b 完全相同（不讀不寫狀態檔）。
+
+```toml
+[[project]]
+id = "cockpit"
+name = "AI Cockpit"
+# stages 的陣列順序即 Stage 的線性順序，字串同時是 Stage 的識別與顯示名稱。
+stages = ["Spec", "Build", "Review", "Done"]
+
+# 沒有 binding 的 workstream：只用來分組畫面上的欄，不會顯示綁定摘要。
+[[project.workstream]]
+id = "planning"
+
+# 有 binding 的 workstream：runtime 必須是設定檔中某一筆 [[runtime]] 的 id；workspace 必填，
+# pane_label、cwd、agent 選填，都是縮小候選 pane 的篩選條件（全選填，特徵不足時結果是 ambiguous）。
+[[project.workstream]]
+id = "backend"
+binding = { runtime = "wsl", workspace = "ai-cockpit", pane_label = "backend", agent = "claude" }
+
+[[project.task]]
+id = "spec"
+title = "寫 spec"
+workstream = "planning"
+stage = "Spec"
+
+[[project.task]]
+id = "impl"
+title = "實作"
+workstream = "backend"
+stage = "Build"
+depends_on = ["spec"]   # 只能指向同一 Project 內存在的 task id，不可指向自己或成環
+
+# 選填；狀態檔位置。相對路徑相對於這份設定檔所在目錄解析，未給時預設為設定檔目錄下的
+# cockpit.state.json。沒有任何 [[project]] 時，系統不讀也不寫狀態檔。
+[state]
+path = "cockpit.state.json"
+```
+
+- `id`（project／workstream／task）必須符合 `^[A-Za-z0-9_-]{1,64}$`，同層不得重複；`name`／`title`
+  選填，省略時預設等於 `id`。
+- `project`、`workstream`、`task` 在投影與畫面上依設定檔中出現的順序排列。
+- 這些區段與欄位之外的未知欄位一律視為錯誤（`deny_unknown_fields`），啟動失敗。
+- 完整範例見 repo 根的 `cockpit.example.toml`。
+
+### 8.3 畫面（change 1b、change 2）
 
 檔案：`index.html`、`app/channel.js`、`app/render.js`、`app/style.css`、
 `manifest.webmanifest`、`icons/`。
@@ -581,6 +653,38 @@ wsl = { distro = "Ubuntu-24.04", socket = "/home/<user>/.config/herdr/herdr.sock
 - 沒有任何可點的互動。
 - PWA：manifest 提供 `name`、192px 與 512px 圖示、`start_url`、`display: standalone`；
   不做 service worker，使用者從 Chrome 選單安裝即可（條件見 §15）。
+
+**Factory Floor 與互動（change 2 `pipeline-projection`；spec `cockpit-dashboard`「Factory
+Floor」「畫面操作」；design D9）：**
+
+- 檔案新增 `app/actions.js`；`index.html` 依序載入 `render.js` → `actions.js` → `channel.js`。
+  `render.js` 改為純函數 `renderState(state, ui)`：`ui` 是 `actions.js` 提供的目前互動狀態
+  （改綁模式的目標 workstream、最近一次操作的錯誤訊息），畫出的節點只帶
+  `data-action`／`data-project`／`data-task`／`data-workstream`／`data-runtime`／`data-pane`
+  屬性，不綁任何 listener。`actions.js` 持有 UI 狀態、送出 `fetch`、事件在 `#app` 根節點以委派處理。
+  整頁重畫不清除改綁模式與錯誤訊息——重畫呼叫 `renderState` 時會重新帶入 `actions.js` 當下的
+  `uiSnapshot()`。
+- **Factory Floor**：畫在 runtime 卡之前，依 `projects` 順序每個 Project 一塊（上下排列、不切換選
+  單）：標題為 Project `name`，有 `warnings` 逐則顯示；網格欄為 `stages`（設定順序）、列為
+  workstreams（設定順序）；列首顯示 workstream `name` 與綁定摘要（`bound` 顯示 runtime 與 pane
+  id，`source` 為 `override` 時加「改綁」標示；`unbound` 顯示「未綁定」；`ambiguous` 顯示「歧義」
+  與候選數；`runtime_disconnected` 顯示「runtime 未連線」；`none` 顯示「無綁定」）；每個 task 以節
+  點出現在所屬 workstream 列與目前 `stage` 欄交會的格子，同格多個 task 依設定順序排列，不畫依賴箭
+  頭；節點顯示 `title` 與 `status`，色彩：`running` 綠（另有動態強調）、`blocked` 琥珀、`ready`
+  灰、`pending` 暗灰、`failed` 紅、`completed` 紫——`completed` 不得沿用 pane `done` 的藍色，未知
+  `status` 以暗灰顯示原字串、不破壞畫面。
+- **畫面操作**：task 節點上，`mark` 為 `none` 且不在最後一個 stage 時顯示「推進」；`mark` 為 `none`
+  時顯示「Completed」與「Failed」；`mark` 不是 `none` 時只顯示「清除標記」。workstream 列首顯示
+  「改綁」，`binding.source` 為 `override` 時另顯示「取消改綁」。按「改綁」進入改綁模式：頁面顯示
+  指出目標 workstream 的提示與「取消」，所有 `connected` runtime 卡中未 exited 的 pane 列出現
+  「綁定到這裡」，按下即送出 `PUT .../override`，成功或按「取消」離開改綁模式。寫入端點回非 2xx
+  或請求失敗時，頁面顯示錯誤訊息（含回應本體的 `error`），直到下一次操作或使用者關閉；操作成功後
+  畫面不自行修改狀態，一律等 `/ws` 推送的新投影重畫。
+- **事件以 `pointerdown` 觸發**（鍵盤操作另收 `event.detail === 0` 的 `click`）：整頁重畫可能發生
+  在 `mousedown` 與 `mouseup` 之間，兩者落在不同 DOM 元素時瀏覽器不會送出 `click`，agent 活躍時每秒
+  多次推送會讓按鈕「按了沒反應」；`pointerdown` 對頻繁重畫更穩，代價是比 `click` 容易誤觸——按鈕都
+  設計成可反悔的操作（清除標記、取消改綁），**唯獨「推進」沒有反悔按鈕，誤按只能直接改狀態檔**
+  （`cockpit/README.md` 「推進沒有反悔按鈕」）。
 
 ## 9. 錯誤處理與 Unknown 原則
 
@@ -609,13 +713,20 @@ wsl = { distro = "Ubuntu-24.04", socket = "/home/<user>/.config/herdr/herdr.sock
 **真機測試禁令**：不得以 `herdr server stop` 製造 Windows 端斷線，會殺掉所有 pane。
 Windows 端斷線只用假 server 驗；真機斷線重連只在 WSL 端做。
 
-### 10.2 Scenario 對應（change 1b）
+### 10.2 Scenario 對應（change 1b、change 2 `pipeline-projection`）
 
 | Scenario | 驗法 | 通過條件 |
 |---|---|---|
 | A Attach | WSL 端 HERDR 先啟動；啟動 cockpit.exe，開 `http://127.0.0.1:7770` | 兩張 runtime 卡片皆 `connected`；**兩張**卡片各自列出的 workspace／pane／agent 與該側 `herdr api snapshot` 一致 |
 | B Live state | 在 Windows 端某 pane 對 agent 下一句指令；在 WSL 端重複一次 | 該 pane 一秒內變 `working`；最近事件出現 `pane.agent_status_changed`；全程無任何 prompt 送往 agent；新開一個 pane 後它的狀態變化同樣即時出現（驗 ReopenStatus） |
 | F Reconnect | 關掉再開 WSL 端 HERDR | 卡片由 `disconnected`（附原因）回到 `connected`；內容與重新拿到的 snapshot 一致 |
+| C-1 StageStatus running（真機＋整合） | 真機：WSL 測試 server 上以 `pane.report_agent` 讓綁定 pane 變 `working`，release 版 cockpit 輪詢 `/api/state`（`docs/research/2026-09-16/pipeline-check.py`，task 7.2）；程式面：`cockpit/tests/pipeline_api.rs` 的 `scenario_c_pipeline_projection` | 對應 task 的 `status` 一秒內變 `running`，`stage` 不變 |
+| C-2 done 不是 Completed（core 單元） | `cockpit-core/tests/domain_status.rs` 的 `done_is_not_completed` | `agent_status` 變 `done` 不會讓標記變成 `completed`，`status` 回到 `ready` |
+| C-3 斷線回 Ready（core 單元） | `cockpit-core/tests/domain_status.rs` 的 `disconnected_is_ready` | 綁定 pane 所在 runtime 斷線後該 task 回到 `ready`，不沿用斷線前的 `working` 狀態 |
+| D-1 三 workstream 並行推進（cockpit 整合） | `cockpit/tests/pipeline_api.rs` 的 `scenario_d_parallel_collaboration`：三個 workstream 各自綁定的 pane 同時變 `working`，推進其中一個 | 三個 task 同時 `running`，`stage` 各自維持設定的三個不同值；推進 `fe1` 後只有 `fe1` 的 `stage` 改變，`be1`／`qa1` 不受影響 |
+| D-2 Factory Floor 網格位置（畫面） | `docs/research/2026-09-16/factory-floor-check.js`（task 5.2） | 節點出現在所屬 workstream 列與目前 stage 欄交會的格子，位置符合設定；多個 Project 依序上下排列 |
+| D-3 畫面操作（畫面） | `docs/research/2026-09-16/actions-check.js`（task 5.3） | 推進／Completed／Failed／清除標記／改綁／取消改綁各按鈕送出對應的寫入請求；頻繁重畫下連續點擊不遺失 |
+| D-4 手動按鈕與持久化（使用者驗收） | 人工在畫面依序按推進、Completed、清除標記、改綁、取消改綁，並重啟服務（同設定與狀態檔，task 7.3） | 畫面等 `/ws` 新投影重畫、不自行更新；重啟後進度與覆蓋仍在 |
 
 ### 10.3 品質 gate
 

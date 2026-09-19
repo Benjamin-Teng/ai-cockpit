@@ -49,6 +49,109 @@ cp cockpit.example.toml cockpit.toml   # 然後把 <user> 換掉
 cargo run -p cockpit
 ```
 
+## Pipeline 設定（change 2 `pipeline-projection`）
+
+`[[project]]`（零到多筆）與 `[state]` 都是選填區段，省略時行為與 1b 完全相同（不讀不寫狀態檔）。
+
+```toml
+[[project]]
+id = "cockpit"
+name = "AI Cockpit"
+stages = ["Spec", "Build", "Review", "Done"]   # 陣列順序即 Stage 順序，字串同時是識別與顯示名稱
+
+[[project.workstream]]
+id = "planning"                                 # 沒有 binding：只用來分組畫面上的欄
+
+[[project.workstream]]
+id = "backend"
+binding = { runtime = "wsl", workspace = "ai-cockpit", pane_label = "backend", agent = "claude" }
+
+[[project.task]]
+id = "spec"
+title = "寫 spec"
+workstream = "planning"
+stage = "Spec"
+
+[[project.task]]
+id = "impl"
+title = "實作"
+workstream = "backend"
+stage = "Build"
+depends_on = ["spec"]
+
+[state]
+path = "cockpit.state.json"   # 選填；相對路徑相對於設定檔目錄解析，省略時預設同一個檔名
+```
+
+- `id` 須符合 `^[A-Za-z0-9_-]{1,64}$`，同層不重複；`name`／`title` 省略時預設等於 `id`；
+  `binding.runtime` 必須是設定檔中某一筆 `[[runtime]]` 的 `id`。以上區段與欄位之外的未知欄位視為
+  錯誤（啟動失敗）。完整範例見 repo 根的 `cockpit.example.toml`（已含一份可直接跑的示範 project）。
+- `[state] path` 給了才用，未給時預設為設定檔目錄下的 `cockpit.state.json`；零設定模式（沒有
+  `--config` 也沒有 `cockpit.toml`）下 `projects` 恆為空，不會有任何 project，也就不讀寫狀態檔。
+- 狀態檔（`cockpit.state.json` 或 `[state] path` 指到的檔案）已列入 `.gitignore`，不會進 repo——
+  它帶著會頻繁變動的進度與覆蓋，不是設定。停用某條 pipeline 只要刪掉對應的 `[[project]]` 區段，
+  下次啟動時舊狀態檔中對不到設定檔的 project／task／workstream 會被忽略並記一則 warn。
+- **單一實例**：狀態檔沒有鎖，也沒有多實例協調機制。同一份狀態檔只能給一個 cockpit 行程用；兩個
+  行程指到同一個檔案時，後寫入的那個會覆蓋先寫入的，不會合併。
+- **回滾注意**：`[[project]]`／`[state]` 是 change 2 新增的區段，設定檔解析一律 `deny_unknown_fields`
+  （未知欄位＝啟動失敗）。換回沒有這兩個功能的舊版 `cockpit.exe` 前，要先把 `cockpit.toml` 裡的
+  `[[project]]` 與 `[state]` 區段整段移除，不然舊版會直接啟動失敗；狀態檔可以留著不動，舊版本來就
+  不會去讀它。
+
+## 寫入 API（change 2 `pipeline-projection`）
+
+進度與畫面覆蓋改由 HTTP 寫入端點操作，畫面上按對應按鈕即會送出；下列是等效的 `curl` 範例。
+**寫入端點只接受本機同源請求**：`Host` 標頭必須是 `127.0.0.1:<port>`、`localhost:<port>`、
+`[::1]:<port>` 三者之一（`<port>` 是服務實際監聽的埠，即 `listen` 或它綁定後真正拿到的埠），有
+`Origin` 標頭時其值必須逐字等於 `http://` 加上同一個 `Host`；不符合一律 403、不改任何狀態。
+下面範例對本機打 `127.0.0.1:7770`，`curl` 依網址自動送出對應的 `Host` 標頭，仍明寫出來方便對照：
+
+```bash
+# 推進（POST，四種操作 advance / complete / fail / clear 三選一，不需要本體）
+curl -i -X POST http://127.0.0.1:7770/api/projects/cockpit/tasks/impl/advance \
+  -H 'Host: 127.0.0.1:7770'
+
+# 設定畫面覆蓋（PUT，本體含 runtime、pane_id 兩個字串欄位）
+curl -i -X PUT http://127.0.0.1:7770/api/projects/cockpit/workstreams/backend/override \
+  -H 'Host: 127.0.0.1:7770' \
+  -H 'Content-Type: application/json' \
+  -d '{"runtime":"wsl","pane_id":"w1:p3"}'
+
+# 取消畫面覆蓋（DELETE；覆蓋本來就不存在也回 204）
+curl -i -X DELETE http://127.0.0.1:7770/api/projects/cockpit/workstreams/backend/override \
+  -H 'Host: 127.0.0.1:7770'
+```
+
+狀態碼：成功 204（不回投影本體，畫面等 `/ws` 推送）；project／task／workstream 不存在，或
+`<op>` 不是四值之一 → 404；操作被拒絕（已是最後一站、已有標記、覆蓋的 runtime 未連線或 pane 已
+exited）→ 409，本體 `{"error": "<原因>"}`；`PUT` 本體不是含 `runtime`／`pane_id` 兩個字串欄位的
+JSON 物件 → 400；狀態檔寫入失敗 → 500，本體同樣是 `{"error": "<原因>"}`，記憶體中的進度維持操作
+前的值（不會半套生效）。
+
+**注意（畫面按鈕會用同一套規則回 403／500，不是只有 `curl` 才會踩到）：**
+
+- **`Host` 比對是逐字比對，不是「任何 loopback 位址」都算**：只接受 `127.0.0.1:<port>`、
+  `localhost:<port>`、`[::1]:<port>` 這三種寫法加上服務實際監聽的埠（見
+  `cockpit/src/source_check.rs`）。如果把 `[server] listen` 設成其他 loopback 位址（例如
+  `127.0.0.2`），瀏覽器送出的 `Host: 127.0.0.2:<port>` 不在這三種寫法裡，畫面上的按鈕一律回
+  403。同理，**不要把 `listen` 設成 80 埠**：瀏覽器與 curl 都會把預設埠從 `Host` 省略（即使網址
+  明寫 `:80`，送出的仍是 `Host: 127.0.0.1`），對不上 `127.0.0.1:80`，寫入一律回 403，沒有網址
+  寫法能繞過。
+- **`[state] path` 的父目錄必須事先存在**：cockpit 只會建立狀態檔本身（`.tmp` 再 `rename`），
+  不會幫你建立目錄（寫檔見 `cockpit/src/progress_service.rs` 的 `write_atomically`）。如果 `path` 指到一個
+  父目錄不存在的位置，每一次寫入（包含畫面按鈕）都會在寫 `.tmp` 這一步失敗，回 500，且永遠不會
+  自己修好——請先手動建立好該目錄。
+
+**推進沒有反悔按鈕**：畫面上「Completed」「Failed」都能再按「清除標記」復原，但「推進」把 task
+移到下一個 stage 後沒有對應的「退回」操作；`pointerdown` 事件委派又比 `click` 容易誤觸（見設計文件
+§8.3），誤按只能直接手動改狀態檔（`cockpit.state.json` 裡對應 task 的 `stage` 欄位）。
+
+**手動改狀態檔前必須先停止 cockpit，改完才能再啟動**：cockpit 執行中對狀態檔的任何寫入——不只是
+按按鈕，也包含背景任務刪除失效覆蓋（design D3；覆蓋指到的 pane 不存在或已 exited 時自動觸發）——
+都會覆寫整份狀態檔（`.tmp` 寫好再 `rename` 取代），所以只要程序還在跑，任何時間點的下一次寫入都會
+連同你手改的內容一起蓋掉。正確順序是：先 Ctrl-C 停掉這次執行 → 改 `cockpit.state.json` → 再重新
+`cargo run -p cockpit` 或執行檔啟動，讓它在下次寫入前先把你手改的內容讀進記憶體。
+
 ## 單一執行檔
 
 所有靜態資源（HTML、JS、CSS、manifest、PNG 圖示）都用 `include_str!`／`include_bytes!` 內嵌進

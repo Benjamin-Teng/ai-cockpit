@@ -3,4 +3,7 @@
 pub mod app;
 pub mod config;
 pub mod http;
+pub mod progress;
+pub mod progress_service;
 pub mod runtimes;
+pub mod source_check;

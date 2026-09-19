@@ -277,6 +277,15 @@ fn snapshot_calls(fake: &FakeRuntime) -> usize {
         .count()
 }
 
+/// 過掉進入 `Connected` 後的沉降重拿（task 6.6）：事件流靜默 1 秒 → 第二次 snapshot
+/// （必須是零延遲回應）。Drift／追加／定期重拿類測試先做這步，計數與 snapshot 回應佇列
+/// 才不會被沉降重拿混到；呼叫端的 snapshot 佇列要為它多留一筆。
+async fn pass_settle_resnapshot(fake: &FakeRuntime) {
+    tokio::time::advance(Duration::from_secs(1)).await;
+    wait_until(|| snapshot_calls(fake) == 2, "連線後沉降重拿").await;
+    spin(20).await;
+}
+
 /// 狀態庫裡有沒有這個 pane。
 fn has_pane(store: &StoreHandle, id: &RuntimeId, pane: &str) -> bool {
     store.with_store(|s| {
@@ -322,7 +331,9 @@ fn connected_times(store: &StoreHandle, id: &RuntimeId) -> (SystemTime, SystemTi
 #[tokio::test(start_paused = true)]
 async fn drift_triggers_one_resnapshot() {
     let id = runtime_id("win");
+    // 第二筆留給連線後沉降重拿（task 6.6）。
     let fake = Arc::new(FakeRuntime::new("win").snapshot_responses(vec![
+        (Ok(one_of_each()), Duration::ZERO),
         (Ok(one_of_each()), Duration::ZERO),
         (Ok(other_of_each()), Duration::ZERO),
     ]));
@@ -333,7 +344,12 @@ async fn drift_triggers_one_resnapshot() {
     let driver = tokio::spawn(run(runtime, store.clone(), Policy::default(), stop_rx));
 
     wait_until(|| is_connected(&store, &id), "驅動器進入 Connected").await;
-    assert_eq!(snapshot_calls(&fake), 1, "初次連線只該取得一次 snapshot");
+    pass_settle_resnapshot(&fake).await;
+    assert_eq!(
+        snapshot_calls(&fake),
+        2,
+        "初次連線＋沉降重拿共取得兩次 snapshot"
+    );
     let (since_before, last_snapshot_before) = connected_times(&store, &id);
 
     fake.push_event(Ok(drift_event("ghost")));
@@ -343,7 +359,15 @@ async fn drift_triggers_one_resnapshot() {
     )
     .await;
 
-    assert_eq!(snapshot_calls(&fake), 2, "Drift 應剛好多取得一次 snapshot");
+    assert_eq!(snapshot_calls(&fake), 3, "Drift 應剛好多取得一次 snapshot");
+    // 重拿期間沒有任何事件被套用：不該有追加重拿（遠小於 30 秒定期重拿，不會混到）。
+    tokio::time::advance(Duration::from_secs(1)).await;
+    spin(20).await;
+    assert_eq!(
+        snapshot_calls(&fake),
+        3,
+        "重拿期間沒有事件被套用，不該追加重拿"
+    );
     store.with_store(|s| {
         let state = s.state(&id).expect("runtime 應已登記");
         assert_eq!(state.panes.len(), 1, "狀態庫應整份換成新 snapshot");
@@ -379,7 +403,9 @@ async fn drift_triggers_one_resnapshot() {
 #[tokio::test(start_paused = true)]
 async fn drifts_during_pending_resnapshot_coalesce() {
     let id = runtime_id("win");
+    // 第二筆留給連線後沉降重拿（task 6.6）。
     let fake = Arc::new(FakeRuntime::new("win").snapshot_responses(vec![
+        (Ok(one_of_each()), Duration::ZERO),
         (Ok(one_of_each()), Duration::ZERO),
         (Ok(other_of_each()), Duration::from_millis(100)),
     ]));
@@ -390,10 +416,15 @@ async fn drifts_during_pending_resnapshot_coalesce() {
     let driver = tokio::spawn(run(runtime, store.clone(), Policy::default(), stop_rx));
 
     wait_until(|| is_connected(&store, &id), "驅動器進入 Connected").await;
-    assert_eq!(snapshot_calls(&fake), 1, "初次連線只該取得一次 snapshot");
+    pass_settle_resnapshot(&fake).await;
+    assert_eq!(
+        snapshot_calls(&fake),
+        2,
+        "初次連線＋沉降重拿共取得兩次 snapshot"
+    );
 
     // 三筆 Drift，每筆之間先讓驅動器有機會取走（spin）再推進 10 ms——加起來 30 ms，
-    // 遠小於第二次 snapshot 的 100 ms 延遲，所以三筆都落在「重拿進行中」的視窗裡。
+    // 遠小於 Drift 重拿的 100 ms 延遲，所以三筆都落在「重拿進行中」的視窗裡。
     for i in 0..3 {
         fake.push_event(Ok(drift_event(&format!("ghost{i}"))));
         spin(20).await;
@@ -401,11 +432,11 @@ async fn drifts_during_pending_resnapshot_coalesce() {
     }
     assert_eq!(
         snapshot_calls(&fake),
-        2,
+        3,
         "重拿進行中再遇到 Drift 不該重複觸發"
     );
 
-    // 推進到第二次 snapshot 的回應完成。
+    // 推進到 Drift 重拿的回應完成。
     tokio::time::advance(Duration::from_millis(100)).await;
     wait_until(
         || has_pane(&store, &id, "wK:p1"),
@@ -415,8 +446,16 @@ async fn drifts_during_pending_resnapshot_coalesce() {
 
     assert_eq!(
         snapshot_calls(&fake),
-        2,
-        "3 筆 Drift 合併後 snapshot 總共只該被取得 2 次"
+        3,
+        "3 筆 Drift 合併後只該多取得 1 次 snapshot（初次＋沉降＋Drift 共 3 次）"
+    );
+    // Drift 事件本身沒有被成功套用，所以替換後也不追加重拿。
+    tokio::time::advance(Duration::from_secs(1)).await;
+    spin(20).await;
+    assert_eq!(
+        snapshot_calls(&fake),
+        3,
+        "合併的 Drift 不算成功套用的事件，不該追加重拿"
     );
 
     drop(stop_tx);
@@ -427,14 +466,19 @@ async fn drifts_during_pending_resnapshot_coalesce() {
 }
 
 /// GIVEN 假 runtime 讓 Drift 觸發的 snapshot 回應延遲 WHEN 延遲期間送出一筆合法的
-/// `AgentStatusChanged` THEN 替換前狀態庫已反映該事件；替換完成後狀態庫等於新 snapshot。
+/// `AgentStatusChanged` THEN 替換前狀態庫已反映該事件；第一份替換完成後 snapshot 再被
+/// 取得一次（追加重拿），狀態庫最後等於第二份 snapshot。
 #[tokio::test(start_paused = true)]
 async fn events_during_resnapshot_are_applied_then_overwritten_by_snapshot() {
     let id = runtime_id("win");
-    // 兩份快照的 wJ:p1 都是 Idle：中途那筆事件把它改成 Working，替換完成後又回到 Idle。
+    // 前兩份快照的 wJ:p1 都是 Idle：中途那筆事件把它改成 Working，第一份替換完成後又回到
+    // Idle；追加重拿拿到的第三份是 wK 系列，用來分辨「狀態庫最後等於第二份重拿」。
+    // 第二筆（零延遲）留給連線後沉降重拿（task 6.6）。
     let fake = Arc::new(FakeRuntime::new("win").snapshot_responses(vec![
         (Ok(one_of_each()), Duration::ZERO),
+        (Ok(one_of_each()), Duration::ZERO),
         (Ok(one_of_each()), Duration::from_millis(100)),
+        (Ok(other_of_each()), Duration::from_millis(100)),
     ]));
     let store = store_with(&id);
 
@@ -443,16 +487,17 @@ async fn events_during_resnapshot_are_applied_then_overwritten_by_snapshot() {
     let driver = tokio::spawn(run(runtime, store.clone(), Policy::default(), stop_rx));
 
     wait_until(|| is_connected(&store, &id), "驅動器進入 Connected").await;
+    pass_settle_resnapshot(&fake).await;
     assert_eq!(
         pane_status(&store, &id, "wJ:p1"),
         AgentStatus::Idle,
         "初始 snapshot 的 pane 應為 Idle"
     );
 
-    // 先讓 Drift 觸發重拿（第二次 snapshot 卡在 100 ms 延遲裡）。
+    // 先讓 Drift 觸發重拿（Drift 重拿卡在 100 ms 延遲裡）。
     fake.push_event(Ok(drift_event("ghost")));
     spin(20).await;
-    assert_eq!(snapshot_calls(&fake), 2, "Drift 應已觸發重拿");
+    assert_eq!(snapshot_calls(&fake), 3, "Drift 應已觸發重拿");
 
     // 重拿進行中到達的合法事件：完全不推進時鐘，確保它落在延遲視窗內。
     fake.push_event(Ok(RuntimeEvent::AgentStatusChanged {
@@ -471,10 +516,116 @@ async fn events_during_resnapshot_are_applied_then_overwritten_by_snapshot() {
     tokio::time::advance(Duration::from_millis(100)).await;
     wait_until(
         || pane_status(&store, &id, "wJ:p1") == AgentStatus::Idle,
-        "重拿完成後狀態庫以 snapshot 為準",
+        "第一份重拿完成後狀態庫以 snapshot 為準",
     )
     .await;
-    assert_eq!(snapshot_calls(&fake), 2, "只該多取得一次 snapshot");
+    assert_eq!(
+        snapshot_calls(&fake),
+        4,
+        "重拿期間有事件被套用，替換後應立即追加重拿一次"
+    );
+
+    tokio::time::advance(Duration::from_millis(100)).await;
+    wait_until(
+        || has_pane(&store, &id, "wK:p1"),
+        "追加重拿完成、狀態庫換成第二份 snapshot",
+    )
+    .await;
+    store.with_store(|s| {
+        let state = s.state(&id).expect("runtime 應已登記");
+        assert_eq!(state.panes.len(), 1, "狀態庫應整份換成第二份 snapshot");
+        assert!(!state.panes.contains_key(&pane_id("wJ:p1")));
+    });
+
+    // 追加重拿期間沒有事件：不再追加。
+    tokio::time::advance(Duration::from_secs(1)).await;
+    spin(20).await;
+    assert_eq!(snapshot_calls(&fake), 4, "追加重拿期間沒有事件，不該再追加");
+
+    drop(stop_tx);
+    tokio::time::timeout(EXPECT_TIMEOUT, driver)
+        .await
+        .expect("停止後驅動器應在期限內結束")
+        .expect("驅動器不應 panic");
+}
+
+/// 一筆會被成功套用的事件：把 wJ:p1 改成 Working（每份 snapshot 都把它重設回 Idle）。
+fn working_event() -> RuntimeEvent {
+    RuntimeEvent::AgentStatusChanged {
+        pane_id: pane_id("wJ:p1"),
+        status: AgentStatus::Working,
+        title: None,
+        agent: None,
+    }
+}
+
+/// GIVEN 假 runtime 讓每次 snapshot 回應延遲，且每次延遲期間都送出一筆合法事件
+/// WHEN 發生一次 Drift THEN 因該 Drift 取得的 snapshot 共 3 次（1 次重拿＋2 次追加），
+/// 之後不再追加；追加重拿期間遇到的新 Drift 不另外觸發、也不讓次數歸零。
+#[tokio::test(start_paused = true)]
+async fn followup_resnapshot_capped_at_two() {
+    let id = runtime_id("win");
+    // 初次連線與沉降重拿（task 6.6）不延遲；之後每次都延遲 100 ms（佇列用完就一直重複
+    // 最後一筆）。
+    let fake = Arc::new(FakeRuntime::new("win").snapshot_responses(vec![
+        (Ok(one_of_each()), Duration::ZERO),
+        (Ok(one_of_each()), Duration::ZERO),
+        (Ok(one_of_each()), Duration::from_millis(100)),
+    ]));
+    let store = store_with(&id);
+
+    let (stop_tx, stop_rx) = oneshot::channel();
+    let runtime: Arc<dyn AgentRuntime> = fake.clone();
+    let driver = tokio::spawn(run(runtime, store.clone(), Policy::default(), stop_rx));
+
+    wait_until(|| is_connected(&store, &id), "驅動器進入 Connected").await;
+    pass_settle_resnapshot(&fake).await;
+    assert_eq!(
+        snapshot_calls(&fake),
+        2,
+        "初次連線＋沉降重拿共取得兩次 snapshot"
+    );
+
+    fake.push_event(Ok(drift_event("ghost")));
+    spin(20).await;
+    assert_eq!(snapshot_calls(&fake), 3, "Drift 應觸發重拿");
+
+    // 三個延遲視窗（1 次重拿＋2 次追加），每個視窗都送一筆會成功套用的事件。
+    for round in 1..=3 {
+        fake.push_event(Ok(working_event()));
+        if round == 2 {
+            // 追加重拿期間的新 Drift：不另外觸發，也不能讓追加次數歸零。
+            fake.push_event(Ok(drift_event("ghost-followup")));
+        }
+        spin(20).await;
+        assert_eq!(
+            pane_status(&store, &id, "wJ:p1"),
+            AgentStatus::Working,
+            "第 {round} 個延遲視窗內的事件應照常套用"
+        );
+        assert_eq!(
+            snapshot_calls(&fake),
+            2 + round,
+            "第 {round} 個延遲視窗內不該多發 snapshot 請求"
+        );
+
+        tokio::time::advance(Duration::from_millis(100)).await;
+        wait_until(
+            || pane_status(&store, &id, "wJ:p1") == AgentStatus::Idle,
+            &format!("第 {round} 份重拿完成、狀態庫換成 snapshot"),
+        )
+        .await;
+    }
+
+    // 1 次初次連線＋1 次沉降重拿＋1 次重拿＋2 次追加；第三份替換後即使期間有事件也不再追加。
+    assert_eq!(
+        snapshot_calls(&fake),
+        5,
+        "同一次 Drift 觸發的追加重拿最多 2 次"
+    );
+    tokio::time::advance(Duration::from_secs(1)).await;
+    spin(20).await;
+    assert_eq!(snapshot_calls(&fake), 5, "達上限後不該再追加重拿");
 
     drop(stop_tx);
     tokio::time::timeout(EXPECT_TIMEOUT, driver)
@@ -485,6 +636,9 @@ async fn events_during_resnapshot_are_applied_then_overwritten_by_snapshot() {
 
 /// GIVEN resnapshot 間隔 30 秒、驅動器 `Connected`、時間可控 WHEN 第 20 秒因 Drift 重拿
 /// 一次 THEN 第 30 秒沒有再取得 snapshot，到第 50 秒才再取得一次。
+///
+/// Task 6.6 起連線後第 1 秒會先有一次沉降重拿（它本身也重設計時器），所以這裡的「第 N 秒」
+/// 都從沉降重拿完成那一刻（t = 1 s）起算：Drift 在 t = 21 s、檢查 t = 31 s 與 t = 51 s。
 #[tokio::test(start_paused = true)]
 async fn periodic_resnapshot_fires_and_resets_after_drift() {
     let id = runtime_id("win");
@@ -503,31 +657,36 @@ async fn periodic_resnapshot_fires_and_resets_after_drift() {
     let driver = tokio::spawn(run(runtime, store.clone(), policy, stop_rx));
 
     wait_until(|| is_connected(&store, &id), "驅動器進入 Connected").await;
-    assert_eq!(snapshot_calls(&fake), 1, "初次連線只該取得一次 snapshot");
+    pass_settle_resnapshot(&fake).await;
+    assert_eq!(
+        snapshot_calls(&fake),
+        2,
+        "初次連線＋沉降重拿共取得兩次 snapshot"
+    );
 
-    // t = 20 s：還沒到期。
+    // 上次成功 snapshot 後 20 秒：還沒到期。
     tokio::time::advance(Duration::from_secs(20)).await;
     spin(20).await;
-    assert_eq!(snapshot_calls(&fake), 1, "第 20 秒還沒到定期重拿的時間");
+    assert_eq!(snapshot_calls(&fake), 2, "第 20 秒還沒到定期重拿的時間");
 
-    // t = 20 s：Drift 重拿一次，順帶重設計時器。
+    // 同一刻：Drift 重拿一次，順帶重設計時器。
     fake.push_event(Ok(drift_event("ghost")));
     spin(20).await;
-    assert_eq!(snapshot_calls(&fake), 2, "Drift 應觸發一次重拿");
+    assert_eq!(snapshot_calls(&fake), 3, "Drift 應觸發一次重拿");
 
-    // t = 30 s：原本的計時器若沒被重設，這裡就會多出一次。
+    // 第 30 秒：原本的計時器若沒被重設，這裡就會多出一次。
     tokio::time::advance(Duration::from_secs(10)).await;
     spin(20).await;
     assert_eq!(
         snapshot_calls(&fake),
-        2,
+        3,
         "Drift 重拿已重設計時器，第 30 秒不該再取得 snapshot"
     );
 
-    // t = 50 s：距離上次成功重拿滿 30 秒。
+    // 第 50 秒：距離上次成功重拿滿 30 秒。
     tokio::time::advance(Duration::from_secs(20)).await;
     spin(20).await;
-    assert_eq!(snapshot_calls(&fake), 3, "第 50 秒應定期重拿一次");
+    assert_eq!(snapshot_calls(&fake), 4, "第 50 秒應定期重拿一次");
 
     drop(stop_tx);
     tokio::time::timeout(EXPECT_TIMEOUT, driver)
@@ -848,6 +1007,462 @@ async fn snapshot_failure_is_disconnected() {
         [Call::Subscribe, Call::Snapshot, Call::Subscribe],
         "依退避重來時應重新建立事件流"
     );
+
+    drop(stop_tx);
+    tokio::time::timeout(EXPECT_TIMEOUT, driver)
+        .await
+        .expect("停止後驅動器應在期限內結束")
+        .expect("驅動器不應 panic");
+}
+
+/// GIVEN 假 runtime 回「附固定間隔 0 秒」的探測類錯誤、時間可控 WHEN 觀察
+/// `Disconnected` 與下一次 `Connecting` THEN 重試秒數為 1，且至少經過 1 秒才再次嘗試
+/// （spec「固定間隔下限」、design D11：`max(retry_after, 1s)`）。
+#[tokio::test(start_paused = true)]
+async fn fixed_retry_interval_floor_one_second() {
+    let id = runtime_id("win");
+    let probing_zero = || RuntimeError::Unavailable {
+        reason: "探測中".to_string(),
+        retry_after: Duration::ZERO,
+    };
+    let fake = Arc::new(
+        FakeRuntime::new("win").subscribe_responses(vec![Err(probing_zero()), Err(probing_zero())]),
+    );
+    let store = store_with(&id);
+
+    let (stop_tx, stop_rx) = oneshot::channel();
+    let runtime: Arc<dyn AgentRuntime> = fake.clone();
+    let driver = tokio::spawn(run(runtime, store.clone(), Policy::default(), stop_rx));
+
+    let (_, retry_in) = disconnected_after_attempt(&store, &id, &fake, 1).await;
+    assert_eq!(
+        retry_in,
+        Duration::from_secs(1),
+        "固定間隔小於 1 秒時應以 1 秒計"
+    );
+
+    // 推進到差 1 ms 就滿 1 秒：不該提前進下一輪連線嘗試。
+    tokio::time::advance(Duration::from_millis(999)).await;
+    spin(20).await;
+    assert_eq!(subscribe_calls(&fake), 1, "未滿 1 秒不該再次嘗試");
+
+    // 補滿最後 1 ms，滿 1 秒後才進下一輪 Connecting。
+    tokio::time::advance(Duration::from_millis(1)).await;
+    wait_until(
+        || subscribe_calls(&fake) >= 2,
+        "滿 1 秒後應進入下一輪連線嘗試",
+    )
+    .await;
+
+    drop(stop_tx);
+    tokio::time::timeout(EXPECT_TIMEOUT, driver)
+        .await
+        .expect("停止後驅動器應在期限內結束")
+        .expect("驅動器不應 panic");
+}
+
+/// GIVEN 建立事件流成功，但取得 snapshot 回「附固定間隔 60 秒」的探測類錯誤 WHEN 觀察
+/// `Disconnected` THEN 重試秒數為 60（原因為該錯誤的說明），退避序列不推進——緊接著的
+/// 一般錯誤仍從 1 秒起算（spec「取得 snapshot 時的固定間隔錯誤」）。
+#[tokio::test(start_paused = true)]
+async fn snapshot_unavailable_uses_fixed_interval() {
+    const PROBING: &str = "探測中";
+    let id = runtime_id("win");
+    let fake = Arc::new(
+        FakeRuntime::new("win")
+            .subscribe_responses(vec![Ok(()), Err(RuntimeError::Failed("boom".to_string()))])
+            .snapshot_responses(vec![(
+                Err(RuntimeError::Unavailable {
+                    reason: PROBING.to_string(),
+                    retry_after: Duration::from_secs(60),
+                }),
+                Duration::ZERO,
+            )]),
+    );
+    let store = store_with(&id);
+
+    let (stop_tx, stop_rx) = oneshot::channel();
+    let runtime: Arc<dyn AgentRuntime> = fake.clone();
+    let driver = tokio::spawn(run(runtime, store.clone(), Policy::default(), stop_rx));
+
+    wait_until(
+        || is_disconnected(&store, &id),
+        "取得 snapshot 失敗後進入 Disconnected",
+    )
+    .await;
+    let (reason, retry_in) = disconnected_parts(&store, &id);
+    assert_eq!(reason, PROBING, "斷線原因應為 snapshot 錯誤的說明");
+    assert_eq!(
+        retry_in,
+        Duration::from_secs(60),
+        "取得 snapshot 的固定間隔錯誤應照原值等"
+    );
+
+    // 推進到差 1 ms 就滿 60 秒：不該提前進下一輪連線嘗試。
+    tokio::time::advance(retry_in - Duration::from_millis(1)).await;
+    spin(20).await;
+    assert_eq!(subscribe_calls(&fake), 1, "未滿 60 秒不該再次嘗試");
+
+    // 補滿最後 1 ms，滿 60 秒後才進下一輪。
+    tokio::time::advance(Duration::from_millis(1)).await;
+    wait_until(
+        || subscribe_calls(&fake) >= 2 && is_disconnected(&store, &id),
+        "第二輪連線嘗試（一般錯誤）失敗後進入 Disconnected",
+    )
+    .await;
+    let (_, next_retry) = disconnected_parts(&store, &id);
+    assert_eq!(
+        next_retry,
+        Duration::from_secs(1),
+        "退避序列沒被固定間隔推進過，一般錯誤仍從 1 秒起算"
+    );
+
+    drop(stop_tx);
+    tokio::time::timeout(EXPECT_TIMEOUT, driver)
+        .await
+        .expect("停止後驅動器應在期限內結束")
+        .expect("驅動器不應 panic");
+}
+
+// ---------------------------------------------------------------------------
+// Task 6.6：連線後沉降重拿
+// ---------------------------------------------------------------------------
+
+/// 一份只有 wJ:p1 的快照，該 pane 帶指定的 label 與 agent 狀態（用來分辨「狀態庫等於
+/// 哪一份 snapshot」與「被晚到的舊值蓋掉」）。
+fn labelled(label: &str, status: AgentStatus) -> RuntimeSnapshot {
+    let mut p = pane("wJ:p1", "wJ", "wJ:t1");
+    p.label = Some(label.to_string());
+    p.agent_status = status;
+    snapshot(
+        vec![workspace("wJ", 1)],
+        vec![tab("wJ:t1", "wJ", 1)],
+        vec![p],
+        vec![],
+        empty_focused(),
+    )
+}
+
+/// 狀態庫裡 wJ:p1 目前的 label 與 agent 狀態。
+fn pane_label_status(store: &StoreHandle, id: &RuntimeId) -> (Option<String>, AgentStatus) {
+    store.with_store(|s| {
+        let pane = s
+            .state(id)
+            .expect("runtime 應已登記")
+            .panes
+            .get(&pane_id("wJ:p1"))
+            .cloned()
+            .expect("pane 應存在");
+        (pane.label, pane.agent_status)
+    })
+}
+
+/// 第 `n` 次（從 0 起算）`snapshot()` 呼叫的虛擬時間。
+fn snapshot_at(fake: &FakeRuntime, n: usize) -> tokio::time::Instant {
+    fake.call_log()
+        .iter()
+        .filter(|record| record.call == Call::Snapshot)
+        .nth(n)
+        .expect("應有這次 snapshot 呼叫")
+        .at
+}
+
+/// GIVEN 驅動器剛進入 `Connected`，之後事件流沒有事件 WHEN 時間經過 1 秒後再經過 30 秒
+/// 以內 THEN 進入 `Connected` 後 snapshot 恰好又被取得一次，且發生在第 1 秒之後。
+#[tokio::test(start_paused = true)]
+async fn settle_resnapshot_after_quiet_second() {
+    let id = runtime_id("win");
+    let fake = Arc::new(
+        FakeRuntime::new("win").snapshot_responses(vec![(Ok(one_of_each()), Duration::ZERO)]),
+    );
+    let store = store_with(&id);
+
+    let (stop_tx, stop_rx) = oneshot::channel();
+    let runtime: Arc<dyn AgentRuntime> = fake.clone();
+    let driver = tokio::spawn(run(runtime, store.clone(), Policy::default(), stop_rx));
+
+    wait_until(|| is_connected(&store, &id), "驅動器進入 Connected").await;
+    assert_eq!(snapshot_calls(&fake), 1, "初次連線只該取得一次 snapshot");
+    let connected_at = snapshot_at(&fake, 0);
+
+    tokio::time::advance(Duration::from_millis(999)).await;
+    spin(20).await;
+    assert_eq!(snapshot_calls(&fake), 1, "靜默未滿 1 秒不該沉降重拿");
+
+    tokio::time::advance(Duration::from_millis(1)).await;
+    wait_until(|| snapshot_calls(&fake) == 2, "靜默滿 1 秒後沉降重拿").await;
+    assert!(
+        snapshot_at(&fake, 1) >= connected_at + Duration::from_secs(1),
+        "沉降重拿應發生在進入 Connected 的第 1 秒之後"
+    );
+
+    // 再經過 29 秒（合計 30 秒，定期重拿要到沉降重拿後 30 秒才到期）：不再取得。
+    tokio::time::advance(Duration::from_secs(29)).await;
+    spin(20).await;
+    assert_eq!(snapshot_calls(&fake), 2, "沉降重拿每次連線只做一次");
+
+    drop(stop_tx);
+    tokio::time::timeout(EXPECT_TIMEOUT, driver)
+        .await
+        .expect("停止後驅動器應在期限內結束")
+        .expect("驅動器不應 panic");
+}
+
+/// GIVEN 假 runtime 在 snapshot 替換完成後 0.3 秒送出一筆 pane 的舊值（label 為空、agent
+/// 狀態 `unknown`），之後事件流靜默 WHEN 時間經過 1.3 秒 THEN 狀態庫中該 pane 的 label
+/// 與 agent 狀態等於第二份 snapshot。
+#[tokio::test(start_paused = true)]
+async fn settle_resnapshot_overrides_late_replay() {
+    let id = runtime_id("win");
+    let fake = Arc::new(FakeRuntime::new("win").snapshot_responses(vec![
+        (Ok(labelled("first", AgentStatus::Working)), Duration::ZERO),
+        (Ok(labelled("second", AgentStatus::Blocked)), Duration::ZERO),
+    ]));
+    let store = store_with(&id);
+
+    let (stop_tx, stop_rx) = oneshot::channel();
+    let runtime: Arc<dyn AgentRuntime> = fake.clone();
+    let driver = tokio::spawn(run(runtime, store.clone(), Policy::default(), stop_rx));
+
+    wait_until(|| is_connected(&store, &id), "驅動器進入 Connected").await;
+
+    // t = 0.3 s：晚到的重播舊值（pane 仍存在，不會 Drift）。
+    tokio::time::advance(Duration::from_millis(300)).await;
+    let mut stale = pane("wJ:p1", "wJ", "wJ:t1");
+    stale.label = None;
+    stale.agent_status = AgentStatus::Unknown;
+    fake.push_event(Ok(RuntimeEvent::PaneUpserted(stale)));
+    spin(20).await;
+    assert_eq!(
+        pane_label_status(&store, &id),
+        (None, AgentStatus::Unknown),
+        "舊值會被照常套用（這正是要被沉降重拿蓋掉的倒退）"
+    );
+
+    // 靜默計時從最後一筆事件起算：t = 1.299 s 還不該重拿。
+    tokio::time::advance(Duration::from_millis(999)).await;
+    spin(20).await;
+    assert_eq!(snapshot_calls(&fake), 1, "最後一筆事件後未滿 1 秒不該重拿");
+
+    // t = 1.3 s：靜默滿 1 秒，重拿並整份替換。
+    tokio::time::advance(Duration::from_millis(1)).await;
+    wait_until(
+        || pane_label_status(&store, &id) == (Some("second".to_string()), AgentStatus::Blocked),
+        "沉降重拿以第二份 snapshot 覆蓋晚到的舊值",
+    )
+    .await;
+    assert_eq!(snapshot_calls(&fake), 2);
+
+    drop(stop_tx);
+    tokio::time::timeout(EXPECT_TIMEOUT, driver)
+        .await
+        .expect("停止後驅動器應在期限內結束")
+        .expect("驅動器不應 panic");
+}
+
+/// GIVEN 驅動器剛進入 `Connected`，假 runtime 每 0.5 秒送出一筆合法事件 WHEN 時間經過
+/// 5 秒 THEN snapshot 在第 5 秒被取得一次，之後不再因沉降而取得。
+#[tokio::test(start_paused = true)]
+async fn settle_resnapshot_capped_at_five_seconds() {
+    let id = runtime_id("win");
+    let fake = Arc::new(
+        FakeRuntime::new("win").snapshot_responses(vec![(Ok(one_of_each()), Duration::ZERO)]),
+    );
+    let store = store_with(&id);
+
+    let (stop_tx, stop_rx) = oneshot::channel();
+    let runtime: Arc<dyn AgentRuntime> = fake.clone();
+    let driver = tokio::spawn(run(runtime, store.clone(), Policy::default(), stop_rx));
+
+    wait_until(|| is_connected(&store, &id), "驅動器進入 Connected").await;
+    let connected_at = snapshot_at(&fake, 0);
+
+    // t = 0.5 … 4.5 s：每 0.5 秒一筆合法事件，事件流始終沒有靜默滿 1 秒。
+    for step in 1..=9 {
+        tokio::time::advance(Duration::from_millis(500)).await;
+        fake.push_event(Ok(working_event()));
+        spin(20).await;
+        assert_eq!(
+            snapshot_calls(&fake),
+            1,
+            "第 {} ms 事件不停，還沒到 5 秒上限不該重拿",
+            step * 500
+        );
+    }
+
+    // t = 5 s：上限到，取得一次。
+    tokio::time::advance(Duration::from_millis(500)).await;
+    spin(20).await;
+    assert_eq!(snapshot_calls(&fake), 2, "第 5 秒應沉降重拿一次");
+    assert_eq!(
+        snapshot_at(&fake, 1),
+        connected_at + Duration::from_secs(5),
+        "上限重拿應剛好發生在第 5 秒"
+    );
+
+    // 之後事件繼續（t = 5 … 8 s）再靜默到 t = 20 s（定期重拿要到 35 s）：不再沉降重拿。
+    for _ in 0..7 {
+        fake.push_event(Ok(working_event()));
+        spin(20).await;
+        tokio::time::advance(Duration::from_millis(500)).await;
+    }
+    tokio::time::advance(Duration::from_secs(12)).await;
+    spin(20).await;
+    assert_eq!(snapshot_calls(&fake), 2, "每次連線只沉降重拿一次");
+
+    drop(stop_tx);
+    tokio::time::timeout(EXPECT_TIMEOUT, driver)
+        .await
+        .expect("停止後驅動器應在期限內結束")
+        .expect("驅動器不應 panic");
+}
+
+/// GIVEN Drift 重拿進行中（回應延遲 1.5 秒）、期間有一筆合法事件被套用 WHEN 沉降重拿到期
+/// THEN 併入進行中的重拿、不另外取得；Drift 重拿完成後照常追加重拿一次（追加狀態沒被
+/// 沉降重拿清掉）；之後靜默也不再因沉降多拿。
+#[tokio::test(start_paused = true)]
+async fn settle_resnapshot_merges_into_pending_resnapshot() {
+    let id = runtime_id("win");
+    let fake = Arc::new(FakeRuntime::new("win").snapshot_responses(vec![
+        (Ok(one_of_each()), Duration::ZERO),
+        (Ok(one_of_each()), Duration::from_millis(1_500)),
+        (Ok(other_of_each()), Duration::ZERO),
+    ]));
+    let store = store_with(&id);
+
+    let (stop_tx, stop_rx) = oneshot::channel();
+    let runtime: Arc<dyn AgentRuntime> = fake.clone();
+    let driver = tokio::spawn(run(runtime, store.clone(), Policy::default(), stop_rx));
+
+    wait_until(|| is_connected(&store, &id), "驅動器進入 Connected").await;
+
+    // t = 0.5 s：Drift 觸發重拿（t = 2.0 s 才回）。
+    tokio::time::advance(Duration::from_millis(500)).await;
+    fake.push_event(Ok(drift_event("ghost")));
+    spin(20).await;
+    assert_eq!(snapshot_calls(&fake), 2, "Drift 應觸發重拿");
+
+    // t = 0.6 s：重拿期間一筆合法事件被套用（沉降到期時刻推到 1.6 s）。
+    tokio::time::advance(Duration::from_millis(100)).await;
+    fake.push_event(Ok(working_event()));
+    spin(20).await;
+    assert_eq!(pane_status(&store, &id, "wJ:p1"), AgentStatus::Working);
+
+    // t = 1.6 s：沉降到期，Drift 重拿仍在進行中 → 併入，不另發請求。
+    tokio::time::advance(Duration::from_millis(1_000)).await;
+    spin(20).await;
+    assert_eq!(
+        snapshot_calls(&fake),
+        2,
+        "沉降重拿遇進行中的重拿應併入、不另外取得"
+    );
+
+    // t = 2.0 s：Drift 重拿完成；期間有事件被套用 → 追加重拿一次。
+    tokio::time::advance(Duration::from_millis(400)).await;
+    wait_until(
+        || has_pane(&store, &id, "wK:p1"),
+        "Drift 重拿完成後追加重拿、狀態庫換成第三份 snapshot",
+    )
+    .await;
+    assert_eq!(
+        snapshot_calls(&fake),
+        3,
+        "併入的沉降重拿不該清掉 Drift 的追加狀態"
+    );
+
+    // 之後靜默 10 秒：沉降已做過（併入），不再多拿；定期重拿還沒到期。
+    tokio::time::advance(Duration::from_secs(10)).await;
+    spin(20).await;
+    assert_eq!(snapshot_calls(&fake), 3, "每次連線只沉降重拿一次");
+
+    drop(stop_tx);
+    tokio::time::timeout(EXPECT_TIMEOUT, driver)
+        .await
+        .expect("停止後驅動器應在期限內結束")
+        .expect("驅動器不應 panic");
+}
+
+/// GIVEN 驅動器剛進入 `Connected`，沉降重拿的 snapshot 回 `Failed` WHEN 靜默 1 秒 THEN
+/// 進入 `Disconnected`，原因含該錯誤字串。
+#[tokio::test(start_paused = true)]
+async fn settle_resnapshot_failure_is_disconnected() {
+    let id = runtime_id("win");
+    let fake = Arc::new(FakeRuntime::new("win").snapshot_responses(vec![
+        (Ok(one_of_each()), Duration::ZERO),
+        (
+            Err(RuntimeError::Failed("settle boom".to_string())),
+            Duration::ZERO,
+        ),
+    ]));
+    let store = store_with(&id);
+
+    let (stop_tx, stop_rx) = oneshot::channel();
+    let runtime: Arc<dyn AgentRuntime> = fake.clone();
+    let driver = tokio::spawn(run(runtime, store.clone(), Policy::default(), stop_rx));
+
+    wait_until(|| is_connected(&store, &id), "驅動器進入 Connected").await;
+    tokio::time::advance(Duration::from_secs(1)).await;
+    wait_until(
+        || is_disconnected(&store, &id),
+        "沉降重拿失敗後進入 Disconnected",
+    )
+    .await;
+    assert_eq!(snapshot_calls(&fake), 2, "失敗的應是沉降重拿");
+    let (reason, _) = disconnected_parts(&store, &id);
+    assert!(
+        reason.contains("settle boom"),
+        "斷線原因應含沉降重拿的錯誤字串，實際為 {reason}"
+    );
+
+    drop(stop_tx);
+    tokio::time::timeout(EXPECT_TIMEOUT, driver)
+        .await
+        .expect("停止後驅動器應在期限內結束")
+        .expect("驅動器不應 panic");
+}
+
+/// GIVEN 已完成沉降重拿的連線結束，驅動器重試後再次進入 `Connected` WHEN 事件流靜默
+/// 1 秒 THEN snapshot 再被取得一次。
+#[tokio::test(start_paused = true)]
+async fn settle_resnapshot_again_after_reconnect() {
+    let id = runtime_id("win");
+    let fake = Arc::new(
+        FakeRuntime::new("win").snapshot_responses(vec![(Ok(one_of_each()), Duration::ZERO)]),
+    );
+    let store = store_with(&id);
+
+    let (stop_tx, stop_rx) = oneshot::channel();
+    let runtime: Arc<dyn AgentRuntime> = fake.clone();
+    let driver = tokio::spawn(run(runtime, store.clone(), Policy::default(), stop_rx));
+
+    wait_until(|| is_connected(&store, &id), "驅動器進入 Connected").await;
+    tokio::time::advance(Duration::from_secs(1)).await;
+    wait_until(|| snapshot_calls(&fake) == 2, "第一條連線的沉降重拿").await;
+
+    fake.end_stream();
+    wait_until(
+        || is_disconnected(&store, &id),
+        "事件流結束後進入 Disconnected",
+    )
+    .await;
+    let (_, retry_in) = disconnected_parts(&store, &id);
+    tokio::time::advance(retry_in).await;
+    wait_until(
+        || subscribe_calls(&fake) == 2 && is_connected(&store, &id) && snapshot_calls(&fake) == 3,
+        "重試後再次進入 Connected",
+    )
+    .await;
+
+    tokio::time::advance(Duration::from_millis(999)).await;
+    spin(20).await;
+    assert_eq!(snapshot_calls(&fake), 3, "新連線靜默未滿 1 秒不該重拿");
+
+    tokio::time::advance(Duration::from_millis(1)).await;
+    wait_until(
+        || snapshot_calls(&fake) == 4,
+        "新連線靜默滿 1 秒後再沉降重拿",
+    )
+    .await;
 
     drop(stop_tx);
     tokio::time::timeout(EXPECT_TIMEOUT, driver)

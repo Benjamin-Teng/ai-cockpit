@@ -906,3 +906,74 @@ async fn initial_s_stops_emitting_after_reopen_takes_over() {
         "重開接手之後初始 S 不該再送任何東西進合併流，實際收到: {extra:?}"
     );
 }
+
+/// task 6.3（design D11 1b deferred）：`Shutdown.aborts` 在登記新 handle 時要修剪已結束的
+/// handle（`retain(|h| !h.is_finished())`），登記數才不會隨重開次數無限增長。
+///
+/// 「常數上限」：穩態下任一時刻最多同時活著的 task 是 L（1，全程不動）、目前生效的 S
+/// reader（1）、正在跑的去抖動／重開 task（1）——`register()` 每次呼叫都先修剪才 push，所以
+/// 登記數應該穩定貼著這個量級，跟「已經重開了幾次」無關。抓 8 當上限：比穩態量級（約 3）
+/// 寬裕一截以吸收「abort 已呼叫但 task 還沒真的跑完」的短暫窗口，同時遠低於「修剪失效」時
+/// 20 次重開會累積的登記數（每次重開兩筆 register，20 次會到 40 上下）——上限訂在兩者之間，
+/// 才驗得出這條差異。
+#[tokio::test]
+async fn aborts_registry_does_not_grow_unbounded() {
+    const REOPEN_COUNT: usize = 20;
+    /// 見上方函式說明：遠低於「不修剪」的量級（約 2×`REOPEN_COUNT`），且比穩態量級寬裕。
+    const ABORTS_UPPER_BOUND: usize = 8;
+    /// 每次觸發之間的間隔：比去抖動（200 ms）與 `AFTER_DEBOUNCE`（400 ms）都寬裕，確保
+    /// 20 次觸發各自獨立重開，不會被去抖動合併成更少次。
+    const TOGGLE_GAP: Duration = Duration::from_millis(450);
+
+    // L 腳本：交替推 `pane_created("wJ:p2")`／`pane_closed("wJ:p2")`，兩兩之間留
+    // `TOGGLE_GAP`；seed 只有 `wJ:p1`，所以目標集合每次都在 {p1} 與 {p1,p2} 之間切換，
+    // 20 次切換各自都是非空集合、各自都會真的重開一次 S。
+    let mut lifecycle_steps = Vec::with_capacity(REOPEN_COUNT * 2 + 1);
+    for i in 0..REOPEN_COUNT {
+        lifecycle_steps.push(Step::Event(if i % 2 == 0 {
+            pane_created("wJ:p2")
+        } else {
+            pane_closed("wJ:p2")
+        }));
+        lifecycle_steps.push(Step::Delay(TOGGLE_GAP));
+    }
+    lifecycle_steps.push(Step::Hold);
+
+    let config = FakeHerdrConfig::new()
+        .with_snapshot_result(snapshot_result(&["wJ:p1"]))
+        .with_subscribe_rule(SubscribeMatcher::LifecycleOnly, lifecycle_steps)
+        .with_subscribe_rule(SubscribeMatcher::PerPane, vec![Step::Hold]);
+    let fake = FakeHerdr::start(config).await.expect("啟動假 HERDR 失敗");
+    let runtime = runtime(&fake);
+
+    let _events = tokio::time::timeout(TIMEOUT, runtime.subscribe())
+        .await
+        .expect("建立事件流不應逾時")
+        .expect("建立事件流應成功");
+
+    // 建立事件流 3 條（snapshot／L／S）+ 每次重開各多開一條 S = 3 + REOPEN_COUNT 條。
+    // 20 次觸發跨度約 `REOPEN_COUNT * TOGGLE_GAP`（9 s），比共用的 `wait_for_connections`
+    // 用的 `TIMEOUT`（5 s）長，這裡另外訂一個寬裕的期限。
+    let want = 3 + REOPEN_COUNT;
+    let deadline = Instant::now() + TOGGLE_GAP * (REOPEN_COUNT as u32) + TIMEOUT;
+    loop {
+        let received = fake.received();
+        if received.len() >= want {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "20 次交替 pane_created／pane_closed 各自重開之後：應看到第 {want} 條連線，實際: {received:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    // 最後一次重開落定（新 S 收到 `subscription_started`、舊 S 已關）之後再讀登記數，
+    // 避免讀到「新 S 已連上但舊 handle 還沒被下一次 register 修剪掉」的過渡瞬間。
+    tokio::time::sleep(AFTER_DEBOUNCE).await;
+
+    let len = runtime.aborts_registry_len();
+    assert!(
+        len <= ABORTS_UPPER_BOUND,
+        "重開 {REOPEN_COUNT} 次後 Shutdown.aborts 登記數應 <= {ABORTS_UPPER_BOUND}，實際: {len}"
+    );
+}

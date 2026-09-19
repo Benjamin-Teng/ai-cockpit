@@ -21,4 +21,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 futures-util = { version = "0.3.34", features = ["sink"] }
 http-body-util = "0.1.5"
 tokio-tungstenite = "0.30.0"
+# Task 6.4：`#[tokio::test(start_paused = true)]` 在 tokio 的 `test-util` feature 之後（同
+# `cockpit-core/Cargo.toml` 的做法）。只加在 `[dev-dependencies]`，不影響正式建置。
+tokio = { version = "1.53.1", features = ["test-util"] }
 tower = { version = "0.5.3", features = ["util"] }

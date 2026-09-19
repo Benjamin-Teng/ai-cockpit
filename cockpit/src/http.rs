@@ -13,32 +13,78 @@
 //! 「WebSocket 推送整張圖」）。客戶端送來的任何訊息（文字、二進位、close 以外都忽略；
 //! ping／pong 由 axum 自動回應，不會走到這裡）一律不理會；客戶端斷線或送錯只結束這個
 //! task，不影響其他連線——每個連線各自 `subscribe()` 一份獨立的 `watch::Receiver`。
+//!
+//! 寫入端點（task 4.1；spec `pipeline-progress`「進度寫入端點」「綁定覆蓋端點」；design
+//! D6）：`POST /api/projects/{project}/tasks/{task}/{op}`、`PUT`／`DELETE
+//! /api/projects/{project}/workstreams/{workstream}/override`。`{op}` 在路由層以字串比對
+//! [`ProgressOp`] 的四個值，不是其中之一直接回 404，不會進到 [`crate::progress_service`]；
+//! project／task／workstream 是否存在則交給 [`ProgressService`] 判斷（[`WriteError`] 映射見
+//! [`write_error_response`]）。成功一律 204、不回投影本體——畫面等 `/ws` 推送。這兩個路由額外
+//! 掛了 task 4.2 的來源檢查 middleware（[`crate::source_check::source_check`]，Host／Origin），
+//! 這裡的處理常式本身完全不管請求從哪裡來——那是 middleware 的事，擋下的請求根本不會進到
+//! 這幾個 handler。
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicU16;
 
 use axum::Router;
+use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
-use cockpit_core::ProjectedState;
+use axum::routing::{get, post, put};
+use cockpit_core::{
+    Override, PaneId, ProgressOp, ProjectId, ProjectedState, RuntimeId, TaskId, WorkstreamId,
+};
+use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
-/// 路由共用的狀態：訂閱 [`cockpit_core::StoreHandle`] 廣播的投影（design D9）。
+use crate::progress_service::{ProgressService, WriteError};
+use crate::source_check::source_check;
+
+/// 路由共用的狀態：訂閱 [`cockpit_core::StoreHandle`] 廣播的投影（design D9），外加寫入服務
+/// 與服務實際監聽的埠（design D6；task 4.1）。
 ///
-/// `Clone` 便宜——`watch::Receiver` 本身可以自由複製，各請求各自 `borrow()` 目前這一份，
-/// 不需要額外的鎖或 `Arc` 包一層。
+/// `Clone` 便宜——`watch::Receiver` 本身可以自由複製；`progress` 是 `Option<ProgressService>`
+/// 本身內部也是 `Arc`；`port` 是 `Arc<AtomicU16>`。都不需要額外的鎖包一層。
 #[derive(Clone)]
 pub struct AppState {
     /// 目前投影的訂閱端；`/api/state` 用 `borrow()` 讀現況，`/ws` 每個連線各自
     /// `clone()` 一份自己追（1.6 的 `StoreHandle::subscribe`）。
     pub state: watch::Receiver<Arc<ProjectedState>>,
+    /// 進度與覆蓋的寫入服務；沒有任何 project 時是 `None`（design Migration Plan）——這時
+    /// 任何 project／task／workstream 引用本來就等於「不存在」，寫入端點統一回 404，不需要
+    /// 特別區分「沒有寫入服務」與「project 不存在」。
+    pub progress: Option<ProgressService>,
+    /// 服務實際監聽的埠（`TcpListener::local_addr()`，design D6）。路由表在監聽埠確定之前就
+    /// 已經組好（`cockpit::app::build_components` 早於 `bind`），所以用 `Arc<AtomicU16>`：
+    /// `cockpit::app::run` 綁定成功後把真正的埠寫進同一個 `Arc`，所有已經拿到 `AppState`
+    /// clone 的請求都會讀到更新後的值。來源檢查 middleware（task 4.2）比對 `Host` 時要用
+    /// 這個，不是設定裡寫的埠——`listen = "127.0.0.1:0"` 綁定後真正拿到的埠由作業系統指派。
+    pub port: Arc<AtomicU16>,
+}
+
+impl AppState {
+    /// 只有讀路由（沒有寫入服務）時的建構子：`progress` 固定 `None`、`port` 初值 0——沒有
+    /// 寫入端點時 `port` 不會被任何 middleware 讀到。
+    pub fn new(state: watch::Receiver<Arc<ProjectedState>>) -> Self {
+        Self {
+            state,
+            progress: None,
+            port: Arc::new(AtomicU16::new(0)),
+        }
+    }
 }
 
 /// 組出完整的路由表：`/`、`/app/{file}`、`/manifest.webmanifest`、`/icons/{file}`、
-/// `/api/state`、`/ws`；其他路徑落回 axum 預設的 404。
+/// `/api/state`、`/ws`、寫入端點；其他路徑落回 axum 預設的 404。
+///
+/// 兩個寫入路由額外用 `route_layer` 掛 [`source_check`]（task 4.2；design D6）——只套在
+/// 這兩條，`/api/state`、`/ws` 等讀路由完全不受影響（見 [`crate::source_check`] 模組文件對
+/// `route_layer` 範圍的說明）。
 pub fn router(app: AppState) -> Router {
+    let source_check_layer = axum::middleware::from_fn_with_state(app.clone(), source_check);
     Router::new()
         .route("/", get(index))
         .route("/app/{file}", get(app_asset))
@@ -46,6 +92,16 @@ pub fn router(app: AppState) -> Router {
         .route("/icons/{file}", get(icon))
         .route("/api/state", get(api_state))
         .route("/ws", get(ws_handler))
+        .route(
+            "/api/projects/{project}/tasks/{task}/{op}",
+            post(progress_op).route_layer(source_check_layer.clone()),
+        )
+        .route(
+            "/api/projects/{project}/workstreams/{workstream}/override",
+            put(set_override)
+                .delete(clear_override)
+                .route_layer(source_check_layer),
+        )
         .with_state(app)
 }
 
@@ -73,6 +129,11 @@ async fn app_asset(Path(file): Path<String>) -> Response {
         "style.css" => (
             [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
             include_str!("../assets/app/style.css"),
+        )
+            .into_response(),
+        "actions.js" => (
+            [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+            include_str!("../assets/app/actions.js"),
         )
             .into_response(),
         _ => StatusCode::NOT_FOUND.into_response(),
@@ -162,4 +223,137 @@ async fn handle_socket(mut socket: WebSocket, mut state: watch::Receiver<Arc<Pro
     }
 
     tracing::debug!("ws 連線結束");
+}
+
+/// `POST /api/projects/<project>/tasks/<task>/<op>`（spec `pipeline-progress`「進度寫入端點」；
+/// design D6：`<op>` 以字串比對四值，其他回 404，不進到 [`ProgressService`]）。
+async fn progress_op(
+    State(app): State<AppState>,
+    Path((project, task, op)): Path<(String, String, String)>,
+) -> Response {
+    let Some(parsed_op) = parse_progress_op(&op) else {
+        return error_response(StatusCode::NOT_FOUND, &format!("不是合法的操作：{op}"));
+    };
+    let Some(progress) = &app.progress else {
+        // 沒有任何 project 時（design Migration Plan）任何 project 引用都等於「不存在」；
+        // 借用 WriteError::UnknownProject 的 Display，跟寫入服務判定「project 不存在」時
+        // 回的本體用同一套措辭，不要另開一種說法（Codex fix round 1 finding 3：404 也要有
+        // `{"error": ...}` 本體）。
+        return write_error_response(WriteError::UnknownProject(ProjectId::new(project)));
+    };
+    match progress
+        .apply_progress(&ProjectId::new(project), &TaskId::new(task), parsed_op)
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => write_error_response(error),
+    }
+}
+
+/// 把路徑上的 `<op>` 字串比對成 [`ProgressOp`]；不是四值之一回 `None`（design D6）。
+fn parse_progress_op(op: &str) -> Option<ProgressOp> {
+    match op {
+        "advance" => Some(ProgressOp::Advance),
+        "complete" => Some(ProgressOp::Complete),
+        "fail" => Some(ProgressOp::Fail),
+        "clear" => Some(ProgressOp::Clear),
+        _ => None,
+    }
+}
+
+/// `PUT` 本體的形狀（spec `pipeline-progress`「綁定覆蓋端點」）：`runtime`／`pane_id` 都必須
+/// 是字串欄位；`serde` 解析失敗（缺欄位、型別不對、根本不是 JSON）統一回 400。
+#[derive(Deserialize)]
+struct OverrideRequest {
+    runtime: String,
+    pane_id: String,
+}
+
+/// `PUT /api/projects/<project>/workstreams/<workstream>/override`：設定畫面覆蓋（spec
+/// 「綁定覆蓋端點」）。
+///
+/// 不檢查 `Content-Type`——design D6 明確否決把它當防線（沒有本體的 `POST` 端點與
+/// `text/plain` 表單都能繞過），這裡直接把整個 body 當 JSON 解析。
+async fn set_override(
+    State(app): State<AppState>,
+    Path((project, workstream)): Path<(String, String)>,
+    body: Bytes,
+) -> Response {
+    let Some(progress) = &app.progress else {
+        return write_error_response(WriteError::UnknownProject(ProjectId::new(project)));
+    };
+    let request: OverrideRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "本體必須是含 runtime、pane_id 兩個字串欄位的 JSON 物件",
+            );
+        }
+    };
+    let override_ = Override {
+        runtime: RuntimeId::new(request.runtime),
+        pane_id: PaneId::new(request.pane_id),
+    };
+    match progress
+        .set_override(
+            &ProjectId::new(project),
+            &WorkstreamId::new(workstream),
+            override_,
+        )
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => write_error_response(error),
+    }
+}
+
+/// `DELETE` 同路徑：取消畫面覆蓋；覆蓋本來就不存在時也回 204（spec「取消不存在的覆蓋回
+/// 204」）。
+async fn clear_override(
+    State(app): State<AppState>,
+    Path((project, workstream)): Path<(String, String)>,
+) -> Response {
+    let Some(progress) = &app.progress else {
+        return write_error_response(WriteError::UnknownProject(ProjectId::new(project)));
+    };
+    match progress
+        .clear_override(&ProjectId::new(project), &WorkstreamId::new(workstream))
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => write_error_response(error),
+    }
+}
+
+/// [`WriteError`] → HTTP 回應：`Unknown*` 404、`Rejected` 409、`Persist`／`Internal` 500，
+/// 本體一律是 `{"error": "<原因>"}`（task 4.1 原文「錯誤本體 `{"error": ...}`」——不是只有
+/// 409／500，Codex fix round 1 finding 3：先前 404 回空本體，跟 tasks.md 4.1 明定的形狀
+/// 不符；axum 自己判定路徑完全不匹配的 404（例如未知路徑）不在此限，那種情況根本不會進到
+/// 這個函式）。
+fn write_error_response(error: WriteError) -> Response {
+    match &error {
+        WriteError::UnknownProject(_)
+        | WriteError::UnknownTask(_)
+        | WriteError::UnknownWorkstream(_) => {
+            error_response(StatusCode::NOT_FOUND, &error.to_string())
+        }
+        WriteError::Rejected(_) => error_response(StatusCode::CONFLICT, &error.to_string()),
+        WriteError::Persist { .. } | WriteError::Internal(_) => {
+            tracing::error!(%error, "寫入端點：狀態檔寫入失敗");
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string())
+        }
+    }
+}
+
+/// 錯誤回應本體 `{"error": "<reason>"}`（spec 多處要求的形狀）。
+#[derive(Serialize)]
+struct ErrorBody<'a> {
+    error: &'a str,
+}
+
+pub(crate) fn error_response(status: StatusCode, reason: &str) -> Response {
+    let body = serde_json::to_string(&ErrorBody { error: reason })
+        .expect("ErrorBody 只含字串，序列化不會失敗");
+    (status, [(header::CONTENT_TYPE, "application/json")], body).into_response()
 }

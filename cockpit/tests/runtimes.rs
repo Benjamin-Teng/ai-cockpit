@@ -115,6 +115,9 @@ fn empty_command_propagates_build_error_with_id() {
             kind: "herdr".to_string(),
             endpoint: HerdrEndpoint::Command(Vec::new()),
         }],
+        // task 3.1 新增：這裡不測 project／狀態檔，維持空清單、沒有狀態檔路徑。
+        projects: Vec::new(),
+        state_path: None,
         source: ConfigSource::Inline,
     };
 

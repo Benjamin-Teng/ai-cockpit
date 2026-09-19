@@ -5,7 +5,8 @@ mod common;
 use std::time::{Duration, SystemTime};
 
 use cockpit_core::{
-    AgentStatus, ConnectionState, Focused, ProjectedConnection, RuntimeEvent, RuntimeStore, project,
+    AgentStatus, ConnectionState, DomainState, Focused, ProjectedConnection, RuntimeEvent,
+    RuntimeStore, project,
 };
 use serde_json::json;
 
@@ -68,7 +69,7 @@ fn nested_projection_matches_design_json_shape() {
         )
         .expect("set_connection 應成功");
 
-    let projected = project(&store, 42, epoch_secs(4000));
+    let projected = project(&store, &DomainState::default(), 42, epoch_secs(4000));
     let actual = serde_json::to_value(&projected).expect("序列化應成功");
 
     let expected = json!({
@@ -124,6 +125,8 @@ fn nested_projection_matches_design_json_shape() {
                 ]
             }
         ],
+        // change `pipeline-projection`：沒有 Project 時 `projects` 為空陣列（spec 「投影形狀」）。
+        "projects": [],
         "recent_events": []
     });
 
@@ -146,7 +149,7 @@ fn disconnected_connection_carries_reason_and_retry() {
         )
         .expect("set_connection 應成功");
 
-    let projected = project(&store, 1, epoch_secs(0));
+    let projected = project(&store, &DomainState::default(), 1, epoch_secs(0));
 
     assert_eq!(projected.runtimes.len(), 1);
     assert_eq!(
@@ -205,7 +208,7 @@ fn timestamps_are_rfc3339() {
         )
         .expect("set_connection 應成功");
 
-    let projected = project(&store, 1, epoch_secs(999999));
+    let projected = project(&store, &DomainState::default(), 1, epoch_secs(999999));
 
     assert_eq!(projected.generated_at, "1970-01-12T13:46:39Z");
 
@@ -268,7 +271,7 @@ fn ordering_by_number_and_pane_sequence() {
         )
         .expect("replace 應成功");
 
-    let projected = project(&store, 1, epoch_secs(0));
+    let projected = project(&store, &DomainState::default(), 1, epoch_secs(0));
     let runtime = &projected.runtimes[0];
 
     let workspace_ids: Vec<&str> = runtime.workspaces.iter().map(|w| w.id.as_str()).collect();
@@ -326,7 +329,7 @@ fn orphan_pane_not_projected() {
         )
         .expect("replace 應成功");
 
-    let projected = project(&store, 1, epoch_secs(0));
+    let projected = project(&store, &DomainState::default(), 1, epoch_secs(0));
     let runtime = &projected.runtimes[0];
 
     assert_eq!(runtime.workspaces.len(), 1);
@@ -369,7 +372,7 @@ fn recent_events_keeps_latest_fifty() {
             .expect("Noted 一律成功");
     }
 
-    let projected = project(&store, 1, epoch_secs(1000));
+    let projected = project(&store, &DomainState::default(), 1, epoch_secs(1000));
     assert_eq!(projected.recent_events.len(), 50);
 
     // 最新在前：最後一筆（evt_59）應排最前面，最早留下的是 evt_10（60 筆丟最舊 10 筆）。
@@ -425,7 +428,7 @@ fn noted_only_enters_recent_events() {
         "Noted 不該改變狀態庫內容"
     );
 
-    let projected = project(&store, 1, epoch_secs(20));
+    let projected = project(&store, &DomainState::default(), 1, epoch_secs(20));
     assert_eq!(projected.recent_events.len(), 1);
     let event = &projected.recent_events[0];
     assert_eq!(event.kind, "layout_updated");
@@ -530,7 +533,7 @@ fn recent_event_json_shape_per_event_level() {
         )
         .expect_err("Drift 事件一律回傳 Err");
 
-    let projected = project(&store, 1, epoch_secs(10));
+    let projected = project(&store, &DomainState::default(), 1, epoch_secs(10));
     assert_eq!(projected.recent_events.len(), 5, "五筆事件各記一筆");
 
     // 最新在前：drift(5) → noted(4) → pane(3) → tab(2) → workspace(1)。
@@ -606,8 +609,8 @@ fn content_eq_ignores_version_and_generated_at() {
         )
         .expect("replace 應成功");
 
-    let a = project(&store, 1, epoch_secs(100));
-    let b = project(&store, 2, epoch_secs(200));
+    let a = project(&store, &DomainState::default(), 1, epoch_secs(100));
+    let b = project(&store, &DomainState::default(), 2, epoch_secs(200));
     assert_ne!(a.version, b.version);
     assert_ne!(a.generated_at, b.generated_at);
     assert!(
@@ -625,7 +628,7 @@ fn content_eq_ignores_version_and_generated_at() {
             epoch_secs(300),
         )
         .expect("WorkspaceRelabeled 應成功");
-    let c = project(&store, 2, epoch_secs(200));
+    let c = project(&store, &DomainState::default(), 2, epoch_secs(200));
 
     assert!(
         !b.content_eq(&c),

@@ -35,6 +35,11 @@
     // WebSocket。
     var disconnectHandled = false;
 
+    // 退避只在「這次連線收到第一則訊息」時才歸零，不在 onopen 就歸零：服務接受連線後立刻
+    // 關閉、一則訊息都沒送就等於這次連線沒有真的復原，維持退避遞增（spec「連上即斷不歸零
+    // 退避」）。每個 socket 各自一份，重新 connect() 會重新宣告。
+    var backoffResetPending = true;
+
     function handleDisconnect() {
       if (disconnectHandled) {
         return;
@@ -45,13 +50,27 @@
     }
 
     socket.onopen = function () {
-      backoffIndex = 0;
       notifyChannel("connected");
     };
 
     socket.onmessage = function (event) {
+      // spec 寫的是「收到第一則訊息」歸零，不限解析成功——壞訊息也是「收到訊息」，一樣代表
+      // 這次連線真的復原了，所以歸零要放在 JSON.parse 之前，對合法與不合法訊息一視同仁。
+      if (backoffResetPending) {
+        backoffIndex = 0;
+        backoffResetPending = false;
+      }
+      var state;
+      try {
+        state = JSON.parse(event.data);
+      } catch (e) {
+        // 壞訊息不中斷通道：略過這一則、記警告，等下一則正常訊息繼續重畫（spec「壞訊息不
+        // 中斷」）。刻意不呼叫 handleDisconnect／不關閉 socket。
+        console.warn("channel.js: 收到無法解析為 JSON 的訊息，已略過", e);
+        return;
+      }
       if (typeof window.onState === "function") {
-        window.onState(JSON.parse(event.data));
+        window.onState(state);
       }
     };
 

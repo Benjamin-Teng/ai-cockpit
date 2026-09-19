@@ -35,3 +35,40 @@ wsl = { distro = "Ubuntu-24.04", socket = "/home/<user>/.config/herdr/herdr.sock
 # id = "other"
 # kind = "herdr"
 # command = ["some-bridge", "--arg"]
+
+# 選填；狀態檔位置。相對路徑相對於這份設定檔所在目錄解析，未給時預設為設定檔目錄下的
+# cockpit.state.json。沒有任何 [[project]] 時不讀不寫狀態檔。
+# [state]
+# path = "cockpit.state.json"
+
+# 零到多筆 [[project]]：一條 Pipeline（stages）加若干 workstream 與 task。
+# 這些區段與欄位之外的未知欄位會啟動失敗。
+
+[[project]]
+id = "cockpit"
+name = "AI Cockpit"
+# stages 的陣列順序即 Stage 的線性順序，字串同時是 Stage 的識別與顯示名稱。
+stages = ["Spec", "Build", "Review", "Done"]
+
+# 沒有 binding 的 workstream：只用來分組畫面上的欄，不會顯示綁定摘要。
+[[project.workstream]]
+id = "planning"
+
+# 有 binding 的 workstream：runtime 必須是上面某一筆 [[runtime]] 的 id；workspace 必填，
+# pane_label、cwd、agent 選填，三者是縮小候選 pane 的篩選條件。
+[[project.workstream]]
+id = "backend"
+binding = { runtime = "wsl", workspace = "ai-cockpit", pane_label = "backend", agent = "claude" }
+
+[[project.task]]
+id = "spec"
+title = "寫 spec"
+workstream = "planning"
+stage = "Spec"
+
+[[project.task]]
+id = "impl"
+title = "實作"
+workstream = "backend"
+stage = "Build"
+depends_on = ["spec"]

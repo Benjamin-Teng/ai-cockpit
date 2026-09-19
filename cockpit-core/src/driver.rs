@@ -7,6 +7,8 @@
 //! Connecting → subscribe() → 同時等 snapshot() 並丟棄期間到達的事件
 //!            → replace() → Connected（退避序列歸零）→ 逐筆套用事件
 //!                          ├─ apply 回 Err(Drift) → 立即重拿（進行中就不重複）
+//!                          │    └─ 重拿期間有事件成功套用 → 替換後追加重拿（每次 Drift 最多 2 次）
+//!                          ├─ 事件流靜默 1 秒（最晚第 5 秒）→ 沉降重拿（每條連線一次，進行中就併入）
 //!                          └─ 距上次成功 snapshot 滿 policy.resnapshot → 定期重拿
 //!            → 事件流結束／錯誤／建立失敗／snapshot 失敗（含重拿失敗）
 //!            → 釋放事件流 → Disconnected { reason, retry_in } → 等待 → Connecting
@@ -43,6 +45,21 @@ const STREAM_ENDED: &str = "事件流結束";
 /// 防禦用：`Policy::default()` 一定有六項，但 `backoff` 是公開欄位，呼叫端塞得進空
 /// `Vec`。與其在那種情況下忙碌重連（等 0 秒），不如退回 1 秒（＝正常序列的第一項）。
 const EMPTY_BACKOFF_RETRY: Duration = Duration::from_secs(1);
+
+/// 錯誤自帶的固定重試間隔（`RuntimeError::Unavailable` 的 `retry_after`）下限：小於這個
+/// 值一律以它計（spec「斷線、退避與固定間隔重試」、design D11：`max(retry_after, 1s)`）。
+const FIXED_RETRY_FLOOR: Duration = Duration::from_secs(1);
+
+/// 同一次 Drift 觸發的重拿之後，最多再追加幾次重拿（spec「Drift 立即重拿」、design D11）。
+const MAX_DRIFT_FOLLOWUPS: u8 = 2;
+
+/// 沉降重拿：進入 `Connected` 後事件流連續靜默多久就再取得一次 snapshot（spec「連線後
+/// 沉降重拿」、design D12）。
+const SETTLE_QUIET: Duration = Duration::from_secs(1);
+
+/// 沉降重拿的上限：進入 `Connected` 後最晚第幾秒一定取得（事件始終沒靜默滿
+/// [`SETTLE_QUIET`] 時）。
+const SETTLE_CAP: Duration = Duration::from_secs(5);
 
 /// 驅動器的時間參數。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -159,8 +176,8 @@ pub async fn run(
         // 走到這裡 `connect_and_serve` 已經返回，它持有的 `RuntimeEvents` 也已經 drop
         // ——事件流在寫入 `Disconnected` 之前就釋放了。
         let retry_in = match retry_after {
-            // 探測類錯誤自帶固定重試間隔：照它等，退避序列原地不動。
-            Some(fixed) => fixed,
+            // 探測類錯誤自帶固定重試間隔：照它等（低於下限時以 1 秒計），退避序列原地不動。
+            Some(fixed) => fixed.max(FIXED_RETRY_FLOOR),
             None => {
                 let wait = backoff_at(&policy, backoff_index);
                 backoff_index = backoff_index.saturating_add(1);
@@ -241,6 +258,19 @@ async fn connect_and_serve(
     // 只在成功取得 snapshot 時才往後推。
     let mut pending: Option<PendingSnapshot<'_>> = None;
     let mut deadline = Instant::now() + policy.resnapshot;
+    // 進行中的重拿是不是 Drift 觸發的那一串（含追加）：`Some(n)` = 是，且已追加 n 次；
+    // `None` = 沒有重拿或是定期重拿（定期重拿不追加）。只在 Drift 真的發起新重拿時設成
+    // `Some(0)`——合併進進行中重拿的 Drift 不歸零（design D11）。
+    let mut drift_followups: Option<u8> = None;
+    // 目前這次進行中的重拿期間，是否有事件被成功套用（snapshot 可能比它們舊）。
+    let mut applied_while_pending = false;
+    // 沉降重拿的觸發時刻（`None` = 這條連線已經做過）：初值是進入 `Connected` 後 1 秒，
+    // 每到達一筆事件就往後推到「此刻 + 1 秒」，但不超過進入 `Connected` 後 5 秒
+    // （spec「連線後沉降重拿」、design D12：部分 HERDR 版本新訂閱會重播舊事件，可能晚於
+    // snapshot 到達且不造成 Drift）。
+    let connected_at = Instant::now();
+    let settle_cap = connected_at + SETTLE_CAP;
+    let mut settle_at: Option<Instant> = Some((connected_at + SETTLE_QUIET).min(settle_cap));
 
     loop {
         tokio::select! {
@@ -254,6 +284,17 @@ async fn connect_and_serve(
                     Ok(snapshot) => {
                         install_snapshot(store, id, snapshot, since);
                         deadline = Instant::now() + policy.resnapshot;
+                        // Drift 重拿期間有事件被套用：剛換上的 snapshot 可能比那些事件舊，
+                        // 再拿一次；同一次 Drift 最多追加 MAX_DRIFT_FOLLOWUPS 次（spec
+                        // 「Drift 立即重拿」）。
+                        drift_followups = match drift_followups {
+                            Some(done) if applied_while_pending && done < MAX_DRIFT_FOLLOWUPS => {
+                                pending = Some(runtime.snapshot());
+                                Some(done + 1)
+                            }
+                            _ => None,
+                        };
+                        applied_while_pending = false;
                     }
                     // 重拿失敗視同斷線（design）：交給呼叫端走 `Disconnected` 路徑。
                     Err(err) => return Outcome::from_error(err),
@@ -263,15 +304,40 @@ async fn connect_and_serve(
             // `sleep_until` 每輪立刻完成，會變成忙碌迴圈）。
             _ = tokio::time::sleep_until(deadline), if pending.is_none() => {
                 pending = Some(runtime.snapshot());
+                drift_followups = None;
+                applied_while_pending = false;
+            }
+            // 沉降重拿：每條連線只做一次（觸發後 `settle_at` 設成 `None`，分支就此停用）；
+            // 已有進行中的重拿就併入該次，不另外取得、也不動它的追加狀態。
+            // `unwrap_or(settle_cap)` 只為了在分支停用時仍有個值可建 future（不會被 poll）。
+            _ = tokio::time::sleep_until(settle_at.unwrap_or(settle_cap)), if settle_at.is_some() => {
+                settle_at = None;
+                if pending.is_none() {
+                    pending = Some(runtime.snapshot());
+                    drift_followups = None;
+                    applied_while_pending = false;
+                }
             }
             item = events.next() => match item {
                 Some(Ok(event)) => {
-                    if let Err(drift) = store.apply(id, event, SystemTime::now()) {
-                        // Drift 立即重拿；已經有進行中的就合併（不排隊、不重複觸發）。
-                        // drift 本身已經由 `apply` 記進最近事件。
-                        tracing::warn!(runtime = %id, %drift, "套用事件時偵測到 drift，重新取得 snapshot");
-                        if pending.is_none() {
-                            pending = Some(runtime.snapshot());
+                    if let Some(at) = settle_at.as_mut() {
+                        *at = (Instant::now() + SETTLE_QUIET).min(settle_cap);
+                    }
+                    match store.apply(id, event, SystemTime::now()) {
+                        Ok(()) => {
+                            if pending.is_some() {
+                                applied_while_pending = true;
+                            }
+                        }
+                        Err(drift) => {
+                            // Drift 立即重拿；已經有進行中的就合併（不排隊、不重複觸發）。
+                            // drift 本身已經由 `apply` 記進最近事件。
+                            tracing::warn!(runtime = %id, %drift, "套用事件時偵測到 drift，重新取得 snapshot");
+                            if pending.is_none() {
+                                pending = Some(runtime.snapshot());
+                                drift_followups = Some(0);
+                                applied_while_pending = false;
+                            }
                         }
                     }
                 }
