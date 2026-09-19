@@ -13,8 +13,10 @@
    （把 pane 畫面內容拉進 Cockpit），流程從探索（brainstorming）→ `/opsx:propose live-output` 開始。
 2. change 2 的 Codex 補審**已決定不做**（使用者 2026-09-19 明示接受 fresh opus 的替代審查）。之後若想補，
    focus 要自己重寫（本機 `.superpowers/sdd/` 已刪，ledger 存在 archive 目錄的 `sdd-ledger.md`）。
-3. 環境：WSL 測試 server 已停；本機 `cockpit.toml`（gitignored）末尾留有 change 2 驗收用的 `[state]` 與
-   `[[project]]` 區段，不需要時整段刪除即可（刪掉後 `cockpit.state.json` 也可刪）。
+3. 環境全部清乾淨（2026-09-19）：WSL 測試 server 已停；7.3 驗收用的 `[state]`／`[[project]]` 區段已從本機
+   `cockpit.toml`（gitignored）移除、`cockpit.state.json` 已刪；沒有殘留 `cockpit.exe`（7770 未 LISTEN）。
+   清理後實跑確認：`projects` 為空、**不會建立狀態檔**、Windows runtime `connected`（WSL 因測試 server 停著
+   顯示 `disconnected`，正常）。要再驗收 Pipeline 功能時照第 2.1 節的步驟重新加設定即可。
 4. `main` 乾淨、沒有 remote、沒有 feature 分支。
 
 ## 1. 現在的狀態
