@@ -16,7 +16,9 @@
 3. 環境全部清乾淨（2026-09-19）：WSL 測試 server 已停；7.3 驗收用的 `[state]`／`[[project]]` 區段已從本機
    `cockpit.toml`（gitignored）移除、`cockpit.state.json` 已刪；沒有殘留 `cockpit.exe`（7770 未 LISTEN）。
    清理後實跑確認：`projects` 為空、**不會建立狀態檔**、Windows runtime `connected`（WSL 因測試 server 停著
-   顯示 `disconnected`，正常）。要再驗收 Pipeline 功能時照第 2.1 節的步驟重新加設定即可。
+   顯示 `disconnected`，正常）。要再驗收 Pipeline 功能時，照 `cockpit.example.toml`
+   的 `[[project]]` 示範重新加設定即可（上次的做法與判讀寫在
+   `docs/research/2026-09-16/pipeline-projection-acceptance.md` task 7.3 節）。
 4. `main` 乾淨、沒有 remote、沒有 feature 分支。
 
 ## 1. 現在的狀態
