@@ -1,104 +1,83 @@
 # 交接：下一段任務
 
-> **建立日期**：2026-09-19　|　**上一段做完的事**：change 2 `pipeline-projection` 以 SDD 完成全部 27 個 task
-> （domain 純函數、pipeline 設定、狀態檔與寫入服務、HTTP 寫入端點與來源檢查、Factory Floor 畫面與互動、1b deferred
-> minor、真機 WSL 驗收、全 workspace gate、使用者手動驗收）；apply 期間發現並修好 HERDR 0.8.2 訂閱重播 bug（新增 task 6.6）。
+> **建立日期**：2026-09-19　|　**上一段做完的事**：change 2 `pipeline-projection` 全部 27 個 task 完成，
+> 已 squash 併回 `main`（`e33de5b`）、8 份 delta spec 同步進主規格、change 目錄 archive 到
+> `openspec/changes/archive/2026-09-19-pipeline-projection/`。Cockpit 現在能顯示並操作自己管理的 Pipeline 進度。
 > **性質**：接手用文件，會過期，每段重寫。
 > 為什麼做看 `docs/cockpit-spec.md` 與設計文件 `docs/superpowers/specs/2026-09-13-cockpit-mvp-design.md`、
-> 怎麼做看 `~/.claude/CLAUDE.md`（本 repo 精簡版在 `AGENTS.md`）、完整待辦看
-> `openspec/changes/pipeline-projection/tasks.md`，進度現場跑 `openspec status --change pipeline-projection`。
+> 怎麼做看 `~/.claude/CLAUDE.md`（本 repo 精簡版在 `AGENTS.md`）、規格看 `openspec/specs/`（15 份主規格）。
 
 ## 0. 三十秒版本
 
-1. **Codex 額度要到 2026-09-20 09:58 才重置**。本 change 最後幾輪審查（4.2 fix round 1、4.3、6.5、6.6 與全分支
-   最終審查）是 fresh opus 替代審查，**Codex 正式審查尚未補跑**。錯過的代價：依 CLAUDE.md，未經 Codex 審過不能宣稱
-   可合併——除非使用者明示接受替代審查。9/20 之後照第 2 節指令補跑。
-2. **27 個 task 全勾**（7.3 使用者手動驗收已於 2026-09-19 通過，結果在驗收文件 task 7.3 節）。剩下的只有
-   Codex 補審（第 2.2 節），通過後 squash 併回 `main` 並 archive（第 3 節）。
-3. 分支 `feat/pipeline-projection`，本檔 commit 後工作樹乾淨；SDD ledger 在本機 `.superpowers/sdd/tasks/progress.md`（**不進版控**，
-   archive 時要去識別化複製成 change 目錄的 `sdd-ledger.md`，否則全部 Ruling 會遺失）。
-4. 環境：WSL 測試 server **已停**；7.3 驗收用的 cockpit 已停（跑之前先 `netstat -ano | grep 7770` 確認沒有殘留）。
-   本機 `cockpit.toml`（gitignored）末尾留有 7.3 的驗收 project 區段，不需要時整段刪除即可。
+1. **沒有時效性任務，也沒有進行中的 change**（`openspec list` 為空）。下一段＝change 3 `live-output`
+   （把 pane 畫面內容拉進 Cockpit），流程從探索（brainstorming）→ `/opsx:propose live-output` 開始。
+2. change 2 的 Codex 補審**已決定不做**（使用者 2026-09-19 明示接受 fresh opus 的替代審查）。之後若想補，
+   focus 要自己重寫（本機 `.superpowers/sdd/` 已刪，ledger 存在 archive 目錄的 `sdd-ledger.md`）。
+3. 環境：WSL 測試 server 已停；本機 `cockpit.toml`（gitignored）末尾留有 change 2 驗收用的 `[state]` 與
+   `[[project]]` 區段，不需要時整段刪除即可（刪掉後 `cockpit.state.json` 也可刪）。
+4. `main` 乾淨、沒有 remote、沒有 feature 分支。
 
 ## 1. 現在的狀態
 
-- 已產出（分支上，尚未併回 main；1b 產出見 `openspec/specs/` 主規格與各 crate README）：
-  - `cockpit-core/src/domain/`：`ids.rs`（ProjectId／WorkstreamId／TaskId）、`config.rs`（ProjectDef／WorkstreamDef／
-    BindingSpec／TaskDef）、`progress.rs`（Mark、TaskProgress、ProgressOp、`apply_op`）、`binding.rs`（Override、
-    BindingResolution 五種、`resolve_binding`→`(結果, 覆蓋失效)`、`validate_override`）、`status.rs`（StageStatus 六值、
-    `derive_status`）、`state.rs`（DomainState）、`rejection.rs`。
-  - `cockpit-core/src/projection.rs`＋`handle.rs`：投影加 `projects[]`；`StoreHandle` 同鎖持 runtime＋domain
-    （`new_with_domain`／`set_domain`／`with_domain`），`spawn_projector_with_stale_sink` 把失效覆蓋去重後送
-    `UnboundedSender`。
-  - `cockpit-core/src/driver.rs`：Drift 追加重拿（上限 2）、固定重試間隔下限 1 s、**連線後沉降重拿**（進入 Connected
-    後事件流靜默 1 s 再取 snapshot，最晚第 5 s，每條連線一次）。
-  - `cockpit/src/`：`config.rs`（`[[project]]`／`[state] path`，錯誤路徑 `project.<pid>.…`）、`progress.rs`（狀態檔載入
-    與容錯）、`progress_service.rs`（寫入交易在服務自己 spawn 的 task 內：計算→寫 `.tmp`→rename→set_domain）、
-    `http.rs`（寫入路由）、`source_check.rs`（Host／Origin 檢查）、`app.rs`（組裝、shutdown 共用期限）。
-  - `cockpit/assets/app/`：`render.js`（`renderState(state, ui)`，Factory Floor）、`actions.js`（pointerdown 委派、
-    改綁模式、錯誤序號）、`channel.js`（退避在收到第一則訊息時歸零、壞 JSON 略過）。
-  - `cockpit-herdr`：`Shutdown.aborts` 修剪、F4 session guard 測試。
-  - 驗收：`docs/research/2026-09-16/`（`pipeline-projection-acceptance.md`、`channel-backoff-check.js`、
-    `factory-floor-check.js`、`actions-check.js`、`pipeline-check.py`、截圖）。
-  - 文件：設計文件 §2.3（重播事實）、§8.1–8.3、§10.2；`cockpit/README.md`（pipeline 設定、寫入 API、單實例、回滾、
-    listen／狀態檔目錄限制）；`CONTEXT.md` Domain 詞彙；`.gitignore` 加 `cockpit.state.json`。
+- 已上線（`main`）：
+  - `herdr-client/`：HERDR JSON-RPC 客戶端（named pipe／unix socket、WSL 橋接、假 HERDR 測試鷹架）。
+  - `cockpit-core/`：與 runtime 種類無關的核心。`types/`、`store.rs`（狀態庫、Drift）、`handle.rs`
+    （`StoreHandle` 同鎖持 runtime＋domain、投影任務、失效覆蓋去重送出）、`projection.rs`（`ProjectedState`，
+    含 `projects[]`）、`driver.rs`（連線生命週期：訂閱→snapshot→套用、Drift 重拿＋追加、**連線後沉降重拿**、
+    退避）、`domain/`（Pipeline 型別、`apply_op`、`resolve_binding`／`validate_override`、`derive_status`）。
+  - `cockpit-herdr/`：HERDR 接合（snapshot／事件翻譯、WSL 探測、per-pane 狀態訂閱重開、`factory.rs`）。
+  - `cockpit/`：程式本體。`config.rs`（`[[runtime]]`／`[[project]]`／`[state]`）、`progress.rs`（狀態檔載入）、
+    `progress_service.rs`（寫入交易：計算→`.tmp`→rename→生效）、`http.rs`＋`source_check.rs`（GET 路由、
+    寫入端點、Host／Origin 檢查）、`app.rs`（組裝與停止）、`assets/app/`（`render.js` Factory Floor、
+    `actions.js` 互動、`channel.js` 通道）、`examples/ui_preview.rs`。
 - 可用指令（repo 根）：
   - 全 gate：`cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test --workspace && markdownlint-cli2 "**/*.md" && openspec validate --all`
-  - 啟動：`cargo run -p cockpit -- --config cockpit.toml`；畫面預覽（不需 HERDR）：`cargo run -p cockpit --example ui_preview`
+  - 啟動：`cargo run -p cockpit -- --config cockpit.toml`（零設定：`cargo run -p cockpit`；日誌 `RUST_LOG=debug`）
+  - 畫面預覽（不需 HERDR）：`cargo run -p cockpit --example ui_preview`
   - 寫入 API（要帶合法 Host）：`curl -X POST -H "Host: 127.0.0.1:7770" http://127.0.0.1:7770/api/projects/<pid>/tasks/<tid>/advance`
-    （op＝advance／complete／fail／clear；覆蓋 `PUT`／`DELETE /api/projects/<pid>/workstreams/<wid>/override`，PUT 本體
+    （op＝advance／complete／fail／clear；覆蓋 `PUT`／`DELETE …/workstreams/<wid>/override`，本體
     `{"runtime": "...", "pane_id": "..."}`；成功 204）
-  - 前端驗收腳本（先 `cargo build -p cockpit --example ui_preview`）：`node docs/research/2026-09-16/actions-check.js`、
-    `factory-floor-check.js`、`channel-backoff-check.js`
-  - 真機 WSL 驗收（先重啟 WSL 測試 server、`cargo build --release -p cockpit`）：
-    `HERDR_CLIENT_TEST_ALLOW_WSL_WRITES=1 PYTHONUTF8=1 uv run --no-project python docs/research/2026-09-16/pipeline-check.py`
+  - 真機驗收腳本：`docs/research/2026-09-15/`（Scenario A／B／F）、`docs/research/2026-09-16/`
+    （`pipeline-check.py` Scenario C／D、三支 headless Chrome 腳本）。WSL 腳本要
+    `HERDR_CLIENT_TEST_ALLOW_WSL_WRITES=1`＋`PYTHONUTF8=1`，跑前重啟 WSL 測試 server。
   - WSL 測試 server：啟動 `wsl.exe -d Ubuntu-24.04 -e bash -lc "setsid -f ~/.local/bin/herdr server >/tmp/herdr-server.log 2>&1 </dev/null"`；
     停 `wsl.exe -d Ubuntu-24.04 -e bash -lc "~/.local/bin/herdr server stop"`（**只能停 WSL 端**）
   - Windows 端唯讀事件擷取：`cargo run -p herdr-client --example capture_events -- --seconds 5`
   - Codex review：`node ~/.claude/plugins/cache/openai-codex/codex/1.0.6/scripts/codex-companion.mjs adversarial-review --wait --base main "<focus>"`
-- 測試與 gate：以當場輸出為準。2026-09-17 於 `14959a3`：fmt 0、clippy 0、`cargo test --workspace` 494 passed／0 failed／
-  10 ignored、markdownlint 58 files 0 issues、`openspec validate --all` 12 passed／0 failed（輸出在驗收文件 task 7.1 節）；
-  之後只改了 README 兩句與本檔。
-- 版控：`main` 在 `536204e`；分支自 `181ee8c`（artifacts）起約 60 個 commit；沒有 remote。
+- 測試與 gate：以當場輸出為準。2026-09-19 於 `b231456`：`cargo test --workspace` 494 passed／0 failed／
+  10 ignored（ignored 需真機 HERDR）、fmt／clippy 0、markdownlint 63 files 0 issues、
+  `openspec validate --all` 15 passed／0 failed。
+- 規格：`openspec/specs/` 15 份。change 2 新增 `pipeline-config`、`pipeline-domain`、`pipeline-progress`、
+  `runtime-binding`；修改 `cockpit-config`、`cockpit-dashboard`、`runtime-driver`、`state-projection`。
+- 版控：`main` 在 `b231456`（change 2 的 `e33de5b`＋archive `4cfec16`＋Purpose `b231456`）；沒有 remote。
 
-## 2. 立刻要做
+## 2. 立刻要做：change 3 `live-output` 的探索與 propose
 
-### 2.1 使用者手動驗收（task 7.3）—— 已於 2026-09-19 完成
+為什麼：MVP 第三片——畫面目前只看得到「誰在動」，看不到 agent 在講什麼。要把 pane 的畫面內容拉進 Cockpit
+（設計文件 §1 表、`docs/cockpit-spec.md`）。
 
-結果見 `docs/research/2026-09-16/pipeline-projection-acceptance.md` task 7.3 節：網格、推進、改綁由使用者目視確認；
-重啟保留與清除標記由控制端代跑（覆蓋與標記重啟後逐欄相同）；覆蓋失效沿用 7.2 的 WSL 自動驗收。下列步驟保留供再次驗收照抄。
+propose 前要讀的（不要重新推導）：
 
-1. Windows 端 `cockpit.toml` 加一個 `[[project]]`（照 `cockpit.example.toml` 示範），一條 workstream 的 binding 寫
-   Windows runtime id、workspace 標籤，再加 `pane_label` 或 `cwd` 對到真實 agent pane。
-2. `cargo run -p cockpit -- --config cockpit.toml`，Chrome 開 `http://127.0.0.1:7770/`。
-3. 看 Factory Floor：該 workstream 綁定摘要應為已綁定（顯示 pane）；若顯示未綁定／歧義，補特徵或用「改綁」。
-4. 對 agent 下一句指令：該 task 應在一秒內變 `running`（動態強調）。超過 1 秒 → `RUST_LOG=debug` 看 S 訂閱。
-5. 依序按「推進」「Completed」「清除標記」「改綁」→ 點某 pane 列的「綁定到這裡」→「取消改綁」：每次畫面在下一次推送後
-   反映；停掉再啟動 cockpit，進度與覆蓋仍在（狀態檔 `cockpit.state.json` 在設定檔旁）。
-6. 結果寫進 `docs/research/2026-09-16/pipeline-projection-acceptance.md` 新增 task 7.3 小節，tasks.md 勾 7.3。
+1. `docs/adr/ADR-0002`（拉取頻率與方案 A／B 的取捨）、設計文件對 `pane.read` 的段落。
+2. change 1a 已建好的 `herdr-client` 型別 `PaneReadParams`／`PaneReadResult`（含 `revision`）——不用新寫協定層。
+3. **重播 bug 對新訂閱的影響**（memory `herdr-subscribe-replays-event-history`）：輸出輪詢若要另開連線，注意
+   WSL 端每條新 `events.subscribe` 會重播歷史；`pane.read` 是請求／回應，不受影響，但任何新訂閱都要考慮。
+4. WSL 端讀取成本：`wsl.exe`＋socket 每次數百 ms，頻率超過每秒一次要改 ADR-0002 方案 B。
+5. 既有約束（設計文件 §12）：對 HERDR 唯讀、不寫 metadata、usage 面板不估算。
 
-### 2.2 Codex 補審（2026-09-20 09:58 之後）
+流程：探索走 `superpowers:brainstorming`；計畫一律 `/opsx:propose live-output`；apply 第一個動作載入
+`superpowers:subagent-driven-development`（memory `apply-phase-must-run-through-sdd-skill`）。
 
-- focus 已存在本機 `.superpowers/sdd/tasks/final-focus.txt`；指令：
-  `node ~/.claude/plugins/cache/openai-codex/codex/1.0.6/scripts/codex-companion.mjs adversarial-review --wait --base main "$(cat .superpowers/sdd/tasks/final-focus.txt)"`
-- 判讀：輸出開頭的 verdict 不可信——**先 grep log 有沒有 `usage limit` 或 `Turn failed`**（2026-09-17 那次在 10 個指令後
-  撞額度，仍印出 `approve / No material findings`）。findings 一律實測重現後才採信（superpowers:receiving-code-review）。
-- 審完且修正後進入第 3 節（tasks.md 已 27/27 全勾）。
+## 3. 接著要做：Direction 01 視覺改版
 
-## 3. 接著要做：分支收尾與 archive
-
-照 1b 的做法（`openspec/changes/archive/2026-09-15-attach-herdr-runtimes/` 為範例）：
-
-1. 取得使用者授權後 `git switch main && git merge --squash feat/pipeline-projection && git commit`；`git diff main feat/pipeline-projection --stat` 為空才 `git branch -D`。
-2. ledger 去識別化複製成 `openspec/changes/pipeline-projection/sdd-ledger.md`（grep 使用者名稱、email、家目錄）。
-3. delta spec 同步：`cockpit-config`（純 MODIFIED）、`runtime-driver`、`state-projection`、`cockpit-dashboard`（MODIFIED＋ADDED）
-   要逐條合併進 `openspec/specs/<cap>/spec.md`（不能只改標題）；`pipeline-config`、`pipeline-domain`、`pipeline-progress`、
-   `runtime-binding` 為純 ADDED，改標題後放入。可用 `/opsx:sync` 或 `/opsx:archive`。
-4. 刪本機 `.superpowers/sdd/tasks/`，重寫本檔。
+已選定的美術方向在 `docs/direction-01-visual-design.md`（配色表、關鍵語彙）與
+`docs/cockpit-dashboard-direction-01-concept.png`（完整概念圖，功能區塊以它為準），十種方向比較稿在
+`docs/cockpit-art-directions.html`。change 2 刻意**沒有**套用（使用者 2026-09-16 決定），現在的
+`style.css` 仍是 1b 的樣式語彙。改版時一併處理兩個已知的使用性問題（第 5 節 M2／M3）。
 
 ## 4. 這一段踩過的坑（不要再推導一次）
 
-（本段新增；**不會報錯的錯誤**加粗）
+（**不會報錯的錯誤**加粗。change 2 新增的在前，較早仍有效的在後。）
 
 - **HERDR 0.8.2 對每條新 `events.subscribe` 重播 server 啟動以來的整段事件歷史（舊值），部分晚於 snapshot 到達、不觸發
   Drift，投影靜默倒退**（label 變空、agent unknown、binding unbound）→ 已由「連線後沉降重拿」修正，WSL 端啟動／重啟後
@@ -140,44 +119,35 @@
 
 | 決策 | 狀態 |
 |---|---|
-| 重播 bug 在本 change 內修 | **已決並完成**（使用者 2026-09-17）：spec `runtime-driver` 加「連線後沉降重拿」、design D12、task 6.6 |
-| 沉降參數 | **已決**：靜默 1 s、上限 5 s（使用者同意）；7.2 門檻依此改 6 s |
-| Direction 01 視覺設計 | **已決不進 change 2**（使用者 2026-09-16）；另開 change，功能區塊以 `docs/cockpit-dashboard-direction-01-concept.png` 為準 |
-| Codex 審查 | **待補**：9/20 09:58 後補跑全分支＋替代審查過的 commit；gate 已開 |
-| 合併與 archive | **待使用者授權**（7.3 與 Codex 補審之後） |
-| `/ws` 可被任意網站讀取投影 | **已知不修**（1b 既有）；建議之後把 `source_check` 套到 `/ws` |
-| 斷線期間畫面無「取消改綁」按鈕（M2） | **留待之後**：spec 字面滿足，可用 curl DELETE |
-| 每次推送整頁重畫使鍵盤焦點消失（M3） | **留待之後**：spec 未要求；改版畫面時處理 |
-| `[state] path` 父目錄不存在每次寫入 500（M5） | **只寫 README**，不自動建目錄 |
-| `LOCALHOST:<port>` 大寫 Host 被 403 | **不修**（fail-closed，瀏覽器送小寫） |
-| `with_write_hook`（doc(hidden) 測試鉤子）panic 情境 | **不修**；之後可改 feature 限定 |
-| 同 tick 就緒時 Drift 被當新觸發（多拿一次 snapshot） | **不修**（語意正確） |
-| 真實時間測試（reopen 1.67 s、loop_integration 2.5 s、重疊 350 ms） | **不改 paused time**（第 4 節坑） |
-| tokio-tungstenite 兩版並存、`Path::exists()` 權限情境 | **不處理**（依賴邊獨立；生產碼無 `exists()`） |
-| per-pane S 訂閱重開是否重播 | **7.2 觀察未見倒退**；未做 nc 直接擷取 |
-| Tauri | MVP 後再評估 |
+| change 2 的 Codex 補審 | **已決不做**（2026-09-19 使用者接受 opus 替代審查）；之後有需要再針對特定 diff 跑 |
+| Claude 在 feature 分支 commit、收尾 squash 併回 main | **已授權**（逐 task 一個 commit；change 1a／1b／2 都這樣做） |
+| Direction 01 視覺 | **已決另開 change**，不在 change 2 |
+| `/ws` 可被任意網站以 WebSocket 讀取投影 | **已知不修**；建議之後把 `source_check` 也套到 `/ws` |
+| 斷線期間畫面沒有「取消改綁」按鈕（M2） | **留待視覺改版**：spec 字面滿足，可用 `curl -X DELETE` |
+| 每次推送整頁重畫使鍵盤焦點消失（M3） | **留待視覺改版**：spec 未要求保留焦點 |
+| `[state] path` 父目錄不存在→每次寫入 500 | **只寫 README**，不自動建目錄 |
+| 大寫 `LOCALHOST:<port>` 的 Host 被 403 | **不修**（fail-closed；瀏覽器與 curl 都送小寫） |
+| `with_write_hook`（`doc(hidden)` 測試鉤子）注入會 panic 的 callback | **不修**；之後可改 feature 限定 |
+| 同 tick 就緒時 Drift 被當新觸發（多拿一次 snapshot） | **不修**（語意正確，成本一次 snapshot） |
+| 真實時間測試（reopen 1.67 s、loop_integration 2.5 s、重疊 350 ms） | **不改 paused time**（第 4 節：tokio 組合互斥、真實 transport） |
+| tokio-tungstenite 兩版並存、`Path::exists()` 權限情境 | **不處理**（依賴邊獨立；生產碼無 `exists()` 呼叫） |
+| per-pane S 訂閱重開是否也重播歷史 | **未驗**：7.2 觀察沒有倒退，但沒用 `nc` 直接擷取確認 |
+| Windows 0.9.0 是否會重播歷史 | **唯讀擷取未見**（5 秒、長時間使用中的 server）；升版時重跑 `capture_events` 確認 |
+| WSL 端每秒多次 `pane.read` | **未決**：超過每秒一次要改 ADR-0002 方案 B（change 3 要面對） |
+| Tauri 桌面殼 | MVP 完成後再評估（ADR-0005） |
 
 ## 6. 之後的路
 
-change 2 收尾（7.3、Codex 補審、squash、archive）→ change 3 `live-output`（`pane.read` 以 `revision` 輪詢推送，
-change 1a 已建 `PaneReadParams`／`PaneReadResult`；WSL 端讀取頻率超過每秒一次時改 ADR-0002 方案 B；注意重播 bug 對
-新訂閱的影響）→ 視覺 change（Direction 01）→ MVP 完成後評估 Tauri 桌面殼（ADR-0005）。北極星與整體範圍見
-`docs/cockpit-spec.md`。
+change 3 `live-output`（pane 輸出以 `revision` 輪詢推送）→ Direction 01 視覺改版 → MVP 完成後評估 Tauri
+桌面殼（ADR-0005）。北極星與整體範圍見 `docs/cockpit-spec.md`；每個 change 的歷史決策見
+`openspec/changes/archive/*/`（含各自的 `sdd-ledger.md`，裡面有所有 Ruling 與 parked findings）。
 
 ## 版本紀錄
 
 | 版本 | 日期 | 變更 |
 |---|---|---|
-| 1 | 2026-09-13 | 初版：brainstorming 完成、設計文件待審 |
-| 2 | 2026-09-13 | 找碴審閱後：每 pane 狀態訂閱、change 1 拆 1a／1b、研究證據進 repo |
-| 3 | 2026-09-14 | change 1a 18 task 完成 17；SDD＋Codex 逐 task review；spike 1–5 真機結論 |
-| 4 | 2026-09-14 | change 1a 全部完成：最終 review 修正波、Codex 額度用盡改替代審查 |
-| 5 | 2026-09-14 | change 1a 併回 main 並 archive；下一步 1b propose |
-| 6 | 2026-09-14 | change 1b propose 完成、分支建立；下一步 1b apply |
-| 7 | 2026-09-15 | change 1b apply：30 task 完成 27，真機 Scenario A／B／F，最終 review 兩條 Important 已修 |
-| 8 | 2026-09-15 | 1b squash 併回 main、archive、規格同步；下一步 change 2 範圍討論 |
-| 9 | 2026-09-15 | 4.4 定案 Windows 0.9.0 不補推 |
-| 10 | 2026-09-15 | 1b 手動驗收通過，完全結案 |
-| 11 | 2026-09-15 | change 2 propose 完成；三項使用者決定與兩條假設翻案；下一步 apply |
-| 13 | 2026-09-19 | 7.3 使用者手動驗收通過（含控制端代跑的重啟保留比對）、7.4 勾選，27 task 全勾；剩 Codex 補審與收尾 |
-| 12 | 2026-09-17 | change 2 apply：25／27 task 完成；發現並修 HERDR 0.8.2 訂閱重播 bug（D12、6.6）；Codex 額度用盡，後段替代審查，9/20 補審；剩 7.3 使用者驗收與收尾 |
+| 1–10 | 2026-09-13～15 | change 1a／1b：brainstorming、設計文件、`herdr-client`、三個 crate、真機 Scenario A／B／F、兩次併回 main 與 archive（詳見 git log 與 archive 目錄） |
+| 11 | 2026-09-15 | change 2 propose 完成；三項使用者決定與兩條假設翻案 |
+| 12 | 2026-09-17 | change 2 apply 25／27；發現並修 HERDR 訂閱重播 bug（D12、task 6.6）；Codex 額度用盡改替代審查 |
+| 13 | 2026-09-19 | 7.3 使用者手動驗收通過、27 task 全勾 |
+| 14 | 2026-09-19 | change 2 squash 併回 `main`、8 份 delta spec 同步、archive 完成、ledger 保存；下一段改為 change 3 `live-output` |
