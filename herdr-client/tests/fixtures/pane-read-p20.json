@@ -1,0 +1,16 @@
+{
+  "id": "pr",
+  "result": {
+    "type": "pane_read",
+    "read": {
+      "pane_id": "wD:p31",
+      "workspace_id": "wD",
+      "tab_id": "wD:t18",
+      "source": "recent",
+      "format": "text",
+      "text": "alpha\nbeta\nuser@host:~/work$\n",
+      "revision": 0,
+      "truncated": false
+    }
+  }
+}

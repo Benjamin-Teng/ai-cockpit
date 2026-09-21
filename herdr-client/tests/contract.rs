@@ -12,8 +12,8 @@
 use std::str::FromStr;
 
 use herdr_client::types::{
-    EventEnvelope, EventsSubscribeParams, PaneReadParams, ReadFormat, ReadSource, RequestEnvelope,
-    Subscription,
+    EventEnvelope, EventsSubscribeParams, PaneReadParams, PaneReadResultEnvelope, ReadFormat,
+    ReadSource, RequestEnvelope, Subscription,
 };
 
 mod common;
@@ -117,6 +117,27 @@ fn snapshot_fixtures_validate_as_success_response() {
 
     let snapshot_p20 = load_json("snapshot-p20.json");
     assert_valid(&p20_response, &snapshot_p20, "snapshot-p20.json");
+}
+
+/// live-output task 1.3：把真機擷取的 `pane.read` 成功回應解析為 `PaneReadResultEnvelope`
+/// （spec `herdr-observer-types`「解析真機 pane.read 回應」）。fixture 的 `text` 是已知
+/// 測試文字（`alpha\nbeta\n` 加一行已去識別化的 prompt），逐字斷言相等，不只是 contains。
+#[test]
+fn parses_real_pane_read_response() {
+    let fixture = load_json("pane-read-p20.json");
+    let result = fixture
+        .get("result")
+        .unwrap_or_else(|| panic!("pane-read-p20.json missing top-level \"result\""));
+
+    let envelope: PaneReadResultEnvelope =
+        serde_json::from_value(result.clone()).unwrap_or_else(|e| {
+            panic!("pane-read-p20.json result did not parse as PaneReadResultEnvelope: {e}")
+        });
+
+    assert_eq!(envelope.read.text, "alpha\nbeta\nuser@host:~/work$\n");
+    assert_eq!(envelope.read.source, ReadSource::Recent);
+    assert_eq!(envelope.read.format, ReadFormat::Text);
+    assert!(!envelope.read.truncated);
 }
 
 #[test]

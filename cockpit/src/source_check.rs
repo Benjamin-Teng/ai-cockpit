@@ -1,12 +1,14 @@
-//! 寫入端點的來源檢查 middleware（spec `pipeline-progress`「寫入端點只接受本機同源請求」；
-//! design D6；task 4.2）。
+//! 來源檢查 middleware（spec `pipeline-progress`「寫入端點只接受本機同源請求」、`live-output`
+//! 「輸出端點只接受本機同源請求」；design D6、D7；task 4.2；live-output task 4.3）。
 //!
-//! 只套在 [`crate::http::router`] 內的兩個寫入路由（`POST .../{op}`、`PUT`／`DELETE
-//! .../override`），用 `MethodRouter::route_layer` 而不是套在整個 `Router` 上——
-//! `route_layer` 只包住已註冊的方法插槽（`post`／`put`／`delete`），沒註冊的方法（例如對這兩
-//! 個路徑送 `GET`）落到 axum 內建的 fallback，直接照舊回 405，不會先經過這裡（axum
-//! `method_routing.rs::route_layer` 的實作只 map `get`／`head`／`delete`／…／`connect` 這幾個
-//! 插槽，不動 `fallback`）。`/api/state`、`/ws` 等讀路由完全沒有掛這層，同樣不受影響。
+//! 套在 [`crate::http::router`] 內的兩個寫入路由（`POST .../{op}`、`PUT`／`DELETE
+//! .../override`）與輸出讀取端點（`GET .../output`，live-output task 4.3；design D7：重用
+//! 這裡的判定，不為 `GET` 另開一套規則），用 `MethodRouter::route_layer` 而不是套在整個
+//! `Router` 上——`route_layer` 只包住已註冊的方法插槽（`post`／`put`／`delete`／`get`），沒
+//! 註冊的方法（例如對寫入路由送 `GET`、對輸出端點送 `POST`）落到 axum 內建的 fallback，
+//! 直接照舊回 405，不會先經過這裡（axum `method_routing.rs::route_layer` 的實作只 map
+//! `get`／`head`／`delete`／…／`connect` 這幾個插槽，不動 `fallback`）。`/api/state`、`/ws`
+//! 等讀路由完全沒有掛這層，同樣不受影響。
 //!
 //! 規則（spec 原文；design D6）：`Host` 標頭必須是 `127.0.0.1:<port>`／`localhost:<port>`／
 //! `[::1]:<port>` 三者之一，`<port>` 是 [`crate::http::AppState::port`] 當下的值（每個請求都

@@ -152,6 +152,40 @@ JSON 物件 → 400；狀態檔寫入失敗 → 500，本體同樣是 `{"error":
 連同你手改的內容一起蓋掉。正確順序是：先 Ctrl-C 停掉這次執行 → 改 `cockpit.state.json` → 再重新
 `cargo run -p cockpit` 或執行檔啟動，讓它在下次寫入前先把你手改的內容讀進記憶體。
 
+## 輸出讀取 API（change 3 `live-output`）
+
+`GET /api/runtimes/<runtime>/panes/<pane>/output` 對指定 pane 即時讀一次目前的畫面輸出（最多最近
+200 行），不快取、不在請求之間保留任何與選取有關的狀態。畫面上點 runtime 卡裡任一未 exited 的
+pane 列，或 Factory Floor 中已綁定 workstream 列首的「看輸出」，即會開啟 Live Output 面板並開始
+每秒輪詢一次；面板的「關閉」可取消選取。改綁模式期間 pane 列不可點選（不呈現可點選樣式），既有的
+選取與面板維持不變，離開改綁模式後才恢復可點選。
+
+成功回 200，本體為 JSON：`runtime`、`pane_id`（與路徑相同）、`format`（目前固定為 `"text"`）、
+`text`（純文字，不含終端機控制序列）、`truncated`（`true` 表示還有更早的輸出未回傳）。下面範例對
+本機打 `127.0.0.1:7770`，`curl` 依網址自動送出對應的 `Host` 標頭，仍明寫出來方便對照：
+
+```bash
+# 讀輸出（GET，只讀不寫，每次都是即時讀一次）
+curl -i http://127.0.0.1:7770/api/runtimes/win/panes/w1:p1/output \
+  -H 'Host: 127.0.0.1:7770'
+```
+
+狀態碼：路徑中的 `<runtime>` 或 `<pane>` 片段解碼後不是合法 UTF-8 → 400；`<runtime>` 不是設定中的
+runtime id、或該 pane 不存在 → 404；runtime 無法連線或讀取失敗 → 503；單次讀取超過 5 秒 → 504；
+`GET` 以外的 method（含 `HEAD`）→ 405。這個端點**所有**回應（含 400／403／404／405／503／504）都帶
+`Cache-Control: no-store` 與 `X-Content-Type-Options: nosniff`；非 200 回應本體一律
+`{"error": "<原因>"}`。
+
+**與寫入端點同一套本機同源檢查**：`Host` 必須是 `127.0.0.1:<port>`、`localhost:<port>`、
+`[::1]:<port>` 三者之一（`<port>` 是服務實際監聽的埠），帶 `Origin` 時其值必須是 `http://` 加同一個
+`Host`；不符合回 403，且不會對 runtime 發出讀取。
+
+**安全性**：pane 畫面內容可能含任何被那個 pane 印出來的東西（密碼、token 等）。來源檢查擋的是
+`Host` 不合法（DNS rebinding）與帶了不同源 `Origin` 的請求；**沒有 `Origin` 標頭的請求會放行**——
+跨站頁面（例如 `<img src=…>`）仍可能不帶 `Origin` 觸發一次真實讀取，但瀏覽器同源政策不讓它讀到回應
+內容，回應本體只有本機同源頁面與本機命令列（如 `curl`）讀得到。端點唯讀、無副作用，被觸發也沒有
+傷害；所有回應一律帶 `Cache-Control: no-store`，不會被任何地方快取。
+
 ## 單一執行檔
 
 所有靜態資源（HTML、JS、CSS、manifest、PNG 圖示）都用 `include_str!`／`include_bytes!` 內嵌進

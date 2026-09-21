@@ -327,6 +327,127 @@ async fn with_method_response_after_responses_overrides() {
 }
 
 // ---------------------------------------------------------------------------
+// live-output task 3.3：`MethodResponse::Delayed` 與 `FakeHerdr::max_concurrent_calls`。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn generic_request_delayed_wraps_inner_response_after_sleeping() {
+    let config = FakeHerdrConfig::new().with_method_response(
+        "session.snapshot",
+        MethodResponse::Delayed(
+            std::time::Duration::from_millis(50),
+            Box::new(MethodResponse::Success(snapshot_result_fixture())),
+        ),
+    );
+    let fake = FakeHerdr::start(config).await.expect("啟動假 HERDR 失敗");
+
+    let mut stream = connect(&fake).await;
+    let start = std::time::Instant::now();
+    send_snapshot_request(&mut stream, "1").await;
+    let line = recv_required_line(&mut stream).await;
+
+    assert!(
+        start.elapsed() >= std::time::Duration::from_millis(40),
+        "Delayed 應該讓回應延後送達，實際: {:?}",
+        start.elapsed()
+    );
+    let response: ResponseEnvelope = serde_json::from_str(&line).expect("回應應為合法 JSON");
+    assert_eq!(response.id, "1");
+    let result = response
+        .result
+        .expect("延遲之後應該送出內層 Success 的 result");
+    let snapshot: SessionSnapshotResult =
+        serde_json::from_value(result).expect("應可解析為 SessionSnapshotResult");
+    assert_eq!(snapshot.snapshot.protocol, 22);
+}
+
+#[tokio::test]
+async fn max_concurrent_calls_is_zero_before_any_call() {
+    let fake = FakeHerdr::start(FakeHerdrConfig::new())
+        .await
+        .expect("啟動假 HERDR 失敗");
+
+    assert_eq!(
+        fake.max_concurrent_calls("pane.read"),
+        0,
+        "從未呼叫過的 method 應該回 0"
+    );
+}
+
+/// 三個連線同時對同一個延遲 method 送 request，全部卡在延遲期間才依序回應：觀察到的最大
+/// 並發應等於同時進行中的呼叫數（這裡是 3），驗證假 HERDR 的 accept loop 真的能同時服務
+/// 多條連線，不是一次只服務一條（brief 要求先確認這件事，否則 task 3.3 的 RED 撞不出來）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn max_concurrent_calls_reports_peak_when_requests_overlap() {
+    let config = FakeHerdrConfig::new().with_method_response(
+        "pane.read",
+        MethodResponse::Delayed(
+            std::time::Duration::from_millis(150),
+            Box::new(MethodResponse::Success(
+                serde_json::json!({"type": "pane_read"}),
+            )),
+        ),
+    );
+    let fake = FakeHerdr::start(config).await.expect("啟動假 HERDR 失敗");
+
+    let mut handles = Vec::new();
+    for i in 0..3 {
+        let mut stream = connect(&fake).await;
+        handles.push(tokio::spawn(async move {
+            send_request(
+                &mut stream,
+                &i.to_string(),
+                "pane.read",
+                &serde_json::json!({}),
+            )
+            .await;
+            let _ = recv_required_line(&mut stream).await;
+        }));
+    }
+    for handle in handles {
+        handle.await.expect("task 不該 panic");
+    }
+
+    assert_eq!(
+        fake.max_concurrent_calls("pane.read"),
+        3,
+        "三筆並發、各自延遲才回，觀察到的最大並發應為 3"
+    );
+}
+
+#[tokio::test]
+async fn max_concurrent_calls_is_one_when_requests_are_sequential() {
+    let config = FakeHerdrConfig::new().with_method_response(
+        "pane.read",
+        MethodResponse::Delayed(
+            std::time::Duration::from_millis(30),
+            Box::new(MethodResponse::Success(
+                serde_json::json!({"type": "pane_read"}),
+            )),
+        ),
+    );
+    let fake = FakeHerdr::start(config).await.expect("啟動假 HERDR 失敗");
+
+    for i in 0..3 {
+        let mut stream = connect(&fake).await;
+        send_request(
+            &mut stream,
+            &i.to_string(),
+            "pane.read",
+            &serde_json::json!({}),
+        )
+        .await;
+        let _ = recv_required_line(&mut stream).await;
+    }
+
+    assert_eq!(
+        fake.max_concurrent_calls("pane.read"),
+        1,
+        "依序一筆接一筆送完再送下一筆，觀察到的最大並發應為 1"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // events.subscribe：探測失敗、腳本各步驟
 // ---------------------------------------------------------------------------
 

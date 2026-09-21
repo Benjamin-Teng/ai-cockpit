@@ -53,6 +53,7 @@ async fn routes_return_200_with_expected_content_types() {
         ("/app/style.css", "text/css"),
         ("/app/channel.js", "text/javascript"),
         ("/app/actions.js", "text/javascript"),
+        ("/app/output.js", "text/javascript"),
         ("/manifest.webmanifest", "application/manifest+json"),
         ("/icons/icon-192.png", "image/png"),
         ("/icons/icon-512.png", "image/png"),

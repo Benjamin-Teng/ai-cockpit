@@ -50,7 +50,7 @@ Cockpit 刻意把「HERDR 說的」與「Cockpit 自己認定的」分成兩層�
 |---|---|
 | ProjectedState | 給畫面看的整張圖，由 RuntimeStore（change 2 起加上 Domain）純函數產生，附遞增 version。 |
 | Factory Floor | Pipeline × Workstream 的二維視覺，UI 名稱，不是型別。 |
-| Live Output | 選定 pane 的輸出投影，來自 HERDR `pane.read`，不是 terminal。 |
+| Live Output | 選定 pane 的輸出投影，來自 HERDR `pane.read`，不是 terminal。由頁面輪詢（每秒一次）、純文字、最多最近 200 行；選取只存在於單一瀏覽器頁面，不送到服務、不跨分頁共享。 |
 
 ## 禁用與改稱
 

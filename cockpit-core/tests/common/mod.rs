@@ -4,13 +4,15 @@
 
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use cockpit_core::{
-    Agent, AgentRuntime, AgentStatus, Focused, Pane, PaneId, RuntimeError, RuntimeEvent,
-    RuntimeEvents, RuntimeId, RuntimeSnapshot, Tab, TabId, Workspace, WorkspaceId,
+    Agent, AgentRuntime, AgentStatus, Focused, OutputFormat, Pane, PaneId, PaneOutput,
+    RuntimeError, RuntimeEvent, RuntimeEvents, RuntimeId, RuntimeSnapshot, Tab, TabId, Workspace,
+    WorkspaceId,
 };
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -173,6 +175,9 @@ fn clone_error(err: &RuntimeError) -> RuntimeError {
             retry_after: *retry_after,
         },
         RuntimeError::Failed(message) => RuntimeError::Failed(message.clone()),
+        RuntimeError::PaneNotFound { pane_id } => RuntimeError::PaneNotFound {
+            pane_id: pane_id.clone(),
+        },
     }
 }
 
@@ -212,6 +217,9 @@ pub struct FakeRuntime {
     senders: Mutex<Vec<Option<EventSender>>>,
     /// 每條建立過的事件流的釋放旗標，依建立順序。
     released: Mutex<Vec<Arc<AtomicBool>>>,
+    /// `read_output` 的腳本化回應：指定的 pane 回指定文字，其餘回 `PaneNotFound`
+    /// （task 2.2，spec `runtime-model`「假 runtime 回應輸出」）。
+    outputs: Mutex<HashMap<PaneId, String>>,
 }
 
 impl FakeRuntime {
@@ -225,7 +233,15 @@ impl FakeRuntime {
             calls: Mutex::new(Vec::new()),
             senders: Mutex::new(Vec::new()),
             released: Mutex::new(Vec::new()),
+            outputs: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// 幫某個 pane 設定 `read_output` 要回的文字；沒有設定過的 pane 一律回
+    /// `RuntimeError::PaneNotFound`。
+    pub fn pane_output(mut self, pane: PaneId, text: impl Into<String>) -> Self {
+        self.outputs.get_mut().unwrap().insert(pane, text.into());
+        self
     }
 
     /// 設定 snapshot 回應佇列：每筆是「回應 + 這次呼叫要花多久」，依序取用，
@@ -358,5 +374,24 @@ impl AgentRuntime for FakeRuntime {
         self.senders.lock().unwrap().push(Some(tx));
         self.released.lock().unwrap().push(flag);
         Ok(unstarted.start(vec![task]))
+    }
+
+    /// 腳本化回應：`pane_output` 設定過的 pane 回那份文字（格式固定 `Text`、`truncated`
+    /// 固定 `false`），其餘一律回 `PaneNotFound`。純記憶體查表，不 `await`。
+    async fn read_output(
+        &self,
+        pane: &PaneId,
+        _max_lines: u32,
+    ) -> Result<PaneOutput, RuntimeError> {
+        match self.outputs.lock().unwrap().get(pane) {
+            Some(text) => Ok(PaneOutput {
+                format: OutputFormat::Text,
+                text: text.clone(),
+                truncated: false,
+            }),
+            None => Err(RuntimeError::PaneNotFound {
+                pane_id: pane.clone(),
+            }),
+        }
     }
 }

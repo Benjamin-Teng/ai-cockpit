@@ -18,6 +18,11 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [dev-dependencies]
+# live-output fix round 1（R11）：`cockpit/tests/output_endpoint.rs` 的 `FakeOutputRuntime`
+# 要實作 `cockpit_core::AgentRuntime`（trait 定義用 `#[async_trait::async_trait]`），版本與
+# `cockpit-core`／`cockpit-herdr`／`herdr-client` 完全相同（已在 `Cargo.lock`，不會下載新
+# 套件）。只加在 `[dev-dependencies]`，不影響正式相依集合。
+async-trait = "0.1.92"
 futures-util = { version = "0.3.34", features = ["sink"] }
 http-body-util = "0.1.5"
 tokio-tungstenite = "0.30.0"

@@ -103,6 +103,10 @@ pub(super) async fn handle_connection<T>(
         return;
     };
 
+    // live-output task 3.3：從收到這行到這次呼叫結束（回完應、關閉連線，或 handler 被
+    // abort）為止，整段都計入這個 method 的並發數；`_concurrency_guard` drop 時自動 -1。
+    let _concurrency_guard = shared.note_call_start(&request.method);
+
     if request.method == "events.subscribe" {
         handle_subscribe(&mut io, &request, &config).await;
     } else {
@@ -117,7 +121,15 @@ async fn handle_generic_request<T>(
 ) where
     T: AsyncRead + AsyncWrite + Unpin + BestEffortAbort,
 {
-    match config.response_for(&request.method) {
+    // live-output task 3.3：`Delayed` 先睡再攤平成內層的 `MethodResponse`（可巢狀），睡眠期間
+    // 這條連線仍計入呼叫端登記的並發數（`handle_connection` 的 `_concurrency_guard`）。
+    let mut response = config.response_for(&request.method).cloned();
+    while let Some(MethodResponse::Delayed(duration, inner)) = response {
+        tokio::time::sleep(duration).await;
+        response = Some(*inner);
+    }
+
+    match response {
         Some(MethodResponse::Success(result)) => {
             let line = serde_json::json!({ "id": request.id, "result": result }).to_string();
             let _ = write_line(io, &line).await;
@@ -139,7 +151,7 @@ async fn handle_generic_request<T>(
             let _ = write_line(io, &line).await;
         }
         Some(MethodResponse::NonJson(text)) => {
-            let _ = write_line(io, text).await;
+            let _ = write_line(io, &text).await;
         }
         Some(MethodResponse::PongResult) => {
             let line = serde_json::json!({
@@ -153,6 +165,9 @@ async fn handle_generic_request<T>(
             // 直接關閉連線、不回應。`None`（呼叫端沒替這個 method 設定回應）與明確要求的
             // `CloseBeforeReply` 行為相同——測試理當先設定好要用到的 method。
         }
+        Some(MethodResponse::Delayed(..)) => unreachable!(
+            "上面的 while 迴圈已經把所有 Delayed 攤平，這裡不會再遇到 Delayed 這個 variant"
+        ),
     }
 }
 

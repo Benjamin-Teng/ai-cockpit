@@ -27,8 +27,15 @@ Windows 上子程序一律加 `CREATE_NO_WINDOW`，不與 `DETACHED_PROCESS` 併
 ## Consequences
 
 - 每條連線一個子程序：WSL 端每個 runtime 常駐兩個 nc（生命週期訂閱與每 pane 狀態訂閱），
-  每次 snapshot 與每次重開狀態訂閱各再啟動一次 `wsl.exe`（約 0.1–0.3 秒）。change 1 的
-  頻率是連線時三次、之後每 30 秒一次與 pane 集合改變時一次，可接受。
+  每次 snapshot 與每次重開狀態訂閱各再啟動一次 `wsl.exe`（約 0.1–0.3 秒，2026-09-13 當時的估計值；
+  2026-09-19 實測數字見下）。change 1 的頻率是連線時三次、之後每 30 秒一次與 pane 集合改變時一次，
+  可接受。
 - 不探測就連會反覆喚醒已休眠的 WSL 虛擬機；探測步驟不可省略。
   `wsl.exe --list --running --quiet` 已於 2026-09-13 實測不喚醒虛擬機。
 - nc 的緩衝與半關閉行為列為 change 1a 的 spike。
+- **2026-09-19 實測（change 3 `live-output` 設計前 spike）**：單次 `pane.read` 經這條
+  `ChildStdioConnector` 路徑，WSL 端約 42 ms、Windows 端約 1.2 ms，且與回應大小無關（37 B 到
+  6 KB 同速）。上面「約 0.1–0.3 秒」的估計比實測高出一個數量級。結論：**change 3 Live Output
+  每秒一次的讀取頻率不需要方案 B**（自寫 Linux relay）；方案 B 仍保留為升級路徑，評估時機不變
+  ——更高頻率輪詢或多個 pane 同時被看時再評估。數字來源與量測方法見
+  `docs/research/2026-09-19/pane-read-probe.md` 第 1 節。

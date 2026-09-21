@@ -1,6 +1,7 @@
-//! RED→GREEN 驗收測試（Task 1.2）：AgentStatus 序列化、窮舉、RuntimeError、RuntimeEvents drop。
+//! RED→GREEN 驗收測試（Task 1.2、live-output task 2.1）：AgentStatus 序列化、窮舉、
+//! RuntimeError、RuntimeEvents drop、PaneOutput／OutputFormat 序列化。
 
-use cockpit_core::{AgentStatus, RuntimeError, RuntimeEvents};
+use cockpit_core::{AgentStatus, OutputFormat, PaneId, PaneOutput, RuntimeError, RuntimeEvents};
 
 #[test]
 fn agent_status_serializes_lowercase() {
@@ -64,6 +65,31 @@ fn runtime_error_retry_after_only_for_unavailable() {
     let failed = RuntimeError::Failed("連線中斷：peer reset".to_string());
     assert_eq!(failed.retry_after(), None);
     assert_eq!(failed.to_string(), "連線中斷：peer reset");
+}
+
+#[test]
+fn pane_output_serializes_format_as_text() {
+    let output = PaneOutput {
+        format: OutputFormat::Text,
+        text: "line 1\nline 2".to_string(),
+        truncated: false,
+    };
+
+    let json = serde_json::to_value(&output).expect("serialize PaneOutput");
+    assert_eq!(json["format"], "text");
+    assert_eq!(json["text"], "line 1\nline 2");
+    assert_eq!(json["truncated"], false);
+}
+
+#[test]
+fn pane_not_found_has_no_retry_after() {
+    let pane_id = PaneId::new("p9");
+    let error = RuntimeError::PaneNotFound {
+        pane_id: pane_id.clone(),
+    };
+
+    assert_eq!(error.retry_after(), None);
+    assert!(error.to_string().contains(pane_id.as_str()));
 }
 
 #[tokio::test]

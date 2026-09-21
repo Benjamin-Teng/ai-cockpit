@@ -52,6 +52,9 @@ pub struct PaneReadResult {
     pub source: ReadSource,
     pub format: ReadFormat,
     pub text: String,
+    /// 已測版本恆為 0，呼叫端不得用它判斷內容是否改變（真機探測見
+    /// `docs/research/2026-09-19/pane-read-probe.md` 第 2 節：WSL 0.8.2、Windows 0.9.0 兩端
+    /// 內容變化時 `revision` 全程不動；去重要改用內容比對）。
     pub revision: u64,
     pub truncated: bool,
 }

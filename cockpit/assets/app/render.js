@@ -4,17 +4,33 @@
 // 會碰全域（document、window）的只有檔尾的 paint／window.onState／window.repaint／
 // window.onChannel。
 //
-// ui 是選填的第二參數，缺省＝無改綁模式、無錯誤訊息（形狀見 actions.js 的 uiSnapshot：
-// `{ rebind: null | { project, workstream }, error: null | string }`）。畫面操作的按鈕（spec
-// 「畫面操作」；task 5.3）在這裡只輸出 `<button>` 與 `data-action`／`data-project`／`data-task`／
-// `data-workstream`／`data-runtime`／`data-pane` 屬性，**不綁任何 listener**——事件委派、
-// fetch 與 UI 狀態都在 actions.js（design D9）。
+// ui 是選填的第二參數，缺省＝無改綁模式、無錯誤訊息、無選取（形狀見 actions.js 的
+// uiSnapshot：`{ rebind: null | { project, workstream }, error: null | string,
+// selected: null | { runtime, paneId } }`）。畫面操作的按鈕（spec「畫面操作」；task 5.3）在
+// 這裡只輸出 `<button>` 與 `data-action`／`data-project`／`data-task`／`data-workstream`／
+// `data-runtime`／`data-pane` 屬性，**不綁任何 listener**——事件委派、fetch 與 UI 狀態都在
+// actions.js（design D9）。
+//
+// Live Output 的選取（spec live-output「選定一個 pane」；design D8；task 5.3／fix round 1
+// R15）：未 exited 且不在改綁模式的 pane 列輸出 `data-action="select-pane"`（可鍵盤觸發，見
+// 下方 tabindex／role）；改綁模式期間整列不可點選（R15：不呈現可點選樣式、不輸出
+// `data-action`／`tabindex`，只留「綁定到這裡」按鈕可點）。被選定的那一列另加 `.selected`
+// class——這個標示獨立於可不可點選，改綁模式期間若原本就有選取，標示仍要保留。workstream
+// 列首在 `binding.state === "bound"` 時多一顆「看輸出」（`data-action="select-bound-pane"`），
+// 不受改綁模式影響。`render.js` 每次重畫（`paint()`）後都會呼叫
+// `window.liveOutput.setKnownPanes(...)`，交出目前投影裡還存在的 pane 集合。
 //
 // 狀態色塊只有 working／blocked／done／idle／unknown 五種 class；任何其他字串（例如未來
 // 協定加的新值）一律落在 unknown 的暗灰色塊，並把原字串保留在文字與 title 裡，不會讓整頁
 // 壞掉。Factory Floor 的 task 節點另有自己的六種狀態色（running／blocked／ready／pending／
 // failed／completed），未知字串同樣落在暗灰、不會壞掉整頁。所有文字一律用 textContent 寫入，
 // 不用 innerHTML，避免把資料當成標記解析。
+//
+// 焦點還原（spec cockpit-dashboard「畫面整頁重畫」；spec live-output「選定一個 pane」；task
+// focus-fix；同時解掉專案已知的使用性問題 M3）：`paint()` 在 `replaceChildren` 前後各比對一次
+// 焦點所在元素的「身分」（`data-action` ＋當下全部 `data-*`），把焦點還原到新樹裡代表同一個
+// 對象的元素上，找不到就留在 `<body>`。詳見檔尾 captureFocusIdentity／findByFocusIdentity／
+// restoreFocus 上方註解。
 
 (function () {
   "use strict";
@@ -106,13 +122,39 @@
     return button;
   }
 
-  function renderPane(pane, runtime, rebinding) {
+  function renderPane(pane, runtime, rebinding, selected) {
     var row = el("div", "pane-row");
     if (pane.exited) {
       row.classList.add("exited");
     }
     if (pane.focused) {
       row.classList.add("focused");
+    }
+
+    // data-runtime／data-pane 是結構標記（跟 ff-cell／ff-row-header 的 data-workstream 同樣
+    // 性質：供測試腳本按 runtime＋pane 定位這一列，不是互動屬性），一律輸出、不受可不可以點選
+    // 影響——否則改綁模式期間（R15 拿掉可點選屬性時）就無法用這兩個屬性定位到列了。
+    row.setAttribute("data-runtime", runtime.id);
+    row.setAttribute("data-pane", pane.id);
+
+    // 被選定的標示跟「這一列現在可不可以點選」是兩件事（R15；spec live-output「選定一個
+    // pane」：「既有的選取與面板在改綁模式期間保留」）：即使改綁模式期間這一列不可點選，若它
+    // 就是目前的選取，`.selected` 仍要標示出來。
+    if (selected !== null && selected.runtime === runtime.id && selected.paneId === pane.id) {
+      row.classList.add("selected");
+    }
+
+    // 選取（spec live-output「選定一個 pane」）：exited 的 pane 不可選；改綁模式期間整列不可
+    // 點選（R15：不呈現可點選樣式，點列的任何區域——「綁定到這裡」以外——都不改變選取；同時
+    // 解掉 `.selectable:hover` 蓋掉 `.bind-target` 底色的樣式互蓋）。其餘一律可選——runtime
+    // 未 connected 的 pane 也可選（spec 沒有限制；端點會回 503，面板如實呈現）。
+    if (!pane.exited && !rebinding) {
+      row.classList.add("selectable");
+      row.setAttribute("data-action", "select-pane");
+      // 鍵盤可及性：<button> 以外的可點元素要自己給 tabindex，Enter／Space 由 actions.js 的
+      // keydown listener 補（瀏覽器不會替一般 <div tabindex> 自動轉成 click）。
+      row.tabIndex = 0;
+      row.setAttribute("role", "button");
     }
 
     row.appendChild(el("span", "pane-id", pane.id));
@@ -132,7 +174,7 @@
     return row;
   }
 
-  function renderTab(tab, runtime, rebinding) {
+  function renderTab(tab, runtime, rebinding, selected) {
     var box = el("div", "tab");
     if (tab.focused) {
       box.classList.add("focused");
@@ -144,13 +186,13 @@
     box.appendChild(header);
 
     for (var i = 0; i < tab.panes.length; i += 1) {
-      box.appendChild(renderPane(tab.panes[i], runtime, rebinding));
+      box.appendChild(renderPane(tab.panes[i], runtime, rebinding, selected));
     }
 
     return box;
   }
 
-  function renderWorkspace(workspace, runtime, rebinding) {
+  function renderWorkspace(workspace, runtime, rebinding, selected) {
     var box = el("div", "workspace");
     if (workspace.focused) {
       box.classList.add("focused");
@@ -165,7 +207,7 @@
     box.appendChild(header);
 
     for (var i = 0; i < workspace.tabs.length; i += 1) {
-      box.appendChild(renderTab(workspace.tabs[i], runtime, rebinding));
+      box.appendChild(renderTab(workspace.tabs[i], runtime, rebinding, selected));
     }
 
     return box;
@@ -258,6 +300,35 @@
 
     // 列首操作：「改綁」一律有；binding.source 為 override 時另有「取消改綁」（spec「畫面操作」）。
     var actions = el("div", "ff-row-actions");
+    // 「看輸出」只在 binding 為 bound 時出現（spec live-output「選定一個 pane」）：按下選定它
+    // 綁定的那個 runtime＋pane。
+    //
+    // fix round 1 Finding 2：兩個 workstream 綁到同一個 pane 時，若身分只看 action＋runtime＋
+    // pane，兩顆「看輸出」的身分會完全相同——焦點還原（見下方 captureFocusIdentity 等）遇到
+    // 重複身分取文件順序第一個，焦點原本在後一列時重畫後會錯誤跳到第一列。修法：另外帶
+    // `project` 與 `source-workstream`（→ `dataset.sourceWorkstream`）讓每顆「看輸出」的身分
+    // 在同一個 project 內唯一（同一個 pane 不會被同一個 project 的同一個 workstream 綁兩次）。
+    // **刻意不用 `workstream` 這個屬性名**（也就是不輸出 `data-workstream`）：
+    // `actions-check.js` 既有的「按鈕顯示規則」斷言用 `[data-action][data-workstream]` 選出
+    // 每個 workstream 列首「應該有哪些操作」，若「看輸出」也帶 `data-workstream`，它會被算進
+    // 那個集合、跟預期的 `['rebind']`／`['override-clear','rebind']` 兜不起來，使既有斷言
+    // 失敗（brief「不得改它們的斷言」）。`select-pane`（pane 列本身）與 `bind-here`（綁定到
+    // 這裡）都以 runtime＋pane 就能唯一指認同一列（同一個 runtime＋pane 只會出現在唯一一列
+    // pane 上），不受這個碰撞影響，不需要同樣的處理；重新盤點過 `render.js` 其餘帶
+    // `data-action` 的元素（task 按鈕靠 project＋task、workstream 列首「改綁」／「取消改綁」
+    // 靠 project＋workstream、改綁提示「取消」與錯誤訊息「關閉」全域唯一一個），沒有發現其他
+    // 碰撞。
+    if (workstream.binding.state === "bound") {
+      actions.appendChild(
+        actionButton("看輸出", {
+          action: "select-bound-pane",
+          runtime: workstream.binding.runtime,
+          pane: workstream.binding.pane_id,
+          project: project.id,
+          "source-workstream": workstream.id,
+        })
+      );
+    }
     actions.appendChild(
       actionButton("改綁", { action: "rebind", project: project.id, workstream: workstream.id })
     );
@@ -332,7 +403,7 @@
     return section;
   }
 
-  function renderRuntimeCard(runtime, rebinding) {
+  function renderRuntimeCard(runtime, rebinding, selected) {
     var card = el("div", "runtime-card");
 
     var header = el("div", "runtime-header");
@@ -343,7 +414,7 @@
     card.appendChild(renderConnection(runtime.connection));
 
     for (var i = 0; i < runtime.workspaces.length; i += 1) {
-      card.appendChild(renderWorkspace(runtime.workspaces[i], runtime, rebinding));
+      card.appendChild(renderWorkspace(runtime.workspaces[i], runtime, rebinding, selected));
     }
 
     return card;
@@ -425,6 +496,7 @@
   function renderState(state, ui) {
     var rebind = ui && ui.rebind ? ui.rebind : null;
     var error = ui && ui.error ? ui.error : null;
+    var selected = ui && ui.selected ? ui.selected : null;
 
     var page = el("div", "page");
     page.appendChild(renderTopbar(state));
@@ -446,7 +518,7 @@
 
     var cards = el("div", "runtime-cards");
     for (var i = 0; i < state.runtimes.length; i += 1) {
-      cards.appendChild(renderRuntimeCard(state.runtimes[i], rebind !== null));
+      cards.appendChild(renderRuntimeCard(state.runtimes[i], rebind !== null, selected));
     }
     page.appendChild(cards);
 
@@ -455,9 +527,167 @@
     return page;
   }
 
-  // 最近一份投影：actions.js 改了 UI 狀態（進出改綁模式、錯誤訊息）後，要用「最新投影＋新
-  // UI 狀態」重畫，不必等下一次推送。
+  // Live Output（spec live-output「選定一個 pane」；design D8；task 5.3）：交出目前投影裡還
+  // 存在的所有 pane（跨 runtime、含 exited——exited 只是不可選，不是不存在），讓 output.js
+  // 判斷被選定的 pane 是否已經從投影裡消失。同一個 pane id 可能出現在不同 runtime，所以一定
+  // 要帶 runtime。
+  function collectKnownPanes(state) {
+    var panes = [];
+    for (var r = 0; r < state.runtimes.length; r += 1) {
+      var runtime = state.runtimes[r];
+      for (var w = 0; w < runtime.workspaces.length; w += 1) {
+        var workspace = runtime.workspaces[w];
+        for (var t = 0; t < workspace.tabs.length; t += 1) {
+          var tab = workspace.tabs[t];
+          for (var p = 0; p < tab.panes.length; p += 1) {
+            panes.push({ runtime: runtime.id, paneId: tab.panes[p].id });
+          }
+        }
+      }
+    }
+    return panes;
+  }
+
+  // 最近一份投影：actions.js 改了 UI 狀態（進出改綁模式、錯誤訊息、選取）後，要用「最新投影
+  // ＋新 UI 狀態」重畫，不必等下一次推送。
   var latestState = null;
+
+  // 焦點還原（spec cockpit-dashboard「畫面整頁重畫」本文最後兩句；spec live-output「選定一個
+  // pane」本文與情境「鍵盤焦點跨重畫保留」；live-output task focus-fix）：`replaceChildren`
+  // 把整棵 `#app` 換成新節點，若鍵盤焦點原本在 `#app` 內某個可互動元素上，節點被換掉後焦點會
+  // 掉回 `<body>`。重畫前後各做一次「身分」比對，找到就把焦點還原到新樹裡代表同一個對象的元素
+  // 上；找不到（對象已消失、或新畫面裡已不可互動）就什麼都不做，讓焦點留在瀏覽器預設的
+  // `<body>`。
+  //
+  // 盤點（task focus-fix）：#app 內目前所有可聚焦、可互動的元素都帶 `data-action`——pane 列
+  // （`select-pane`，`data-runtime`／`data-pane`）、workstream 列首「看輸出」
+  // （`select-bound-pane`，同兩個）、「綁定到這裡」（`bind-here`，同兩個）、task 節點的
+  // 「推進」「Completed」「Failed」「清除標記」（`advance`／`complete`／`fail`／`clear`，
+  // `data-project`／`data-task`）、workstream 列首「改綁」（`rebind`，
+  // `data-project`／`data-workstream`）、「取消改綁」（`override-clear`，同兩個）、改綁提示的
+  // 「取消」（`rebind-cancel`，只有 `data-action`）、錯誤訊息的「關閉」
+  // （`error-dismiss`，只有 `data-action`）。沒有找到不帶 `data-action` 的可聚焦元素——若之後
+  // 新增這種元素，下面的身分規則需要重新檢討。Live Output 面板（`#output`）不在 `#app`
+  // 底下、完全不受這裡影響，本來就不需要焦點還原（design D8）。
+  //
+  // 身分＝`data-action` 加上該元素當下**全部**的 `data-*` 屬性（不逐一列名，直接比對整個
+  // `dataset`）：同一個 `data-action` 底下的 data-* 組合是固定的，全量比對比手動列舉哪些欄位
+  // 「足以指認」更不容易漏掉、也更不容易在之後新增 data-* 屬性時悄悄變得不準。找同一個對象時
+  // 逐一比對 `dataset`（不組 CSS 屬性選擇器字串）——pane id 含冒號，組字串需要正確跳脫（見
+  // brief），逐一比對天然沒有這個問題。
+  function identityFromElement(el) {
+    if (!el || !el.dataset || !el.dataset.action) {
+      return null;
+    }
+    var identity = {};
+    var key;
+    for (key in el.dataset) {
+      if (Object.prototype.hasOwnProperty.call(el.dataset, key)) {
+        identity[key] = el.dataset[key];
+      }
+    }
+    return identity;
+  }
+
+  function captureFocusIdentity(appEl) {
+    var active = document.activeElement;
+    if (!active || !appEl.contains(active)) {
+      return null;
+    }
+    return identityFromElement(active);
+  }
+
+  // 待還原目標（fix round 1 Finding 1）：actions.js 的 pointerdown 委派在 #app 根節點同步
+  // 呼叫 perform()，多數「畫面操作」（TASK_OPS、rebind、rebind-cancel、bind-here、
+  // override-clear、error-dismiss，含 select-pane／select-bound-pane）都會在 perform() 內
+  // 同步呼叫 window.repaint() → paint()。瀏覽器套用「把焦點移到被按下元素」這個預設動作的
+  // 時機不保證早於這次同步 repaint（實測：Chromium 這次 paint() 開始時
+  // document.activeElement 既不是按下前的舊焦點、也還不是剛被按下的目標——見
+  // live-output-check.js U 段 RED 的實際輸出）——單靠 captureFocusIdentity() 看
+  // document.activeElement，這次同步 repaint 永遠抓不到真正被按下的那個元素，重畫後鍵盤焦點
+  // 就没有機會落在使用者剛剛按下的目標上。
+  //
+  // 修法：actions.js 在呼叫 perform(target) 之前，把 target 交給這裡（見檔尾
+  // window.cockpitFocusHint.setPendingTarget）；paint() 開始時優先讀這個「待還原目標」的身分
+  // （consumePendingFocusIdentity()），讀到就整個取代 captureFocusIdentity() 的結果（不再看
+  // document.activeElement）——這正是 brief 要求的「優先還原到被按目標，找不到也不退回原本
+  // 聚焦的元素」：一旦這次同步 repaint 是由 pointerdown 觸發，唯一的還原依據就是被按下的目標，
+  // 找不到（該元素在新畫面已消失或不可互動）就什麼都不做，不會意外退回按下前的舊焦點。
+  //
+  // 「用完即清」：consumePendingFocusIdentity() 一律先把 pendingFocusTarget 讀出再清成
+  // null，不管這次讀到的值有沒有真的被拿去用（例如身分裡沒有 data-action，理論上不會發生，
+  // actionTarget() 已經保證委派到的一定是帶 data-action 的元素）——之後由 /ws 推送觸發的重畫
+  // 一律看到 pendingFocusTarget 已經是 null，照一般規則走 document.activeElement，不會被這次
+  // pointerdown 的殘留值誤導。actions.js 那一側也會在 perform() 呼叫前後各設一次（呼叫前設
+  // target、呼叫後清成 null），是防禦性的第二層保險：萬一某次 pointerdown 委派到的
+  // data-action 不被 perform() 任何分支接受（不會觸發 repaint()），這裡也不會把這次沒用到的
+  // 目標留到下一次重畫。
+  //
+  // 光有這個待還原目標還不夠：實測發現這次同步 repaint 換掉 #app 之後，瀏覽器仍會為這次滑鼠
+  // 按壓補送一組相容用的 mousedown／mouseup／click（Pointer Events 相容事件）——這組事件用
+  // 「按下當下」的座標對新 DOM 重新 hit-test，命中的往往不是新按鈕本身而是外層容器，它的預設
+  // 聚焦動作會把這裡剛還原好的焦點又搶走、吹到沒有任何元素聚焦。真正的修法在 actions.js：
+  // pointerdown 委派呼叫 `event.preventDefault()` 關掉這組相容事件（Pointer Events 規格明文
+  // 允許），這裡的還原邏輯本身不需要再額外處理時序（見 actions.js pointerdown listener 上方
+  // 註解）。
+  var pendingFocusTarget = null;
+
+  function setPendingFocusTarget(el) {
+    pendingFocusTarget = el || null;
+  }
+
+  window.cockpitFocusHint = { setPendingTarget: setPendingFocusTarget };
+
+  function consumePendingFocusIdentity() {
+    var target = pendingFocusTarget;
+    pendingFocusTarget = null;
+    return identityFromElement(target);
+  }
+
+  // identity 與 node.dataset 的鍵值集合完全相同才算同一個對象（雙向比對，不只是 identity 的
+  // 鍵都在 dataset 裡）。
+  function matchesFocusIdentity(node, identity) {
+    var dataset = node.dataset;
+    var key;
+    for (key in identity) {
+      if (Object.prototype.hasOwnProperty.call(identity, key) && dataset[key] !== identity[key]) {
+        return false;
+      }
+    }
+    for (key in dataset) {
+      if (Object.prototype.hasOwnProperty.call(dataset, key) && !(key in identity)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // 理論上不該有多個元素同時符合同一個身分；真的發生時取文件順序中第一個（brief 邊界）。
+  function findByFocusIdentity(appEl, identity) {
+    if (identity === null) {
+      return null;
+    }
+    var candidates = appEl.querySelectorAll("[data-action]");
+    for (var i = 0; i < candidates.length; i += 1) {
+      if (matchesFocusIdentity(candidates[i], identity)) {
+        return candidates[i];
+      }
+    }
+    return null;
+  }
+
+  // 找不到（對象已消失，或該元素在新畫面已不可互動，例如進入改綁模式後 pane 列不再有
+  // `data-action`）就什麼都不做；`focus({ preventScroll: true })` 不得因為還原焦點而捲動頁面
+  // （brief）。這裡只呼叫原生 `focus()`，不觸發任何 `perform()`／`repaint()`（`focus()`
+  // 不會送出 `pointerdown`／`keydown`，專案裡也沒有任何 `focus` 事件 handler 會因此做事）。
+  // 同步呼叫即可（fix round 1 Finding 1 真正的根因與修法在 actions.js 的 `preventDefault()`，
+  // 見上方「待還原目標」註解最後一段與 actions.js pointerdown listener 上方註解）。
+  function restoreFocus(appEl, identity) {
+    var target = findByFocusIdentity(appEl, identity);
+    if (target !== null && typeof target.focus === "function") {
+      target.focus({ preventScroll: true });
+    }
+  }
 
   function paint() {
     if (latestState === null) {
@@ -467,7 +697,17 @@
       window.cockpitActions && typeof window.cockpitActions.uiSnapshot === "function"
         ? window.cockpitActions.uiSnapshot()
         : undefined;
-    document.getElementById("app").replaceChildren(renderState(latestState, ui));
+    var appEl = document.getElementById("app");
+    // fix round 1 Finding 1：pointerdown 觸發的同步重畫優先用「待還原目標」（見上方
+    // consumePendingFocusIdentity 註解），沒有才照舊看 document.activeElement。
+    var focusIdentity = consumePendingFocusIdentity() || captureFocusIdentity(appEl);
+    appEl.replaceChildren(renderState(latestState, ui));
+    // #output 不在 #app 底下、不被上面這行換掉（design D8）；每次重畫後仍要交出最新的 pane
+    // 集合，讓 output.js 判斷被選的 pane 是否已經消失。
+    if (window.liveOutput && typeof window.liveOutput.setKnownPanes === "function") {
+      window.liveOutput.setKnownPanes(collectKnownPanes(latestState));
+    }
+    restoreFocus(appEl, focusIdentity);
   }
 
   window.onState = function (state) {

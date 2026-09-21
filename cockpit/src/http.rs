@@ -23,19 +23,64 @@
 //! 掛了 task 4.2 的來源檢查 middleware（[`crate::source_check::source_check`]，Host／Origin），
 //! 這裡的處理常式本身完全不管請求從哪裡來——那是 middleware 的事，擋下的請求根本不會進到
 //! 這幾個 handler。
+//!
+//! 輸出讀取端點（live-output task 4.2／4.3；spec `live-output`「輸出讀取端點」「輸出端點只接受
+//! 本機同源請求」；design D2、D4、D6、D7）：`GET
+//! /api/runtimes/{runtime}/panes/{pane}/output`。以常數 200 行呼叫
+//! [`cockpit_core::AgentRuntime::read_output`]，外包 5 秒 `tokio::time::timeout`——逾時即
+//! drop 讀取 future，回 504，不讓一個卡住的 runtime 拖住其他請求（design D6）。`{runtime}`
+//! 不在 [`AppState::runtimes`] 內時直接 404、不呼叫任何 runtime；
+//! [`cockpit_core::RuntimeError::PaneNotFound`] 也回 404；[`cockpit_core::RuntimeError::Unavailable`]
+//! 與 `Failed` 一律 503。**這個端點的所有回應（含 403／404／405／503／504）都帶**
+//! `Cache-Control: no-store`（畫面內容不該進任何快取）與 `X-Content-Type-Options: nosniff`
+//! （JSON 不被當成腳本或 HTML 嗅探）——live-output fix round 1（R12）把範圍從「200 回應」
+//! 擴大成「這個端點的所有回應」，做法是讓 [`error_response`] 統一補上這兩個標頭（見它的文件；
+//! 順帶讓寫入端點的錯誤回應也多這兩個標頭，無害）。這條路由同樣掛了來源檢查 middleware
+//! （design D7：重用寫入端點的 [`crate::source_check::source_check`]，不額外要求
+//! `Sec-Fetch-Site`）——pane 畫面內容（可能含 token／密碼）只給本機同源頁面與命令列讀到。
+//! 非 `GET` 一律 405、不得對 runtime 發出讀取（spec 情境「不接受其他 method」逐字含 `HEAD`；
+//! 「一律」代表不論 `Host`／`Origin` 是否合法）。大多數 method（`POST` 等）走這條路由專屬的
+//! `MethodRouter::fallback`（不是 axum 內建的 405，本體要是 `{"error": ...}`）——`route_layer`
+//! 不包 fallback，所以這條路徑的 405 既不經 `source_check`、也不會呼叫任何 runtime（R12；同時
+//! 是 fix round 1 finding 2）。`HEAD` 額外明確掛 `.head(output_method_not_allowed)`（先前
+//! whole-branch review F2 加的；final fix round 2 finding B 改了掛的位置）：axum 對只掛了
+//! `get()` 的路由本來會把 `HEAD` 自動導去同一個 `get` slot（見 axum 0.8.9
+//! `routing::method_routing::MethodRouter::call_with_state` 的 `call!(req, HEAD, head)` 先於
+//! `call!(req, HEAD, get)`），這裡明確註冊 `head` 插槽覆蓋掉那條預設路徑；但 `route_layer` 只包
+//! 它被呼叫**當下**已註冊的方法插槽（axum 0.8.9 `MethodRouter::route_layer` 實作：對每個當時
+//! 已存在的 endpoint 各自包一層，回傳新的 `MethodRouter`，之後才呼叫的 `.head(...)` 等註冊方法
+//! 是加在沒被包過的新插槽上）——`router()` 因此把 `.head(...)` 移到 `.route_layer(...)`
+//! **之後**才呼叫，讓 `HEAD` 不經 `source_check`，跟 `.fallback(...)` 接住的 `POST` 等其餘
+//! method 同一套優先序：不論 `Host`／`Origin` 合不合法，`HEAD` 一律 405，不會呼叫
+//! `read_output`（已用測試證明，見 `cockpit/tests/output_endpoint.rs` 的
+//! `read_output_head_always_405_regardless_of_host_or_origin`，涵蓋合法 Host、不合法 Host、
+//! 合法 Host 但跨站 Origin 三種情境）。`HEAD` 回應依 HTTP 沒有本體：不論命中哪個 handler，axum
+//! 都會在 top-level Route 依請求方法自動清空本體（見 `routing::route::RouteFuture::poll` 對
+//! `Method::HEAD` 的處理），跟這裡刻意回 405 而不是 200 是兩件事——之前（fix round 1
+//! finding 6）`HEAD` 落在 `get` slot 時同樣沒有本體，但錯在會真的呼叫 `read_output`；現在連
+//! 呼叫都不會發生。`{runtime}`／`{pane}` percent-decode 後不是合法 UTF-8 時，
+//! [`read_pane_output`] 自己截下 axum `Path` extractor 的 rejection 並改走
+//! [`error_response`]（400；live-output fix round 2，Codex adversarial review finding）——
+//! 這條路由上目前每一種會產生回應的來源（`source_check` 的 403、handler 的
+//! 200／404／503／504、405 fallback、`Path` rejection）都經過 [`error_response`] 或
+//! [`output_response`]，統一帶兩個安全標頭與 JSON `error` 本體；沒有第三種來源（`State`
+//! extractor 不會失敗）。
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU16;
+use std::time::Duration;
 
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use cockpit_core::{
-    Override, PaneId, ProgressOp, ProjectId, ProjectedState, RuntimeId, TaskId, WorkstreamId,
+    AgentRuntime, OutputFormat, Override, PaneId, ProgressOp, ProjectId, ProjectedState,
+    RuntimeError, RuntimeId, TaskId, WorkstreamId,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
@@ -43,11 +88,13 @@ use tokio::sync::watch;
 use crate::progress_service::{ProgressService, WriteError};
 use crate::source_check::source_check;
 
-/// 路由共用的狀態：訂閱 [`cockpit_core::StoreHandle`] 廣播的投影（design D9），外加寫入服務
-/// 與服務實際監聽的埠（design D6；task 4.1）。
+/// 路由共用的狀態：訂閱 [`cockpit_core::StoreHandle`] 廣播的投影（design D9），外加寫入服務、
+/// 服務實際監聽的埠（design D6；task 4.1），以及依 id 查找 runtime 的對照表（design D2 第三點；
+/// live-output task 4.1，之後的輸出讀取端點會用它）。
 ///
 /// `Clone` 便宜——`watch::Receiver` 本身可以自由複製；`progress` 是 `Option<ProgressService>`
-/// 本身內部也是 `Arc`；`port` 是 `Arc<AtomicU16>`。都不需要額外的鎖包一層。
+/// 本身內部也是 `Arc`；`port` 是 `Arc<AtomicU16>`；`runtimes` 是 `Arc<HashMap<..>>`。都不需要
+/// 額外的鎖包一層。
 #[derive(Clone)]
 pub struct AppState {
     /// 目前投影的訂閱端；`/api/state` 用 `borrow()` 讀現況，`/ws` 每個連線各自
@@ -63,26 +110,39 @@ pub struct AppState {
     /// clone 的請求都會讀到更新後的值。來源檢查 middleware（task 4.2）比對 `Host` 時要用
     /// 這個，不是設定裡寫的埠——`listen = "127.0.0.1:0"` 綁定後真正拿到的埠由作業系統指派。
     pub port: Arc<AtomicU16>,
+    /// 依設定裡的 `[[runtime]].id` 查找可用 runtime（design D2 第三點）：
+    /// `cockpit::app::build_components` 建好每個 runtime 後 clone 一份 `Arc` 進這個表，原本
+    /// 那份照舊交給 `driver::run`——同一個 runtime 因此有兩個 `Arc` 擁有者，但 driver 的生命週期
+    /// 不受影響（table 不持有任何會阻塞停止流程的資源，見 `cockpit::app` 的 `shutdown_all`
+    /// 文件）。表在啟動時建立後不再變動，不需要鎖。
+    pub runtimes: Arc<HashMap<RuntimeId, Arc<dyn AgentRuntime>>>,
 }
 
 impl AppState {
-    /// 只有讀路由（沒有寫入服務）時的建構子：`progress` 固定 `None`、`port` 初值 0——沒有
-    /// 寫入端點時 `port` 不會被任何 middleware 讀到。
+    /// 只有讀路由（沒有寫入服務、沒有任何 runtime）時的建構子：`progress` 固定 `None`、
+    /// `port` 初值 0、`runtimes` 是空表。**`port` 不是「不會被任何 middleware 讀到」**
+    /// （live-output fix round 1 finding 5 修正這句過時註解）——`router()` 一律掛一條輸出
+    /// 讀取端點（`GET /api/runtimes/{runtime}/panes/{pane}/output`），永遠套著
+    /// `source_check`，所以只要有任何請求打這條路由，`port` 就會被讀到。在 `port` 被真正
+    /// bind 的埠回填之前，這條路由對所有帶明確埠號的 `Host`（例如 `127.0.0.1:7770`）一律回
+    /// 403——fail-closed，不是「不受檢查」；只有 `Host` 埠號剛好等於初值 `0` 的請求（測試
+    /// 情境，真實瀏覽器與命令列不會這樣送）才會通過來源檢查。
     pub fn new(state: watch::Receiver<Arc<ProjectedState>>) -> Self {
         Self {
             state,
             progress: None,
             port: Arc::new(AtomicU16::new(0)),
+            runtimes: Arc::new(HashMap::new()),
         }
     }
 }
 
 /// 組出完整的路由表：`/`、`/app/{file}`、`/manifest.webmanifest`、`/icons/{file}`、
-/// `/api/state`、`/ws`、寫入端點；其他路徑落回 axum 預設的 404。
+/// `/api/state`、`/ws`、寫入端點、輸出讀取端點；其他路徑落回 axum 預設的 404。
 ///
-/// 兩個寫入路由額外用 `route_layer` 掛 [`source_check`]（task 4.2；design D6）——只套在
-/// 這兩條，`/api/state`、`/ws` 等讀路由完全不受影響（見 [`crate::source_check`] 模組文件對
-/// `route_layer` 範圍的說明）。
+/// 寫入端點與輸出讀取端點額外用 `route_layer` 掛 [`source_check`]（task 4.2；live-output
+/// task 4.3；design D6、D7）——只套在這三條，`/api/state`、`/ws` 等讀路由完全不受影響（見
+/// [`crate::source_check`] 模組文件對 `route_layer` 範圍的說明）。
 pub fn router(app: AppState) -> Router {
     let source_check_layer = axum::middleware::from_fn_with_state(app.clone(), source_check);
     Router::new()
@@ -100,7 +160,14 @@ pub fn router(app: AppState) -> Router {
             "/api/projects/{project}/workstreams/{workstream}/override",
             put(set_override)
                 .delete(clear_override)
-                .route_layer(source_check_layer),
+                .route_layer(source_check_layer.clone()),
+        )
+        .route(
+            "/api/runtimes/{runtime}/panes/{pane}/output",
+            get(read_pane_output)
+                .fallback(output_method_not_allowed)
+                .route_layer(source_check_layer)
+                .head(output_method_not_allowed),
         )
         .with_state(app)
 }
@@ -112,7 +179,7 @@ async fn index() -> impl IntoResponse {
     )
 }
 
-/// `/app/<file>`：只認得這三個檔名，查表命中就回對應內嵌內容，其餘 404——不是「任意檔名
+/// `/app/<file>`：只認得這幾個檔名，查表命中就回對應內嵌內容，其餘 404——不是「任意檔名
 /// 都能讀」的通用靜態伺服（design D13 明確排除 `ServeDir`）。
 async fn app_asset(Path(file): Path<String>) -> Response {
     match file.as_str() {
@@ -134,6 +201,11 @@ async fn app_asset(Path(file): Path<String>) -> Response {
         "actions.js" => (
             [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
             include_str!("../assets/app/actions.js"),
+        )
+            .into_response(),
+        "output.js" => (
+            [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+            include_str!("../assets/app/output.js"),
         )
             .into_response(),
         _ => StatusCode::NOT_FOUND.into_response(),
@@ -326,6 +398,138 @@ async fn clear_override(
     }
 }
 
+// ---------------------------------------------------------------------------
+// 輸出讀取端點（live-output task 4.2；spec `live-output`「輸出讀取端點」；design D2、D4、D6）
+// ---------------------------------------------------------------------------
+
+/// 單次讀取逾時（design D6：5 秒，含排隊等鎖的時間；逾時即 drop 讀取 future，不讓一個卡住的
+/// runtime 拖住這個請求，也不影響其他請求）。
+const OUTPUT_READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 每次讀取最多回傳的行數（design D4：200 行是產品決定，由 `cockpit` 以常數傳入，不是 HERDR
+/// 接合細節）。
+const OUTPUT_MAX_LINES: u32 = 200;
+
+/// `GET /api/runtimes/<runtime>/panes/<pane>/output`（live-output task 4.2；spec
+/// `live-output`「輸出讀取端點」；design D2、D4、D6）：即時向該 runtime 讀一次 `pane` 的輸出，
+/// 不快取、不經過狀態庫，也不留下任何跟這次請求有關的狀態。
+///
+/// `{runtime}` 不在 [`AppState::runtimes`] 內時直接 404，**不會**呼叫任何 runtime 的
+/// `read_output`（spec 情境「不認識的 runtime」）。這條路由額外掛了來源檢查 middleware
+/// （live-output task 4.3；design D7），被擋下的請求同樣不會進到這裡（見 `router()`）。
+///
+/// `path` 收 `Result<Path<(String, String)>, PathRejection>` 而不是直接 `Path<(String,
+/// String)>`（live-output fix round 2；Codex adversarial review finding，medium）：路徑片段
+/// percent-decode 後不是合法 UTF-8 時（例如 `%FF`），axum 的 `Path` extractor 會在進入這個
+/// handler **之前**產生一個 rejection 回應——若讓 axum 自己處理，那個回應是純文字、沒有
+/// `Cache-Control`／`X-Content-Type-Options`，本體也不是 `{"error": ...}`，違反 spec「這個
+/// 端點的所有回應都要帶兩個標頭」。這裡截下 rejection 自己組 [`error_response`]；錯誤訊息
+/// 固定為中文說明，**不**把 rejection 內部訊息（可能含使用者送來的原始路徑片段）反射進
+/// `error` 字串。
+async fn read_pane_output(
+    State(app): State<AppState>,
+    path: Result<Path<(String, String)>, axum::extract::rejection::PathRejection>,
+) -> Response {
+    let Path((runtime, pane)) = match path {
+        Ok(path) => path,
+        Err(_rejection) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "路徑格式不正確：runtime 或 pane id 不是合法的 UTF-8 字串",
+            );
+        }
+    };
+
+    let Some(agent_runtime) = app.runtimes.get(&RuntimeId::new(runtime.as_str())) else {
+        return error_response(StatusCode::NOT_FOUND, &format!("runtime 不存在：{runtime}"));
+    };
+
+    let pane_id = PaneId::new(pane.as_str());
+    let read = tokio::time::timeout(
+        OUTPUT_READ_TIMEOUT,
+        agent_runtime.read_output(&pane_id, OUTPUT_MAX_LINES),
+    )
+    .await;
+
+    match read {
+        Ok(Ok(output)) => output_response(&runtime, &pane, output),
+        Ok(Err(err @ RuntimeError::PaneNotFound { .. })) => {
+            error_response(StatusCode::NOT_FOUND, &err.to_string())
+        }
+        Ok(Err(err @ (RuntimeError::Unavailable { .. } | RuntimeError::Failed(_)))) => {
+            error_response(StatusCode::SERVICE_UNAVAILABLE, &err.to_string())
+        }
+        Err(_elapsed) => error_response(StatusCode::GATEWAY_TIMEOUT, "讀取逾時"),
+    }
+}
+
+/// 輸出端點的 405 handler（spec 情境「不接受其他 method」：405，`POST` 本體 `{"error": ...}`、
+/// `HEAD` 依 HTTP 沒有本體，沒有對 runtime 發出讀取；「一律」代表不論 `Host`／`Origin` 是否
+/// 合法）。掛在兩個地方（見 `router()`）：`.fallback(...)` 接住 `POST` 等其餘 method——
+/// `route_layer` 不包 fallback（`crate::source_check` 模組文件已說明範圍），這個路徑既不經
+/// `source_check`、本身也不碰 `AppState::runtimes`，天生就滿足「不對 runtime 發出讀取」
+/// （live-output fix round 1 finding 2）；`.head(...)` 額外明確接住 `HEAD`，且刻意掛在
+/// `.route_layer(...)` **之後**（final fix round 2 finding B）——`route_layer` 只包它被呼叫
+/// 當下已註冊的方法插槽，之後才註冊的 `head` 插槽不會被那層包住，因此 `HEAD` 跟 `.fallback(...)`
+/// 接住的 `POST` 等其餘 method 同一套優先序：不論 `Host`／`Origin` 是否合法，一律 405，不經
+/// `source_check`、也不會呼叫 `read_output`。用它取代 axum 內建的 405 fallback（本體是空的，
+/// 不符合 spec 逐字要求的 `{"error": ...}`）。
+async fn output_method_not_allowed() -> Response {
+    error_response(StatusCode::METHOD_NOT_ALLOWED, "這個端點只接受 GET")
+}
+
+/// 200 回應本體（spec 逐字欄位名：`runtime`、`pane_id`、`format`、`text`、`truncated`；
+/// `runtime`／`pane_id` 就是路徑上解碼後的值，不是從 `output` 推的）。標頭見
+/// [`with_no_store_headers`]。
+fn output_response(runtime: &str, pane_id: &str, output: cockpit_core::PaneOutput) -> Response {
+    #[derive(Serialize)]
+    struct OutputBody<'a> {
+        runtime: &'a str,
+        pane_id: &'a str,
+        format: OutputFormat,
+        text: &'a str,
+        truncated: bool,
+    }
+
+    let body = serde_json::to_string(&OutputBody {
+        runtime,
+        pane_id,
+        format: output.format,
+        text: &output.text,
+        truncated: output.truncated,
+    })
+    .expect("輸出回應只含字串與布林，序列化不會失敗");
+
+    with_no_store_headers(
+        (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            body,
+        )
+            .into_response(),
+    )
+}
+
+/// 補上「不快取、不嗅探」的兩個標頭：`Cache-Control: no-store`（畫面內容不該進任何快取）與
+/// `X-Content-Type-Options: nosniff`（JSON 不被當成腳本或 HTML 嗅探；design D6）。
+///
+/// live-output fix round 1（R12）把範圍從「輸出端點的 200 回應」擴大成「輸出端點的所有
+/// 回應」，含 403（[`crate::source_check::source_check`] 擋下時呼叫的正是
+/// [`error_response`]）、404、405（[`output_method_not_allowed`]）、503、504。最小且不會
+/// 漏的做法是讓 [`error_response`] 統一補上這兩個標頭，[`output_response`] 共用同一份邏輯——
+/// 副作用是寫入端點（`progress_op`／`set_override`／`clear_override`）的錯誤回應也會多這兩個
+/// 標頭，這是刻意接受的：多兩個標頭對它們無害，換成只套輸出端點的獨立 wrapper 反而要多維護
+/// 一條分支，且更容易在新增錯誤分支時漏掛。
+fn with_no_store_headers(mut response: Response) -> Response {
+    let headers = response.headers_mut();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
+    response
+}
+
 /// [`WriteError`] → HTTP 回應：`Unknown*` 404、`Rejected` 409、`Persist`／`Internal` 500，
 /// 本體一律是 `{"error": "<原因>"}`（task 4.1 原文「錯誤本體 `{"error": ...}`」——不是只有
 /// 409／500，Codex fix round 1 finding 3：先前 404 回空本體，跟 tasks.md 4.1 明定的形狀
@@ -352,8 +556,14 @@ struct ErrorBody<'a> {
     error: &'a str,
 }
 
+/// 全 crate 共用的錯誤回應：本體 `{"error": "<reason>"}`，並帶上
+/// [`with_no_store_headers`] 的兩個標頭（live-output fix round 1 R12：輸出端點的所有回應都
+/// 要帶這兩個標頭，這裡是唯一、不會漏掉任何分支的掛點——見 [`with_no_store_headers`] 的文件
+/// 說明為什麼連寫入端點的錯誤回應也一起帶）。
 pub(crate) fn error_response(status: StatusCode, reason: &str) -> Response {
     let body = serde_json::to_string(&ErrorBody { error: reason })
         .expect("ErrorBody 只含字串，序列化不會失敗");
-    (status, [(header::CONTENT_TYPE, "application/json")], body).into_response()
+    with_no_store_headers(
+        (status, [(header::CONTENT_TYPE, "application/json")], body).into_response(),
+    )
 }

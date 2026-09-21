@@ -757,6 +757,12 @@ Codex review 沙箱唯讀而 cargo 必寫 `target/`，`AGENTS.md` 只給 `cargo 
   側欄），用 `cockpit.` 前綴的 key 並經 capability 檢查，且不得把 binding 真相移過去。
 - **Live Output 讀取模型**：`pane.read` 無增量，change 3 以 `revision` 比對後才推送；
   WSL 端每次讀都要開子程序，讀取頻率超過每秒一次時即為改用 ADR-0002 方案 B 的時機。
+  - **2026-09-19 更新（上一句已被推翻）**：真機探測顯示 `revision` 在 WSL 0.8.2 與 Windows
+    0.9.0 都恆為 0，「以 `revision` 比對後才推送」的前提不成立。change 3 改為瀏覽器每秒輪詢
+    一個無狀態端點，由前端比對回應文字與面板目前內容是否相同來決定要不要重寫面板；讀取本身
+    遠比上面估計的便宜（WSL 端約 42 ms、Windows 端約 1.2 ms，與大小無關），每秒一次不需要
+    改用方案 B（見 ADR-0002 同日期的補充）。詳見 `docs/research/2026-09-19/pane-read-probe.md`
+    第 2 節與 `openspec/changes/live-output/`（design D3、D4）。
 - **Usage 面板**：HERDR `tokens` 不是 LLM 用量，沒有可靠來源前不顯示，也不估算。
 
 ## 13. spec §25 open questions 對照
@@ -766,7 +772,7 @@ Codex review 沙箱唯讀而 cargo 必寫 `target/`，`AGENTS.md` 只給 `cargo 
 | 1 | Space 與 Workspace 術語 | schema 只有 `workspace`；Cockpit 統一用 Workspace，見 `CONTEXT.md` |
 | 2 | 各平台 transport | §2.2；WSL 經 nc 傳話 |
 | 3 | agent status 是否穩定 | 五值 enum 四層皆有；`done` 為衍生，不當完成訊號；即時變化只能每 pane 訂閱（§2.3） |
-| 4 | `pane.read` 增量策略 | 無增量，靠 `revision`；change 3 |
+| 4 | `pane.read` 增量策略 | ~~無增量，靠 `revision`~~（2026-09-19 實測 `revision` 恆為 0，不可用）；change 3 改為無增量、由前端比對文字，見 §12 |
 | 5 | ANSI parsing crate | change 3 再查證套件名 |
 | 6 | worktree 與 project／workstream 對應 | change 2 |
 | 7 | 設定格式 | TOML |

@@ -33,7 +33,7 @@
 //! [`shutdown_components`] **之後**才 await，不能提前。一旦傳送端真的掉了這個迴圈幾乎立刻
 //! 結束；仍套 1 秒上限，防投影任務沒收掉時卡死（design D11）。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -44,8 +44,8 @@ use std::time::Duration;
 use anyhow::Context;
 use axum::Router;
 use cockpit_core::{
-    DomainState, Policy, RuntimeStore, StoreHandle, driver, spawn_projector,
-    spawn_projector_with_stale_sink,
+    AgentRuntime, DomainState, Policy, RuntimeId, RuntimeStore, StoreHandle, driver,
+    spawn_projector, spawn_projector_with_stale_sink,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
@@ -94,6 +94,13 @@ pub struct Components {
     /// `run_with_shutdown` 的呼叫端會讀到永遠是 0／設定值的埠，4.2 的 Host 檢查會因此擋掉
     /// 合法請求）。
     pub port: Arc<AtomicU16>,
+    /// 與 [`Components::router`] 內 `AppState::runtimes` 共用同一個 `Arc`（live-output task
+    /// 4.1；design D2 第三點），同 [`Components::port`] 的既有模式：暴露出來只為了讓測試不
+    /// 開 port 也驗得到「路由看得到的 runtime 對照表」。表只在這裡建立一次、之後不再變動；
+    /// 這份 `Arc` 與交給 `driver::run` 的那份各自獨立，額外的擁有者不影響驅動器的停止流程
+    /// （見 [`shutdown_all`] 文件——停止靠的是 [`Components::stops`] 與 `await`
+    /// [`Components::drivers`]，跟這張表的 `Arc` 引用計數無關）。
+    pub runtimes: Arc<HashMap<RuntimeId, Arc<dyn AgentRuntime>>>,
 }
 
 /// 依設定組出狀態庫、投影任務、每筆 runtime 的驅動器與路由表。
@@ -150,7 +157,12 @@ pub fn build_components(config: &Config) -> anyhow::Result<Components> {
     };
     let mut stops = Vec::with_capacity(entries.len());
     let mut drivers = Vec::with_capacity(entries.len());
+    // clone 一份 `Arc<dyn AgentRuntime>` 進表，原本那份照舊交給 `driver::run`（design D2
+    // 第三點）：表建好後不再變動，`AppState::runtimes` 與這裡的 `runtimes` 共用同一個
+    // `Arc<HashMap<..>>`，跟 `port` 的既有模式一致。
+    let mut runtimes = HashMap::with_capacity(entries.len());
     for entry in entries {
+        runtimes.insert(entry.id.clone(), Arc::clone(&entry.runtime));
         let (stop_tx, stop_rx) = oneshot::channel();
         stops.push(stop_tx);
         drivers.push(tokio::spawn(driver::run(
@@ -160,6 +172,7 @@ pub fn build_components(config: &Config) -> anyhow::Result<Components> {
             stop_rx,
         )));
     }
+    let runtimes = Arc::new(runtimes);
 
     // 初值是設定裡寫的埠；`listen = "127.0.0.1:0"` 時要等 `run` 真的 `bind` 之後才知道實際
     // 拿到哪個埠（design D6）。`router` 在這裡就已經組好，所以兩邊共用同一個 `Arc`——`run`
@@ -169,6 +182,7 @@ pub fn build_components(config: &Config) -> anyhow::Result<Components> {
         state: handle.subscribe(),
         progress: progress_service.clone(),
         port: Arc::clone(&port),
+        runtimes: Arc::clone(&runtimes),
     });
 
     Ok(Components {
@@ -180,6 +194,7 @@ pub fn build_components(config: &Config) -> anyhow::Result<Components> {
         progress_service,
         stale_remover,
         port,
+        runtimes,
     })
 }
 
@@ -321,6 +336,7 @@ pub async fn run_with_shutdown(
         progress_service: _progress_service,
         stale_remover,
         port,
+        runtimes: _runtimes,
     } = components;
 
     let local_addr = match listener.local_addr().context("無法取得監聽位址") {

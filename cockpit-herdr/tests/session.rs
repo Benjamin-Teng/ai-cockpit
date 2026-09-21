@@ -13,11 +13,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cockpit_core::{
-    AgentRuntime, AgentStatus, RuntimeError, RuntimeEvent, RuntimeEvents, RuntimeId,
+    AgentRuntime, AgentStatus, PaneId, RuntimeError, RuntimeEvent, RuntimeEvents, RuntimeId,
 };
 use cockpit_herdr::probe::DistroProber;
 use cockpit_herdr::runtime::{HerdrRuntime, WslProbe};
-use herdr_client::testing::{FakeHerdr, FakeHerdrConfig, Step, SubscribeMatcher};
+use herdr_client::testing::{FakeHerdr, FakeHerdrConfig, MethodResponse, Step, SubscribeMatcher};
 use serde_json::{Value, json};
 
 use common::FakeProber;
@@ -79,6 +79,38 @@ fn hold_config(pane_ids: &[&str]) -> FakeHerdrConfig {
 /// 指向假 HERDR 的 `HerdrRuntime`（`wsl` 為 `None`，也就是不探測的 `win` 型 runtime）。
 fn runtime(fake: &FakeHerdr) -> HerdrRuntime {
     HerdrRuntime::new(RuntimeId::new("win"), Arc::from(fake.connector()), None)
+}
+
+/// 組一筆 `pane.read` 成功回應的 `result`（含外層 `"type"` 標籤，抄自 `tests/read_output.rs`
+/// 的 `pane_read_result`，供 live-output task 3.4「不干擾事件流」測試用）。
+fn pane_read_result(pane_id: &str, text: &str, truncated: bool) -> Value {
+    json!({
+        "type": "pane_read",
+        "read": {
+            "pane_id": pane_id,
+            "workspace_id": "wD",
+            "tab_id": "wD:t1",
+            "source": "recent",
+            "format": "text",
+            "text": text,
+            "revision": 0,
+            "truncated": truncated,
+        },
+    })
+}
+
+/// 假 HERDR 目前為止收到的所有 request 中，`method` 為 `events.subscribe` 的行數（累計、
+/// 跨連線）；供判斷「有沒有重開訂閱」（重開會多開一條新的 `events.subscribe` 連線）。
+fn events_subscribe_count(fake: &FakeHerdr) -> usize {
+    fake.received()
+        .iter()
+        .flatten()
+        .filter(|line| {
+            let request: Value = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("假 HERDR 收到的行不是合法 JSON: {e}（{line}）"));
+            request["method"] == "events.subscribe"
+        })
+        .count()
 }
 
 /// 解析某條連線收到的第一行 request。
@@ -530,4 +562,63 @@ async fn probe_failure_uses_runtime_retry_interval_regardless_of_prober_error() 
             fake.received()
         );
     }
+}
+
+/// spec「讀取 pane 輸出」情境「不干擾事件流」（live-output task 3.4）：事件流已建立並持續
+/// 收到事件，期間讀取輸出 10 次 → 事件流沒有中斷、沒有重開訂閱（以假 HERDR 觀察到的
+/// `events.subscribe` 次數不增加來判定）。L 每筆事件之間隔 20 ms，穿插在 10 次讀取輸出之間，
+/// 藉此證明兩者真的同時在跑，不是讀取輸出把事件流卡住了。
+#[tokio::test]
+async fn read_output_ten_times_does_not_disturb_event_stream() {
+    let mut lifecycle_steps = Vec::new();
+    for _ in 0..10 {
+        lifecycle_steps.push(Step::Event(TAB_CREATED.to_string()));
+        lifecycle_steps.push(Step::Delay(Duration::from_millis(20)));
+    }
+    lifecycle_steps.push(Step::Hold);
+
+    let config = FakeHerdrConfig::new()
+        .with_snapshot_result(snapshot_result(&["wD:p1"]))
+        .with_subscribe_rule(SubscribeMatcher::LifecycleOnly, lifecycle_steps)
+        .with_subscribe_rule(SubscribeMatcher::PerPane, vec![Step::Hold])
+        .with_method_response(
+            "pane.read",
+            MethodResponse::Success(pane_read_result("wD:p1", "irrelevant", false)),
+        );
+    let fake = FakeHerdr::start(config).await.expect("啟動假 HERDR 失敗");
+    let runtime = runtime(&fake);
+    let pane = PaneId::new("wD:p1");
+
+    let mut events = tokio::time::timeout(TIMEOUT, runtime.subscribe())
+        .await
+        .expect("建立事件流不應逾時")
+        .expect("建立事件流應成功");
+
+    let subscribe_count_before = events_subscribe_count(&fake);
+    assert_eq!(
+        subscribe_count_before, 2,
+        "建立事件流時應正好各開一次 L、S 的 events.subscribe"
+    );
+
+    for i in 0..10 {
+        let item = next_item(&mut events)
+            .await
+            .unwrap_or_else(|| panic!("第 {i} 筆事件不該讓事件流提前結束"))
+            .unwrap_or_else(|e| panic!("第 {i} 筆應是事件而不是錯誤: {e}"));
+        match item {
+            RuntimeEvent::TabUpserted(tab) => assert_eq!(tab.id.as_str(), "wD:t9"),
+            other => panic!("第 {i} 筆應是 L 推的 TabUpserted，實際: {other:?}"),
+        }
+
+        tokio::time::timeout(TIMEOUT, runtime.read_output(&pane, 200))
+            .await
+            .expect("read_output 不應逾時")
+            .unwrap_or_else(|e| panic!("第 {i} 次讀取輸出應成功: {e}"));
+    }
+
+    assert_eq!(
+        events_subscribe_count(&fake),
+        subscribe_count_before,
+        "期間讀取輸出 10 次，events.subscribe 的次數不該增加（沒有重開訂閱）"
+    );
 }

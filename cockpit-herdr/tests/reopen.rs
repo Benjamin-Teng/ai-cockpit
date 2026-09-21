@@ -1,7 +1,11 @@
 //! Task 2.6 驗收測試：pane 集合改變時重開 S 訂閱（200 ms 去抖動、先開新 S 再關舊 S）、
-//! `snapshot()` 的協定版本警告、以及「只用兩個 method」（spec `herdr-runtime-session`
-//! 「pane 集合改變時重開狀態訂閱」「取得 snapshot 與版本警告」「只用兩個 method」；
+//! `snapshot()` 的協定版本警告、以及「只用唯讀 method」（spec `herdr-runtime-session`
+//! 「pane 集合改變時重開狀態訂閱」「取得 snapshot 與版本警告」「只用唯讀 method」；
 //! design D10、D12）。
+//!
+//! live-output task 3.4：「只用兩個 method」這個 Requirement 改名為「只用唯讀 method」
+//! （多了 `pane.read`，但只在有人明確要求讀取 pane 輸出時才送出），本檔的 method 集合測試
+//! 也延伸一個「另外讀取一次輸出 → 只多一筆 pane.read，沒有其他 method」的情境。
 //!
 //! 同 `tests/session.rs`：全部用真實 transport 的 `FakeHerdr`，所以一律 `#[tokio::test]`、
 //! 不暫停時間；每個 `await` 都用 `tokio::time::timeout`／輪詢加逾時保護，卡住時以逾時失敗
@@ -13,7 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use cockpit_core::{AgentRuntime, RuntimeError, RuntimeEvent, RuntimeEvents, RuntimeId};
+use cockpit_core::{AgentRuntime, PaneId, RuntimeError, RuntimeEvent, RuntimeEvents, RuntimeId};
 use cockpit_herdr::runtime::HerdrRuntime;
 use herdr_client::connector::{ConnectError, Connector, NdjsonStream};
 use herdr_client::testing::{FakeHerdr, FakeHerdrConfig, MethodResponse, Step, SubscribeMatcher};
@@ -181,6 +185,54 @@ fn subscribed_pane_ids(fake: &FakeHerdr, index: usize) -> BTreeSet<String> {
 /// 把 `&[&str]` 轉成集合，供斷言比對。
 fn ids(pane_ids: &[&str]) -> BTreeSet<String> {
     pane_ids.iter().map(|id| (*id).to_string()).collect()
+}
+
+/// 假 HERDR 目前為止收到的所有 request 用過哪些不重複的 method（spec「只用唯讀 method」）。
+fn methods_used(fake: &FakeHerdr) -> BTreeSet<String> {
+    fake.received()
+        .iter()
+        .flatten()
+        .map(|line| {
+            let request: Value = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("假 HERDR 收到的行不是合法 JSON: {e}（{line}）"));
+            request["method"]
+                .as_str()
+                .unwrap_or_else(|| panic!("每一行 request 都應有 method，實際: {request}"))
+                .to_string()
+        })
+        .collect()
+}
+
+/// 假 HERDR 目前為止收到的所有 request 中，`method` 為 `target` 的行數（累計，跨連線）。
+fn method_call_count(fake: &FakeHerdr, target: &str) -> usize {
+    fake.received()
+        .iter()
+        .flatten()
+        .filter(|line| {
+            let request: Value = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("假 HERDR 收到的行不是合法 JSON: {e}（{line}）"));
+            request["method"] == target
+        })
+        .count()
+}
+
+/// 組一筆 `pane.read` 成功回應的 `result`（含外層 `"type"` 標籤，見
+/// `herdr-client/tests/fixtures/pane-read-p20.json` 的 `result` 形狀，抄自
+/// `tests/read_output.rs` 的 `pane_read_result`）。
+fn pane_read_result(pane_id: &str, text: &str, truncated: bool) -> Value {
+    json!({
+        "type": "pane_read",
+        "read": {
+            "pane_id": pane_id,
+            "workspace_id": "wJ",
+            "tab_id": "wJ:t1",
+            "source": "recent",
+            "format": "text",
+            "text": text,
+            "revision": 0,
+            "truncated": truncated,
+        },
+    })
 }
 
 /// 等到假 HERDR accept 到第 `count` 條連線；逾時即失敗。
@@ -822,24 +874,67 @@ async fn fake_only_receives_snapshot_and_subscribe_methods() {
     // 建立事件流 3 條 + snapshot 1 條 + 重開的 S 1 條。
     wait_for_connections(&fake, 5, "跑完建立事件流、取 snapshot、重開 S 之後").await;
 
-    let methods: BTreeSet<String> = fake
-        .received()
-        .iter()
-        .flatten()
-        .map(|line| {
-            let request: Value = serde_json::from_str(line)
-                .unwrap_or_else(|e| panic!("假 HERDR 收到的行不是合法 JSON: {e}（{line}）"));
-            request["method"]
-                .as_str()
-                .unwrap_or_else(|| panic!("每一行 request 都應有 method，實際: {request}"))
-                .to_string()
-        })
-        .collect();
+    assert_eq!(
+        methods_used(&fake),
+        ids(&["events.subscribe", "session.snapshot"]),
+        "不呼叫 read_output 時，只該用 session.snapshot 與 events.subscribe 兩個 method"
+    );
+}
+
+/// live-output task 3.4：spec「只用唯讀 method」情境「讀取輸出只多一種 method」——在
+/// 「假 HERDR 收到的 method 集合」那個情境（建立事件流、取 snapshot、重開狀態訂閱）之外，
+/// 另外讀取一次 pane 輸出 → 只多收到恰好一筆 `pane.read`，沒有其他 method。
+#[tokio::test]
+async fn read_output_adds_exactly_one_pane_read_method() {
+    let config = FakeHerdrConfig::new()
+        .with_snapshot_result(snapshot_result(&["wJ:p1"]))
+        .with_subscribe_rule(
+            SubscribeMatcher::LifecycleOnly,
+            vec![
+                Step::Delay(Duration::from_millis(300)),
+                Step::Event(pane_created("wJ:p2")),
+                Step::Hold,
+            ],
+        )
+        .with_subscribe_rule(SubscribeMatcher::PerPane, vec![Step::Hold])
+        .with_method_response(
+            "pane.read",
+            MethodResponse::Success(pane_read_result("wJ:p1", "irrelevant", false)),
+        );
+    let fake = FakeHerdr::start(config).await.expect("啟動假 HERDR 失敗");
+    let runtime = runtime(&fake);
+
+    let _events = tokio::time::timeout(TIMEOUT, runtime.subscribe())
+        .await
+        .expect("建立事件流不應逾時")
+        .expect("建立事件流應成功");
+    tokio::time::timeout(TIMEOUT, runtime.snapshot())
+        .await
+        .expect("取 snapshot 不應逾時")
+        .expect("取 snapshot 應成功");
+    // 建立事件流 3 條 + snapshot 1 條 + 重開的 S 1 條。
+    wait_for_connections(&fake, 5, "跑完建立事件流、取 snapshot、重開 S 之後").await;
 
     assert_eq!(
-        methods,
+        methods_used(&fake),
         ids(&["events.subscribe", "session.snapshot"]),
-        "只該用 session.snapshot 與 events.subscribe 兩個 method"
+        "讀取輸出之前不該多出任何 method"
+    );
+
+    tokio::time::timeout(TIMEOUT, runtime.read_output(&PaneId::new("wJ:p1"), 200))
+        .await
+        .expect("read_output 不應逾時")
+        .expect("read_output 應成功");
+
+    assert_eq!(
+        method_call_count(&fake, "pane.read"),
+        1,
+        "另外讀取一次 pane 輸出應只多收到恰好一筆 pane.read"
+    );
+    assert_eq!(
+        methods_used(&fake),
+        ids(&["events.subscribe", "pane.read", "session.snapshot"]),
+        "讀取輸出之後應多一種 pane.read method，沒有其他 method"
     );
 }
 

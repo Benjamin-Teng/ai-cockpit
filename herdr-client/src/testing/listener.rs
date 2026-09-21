@@ -1,6 +1,7 @@
 //! `FakeHerdr`：程序內的假 HERDR server，監聽真實 transport（Windows named pipe、unix
 //! socket），供本 crate 與 change 1b 在 `test-support` feature 下重用（design D7）。
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -33,11 +34,22 @@ struct ConnectionRecord {
     closed: bool,
 }
 
+/// 一個 method 目前同時進行中的呼叫數，與觀察到的最大值（live-output task 3.3：
+/// `FakeHerdr::max_concurrent_calls`）。
+#[derive(Default)]
+struct MethodConcurrency {
+    current: usize,
+    max: usize,
+}
+
 /// 每條連線的觀察紀錄，依連線建立順序排列（`FakeHerdr::received`／
 /// `FakeHerdr::closed_connections` 用同一組索引）。
 #[derive(Default)]
 pub(super) struct SharedState {
     connections: Mutex<Vec<ConnectionRecord>>,
+    /// 依 method 名稱分開計數，涵蓋從收到 request 的那一行到回應（或關閉連線）為止的整段
+    /// 期間——包含 `MethodResponse::Delayed` 睡眠的時間（design：延遲期間仍計入並發數）。
+    concurrency: Mutex<HashMap<String, MethodConcurrency>>,
 }
 
 impl SharedState {
@@ -78,6 +90,50 @@ impl SharedState {
             .iter()
             .map(|record| record.closed)
             .collect()
+    }
+
+    /// 開始追蹤某個 method 的一次呼叫：並發數 +1，順便更新這個 method 觀察到的最大值；回傳
+    /// 的 guard 在 drop 時把並發數 -1（呼叫端把 guard 持有到這次呼叫真正結束——回完應，或
+    /// 提早關閉連線——為止）。
+    pub(super) fn note_call_start(self: &Arc<Self>, method: &str) -> ConcurrencyGuard {
+        let mut guard = self.concurrency.lock().expect("concurrency mutex poisoned");
+        let entry = guard.entry(method.to_string()).or_default();
+        entry.current += 1;
+        entry.max = entry.max.max(entry.current);
+        drop(guard);
+        ConcurrencyGuard {
+            shared: Arc::clone(self),
+            method: method.to_string(),
+        }
+    }
+
+    fn note_call_end(&self, method: &str) {
+        let mut guard = self.concurrency.lock().expect("concurrency mutex poisoned");
+        if let Some(entry) = guard.get_mut(method) {
+            entry.current = entry.current.saturating_sub(1);
+        }
+    }
+
+    fn max_concurrent(&self, method: &str) -> usize {
+        self.concurrency
+            .lock()
+            .expect("concurrency mutex poisoned")
+            .get(method)
+            .map_or(0, |entry| entry.max)
+    }
+}
+
+/// [`SharedState::note_call_start`] 回傳的 drop guard：呼叫結束（或連線提早關閉、handler
+/// 被 abort）時自動把並發數 -1。持有這個 guard 的期間都算在「進行中」，涵蓋
+/// `MethodResponse::Delayed` 的睡眠時間。
+pub(super) struct ConcurrencyGuard {
+    shared: Arc<SharedState>,
+    method: String,
+}
+
+impl Drop for ConcurrencyGuard {
+    fn drop(&mut self) {
+        self.shared.note_call_end(&self.method);
     }
 }
 
@@ -198,6 +254,14 @@ impl FakeHerdr {
     #[must_use]
     pub fn closed_connections(&self) -> Vec<bool> {
         self.shared.closed()
+    }
+
+    /// `method`（例如 `"pane.read"`）同時進行中的呼叫數，觀察到的最大值；從未收到過這個
+    /// method 的呼叫回 0（live-output task 3.3：驗證同一個 runtime 的 `read_output` 有沒有
+    /// 在 `HerdrRuntime` 內排隊，不是靠假 HERDR 這端序列化）。
+    #[must_use]
+    pub fn max_concurrent_calls(&self, method: &str) -> usize {
+        self.shared.max_concurrent(method)
     }
 }
 

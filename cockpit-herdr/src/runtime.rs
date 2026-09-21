@@ -33,13 +33,18 @@ use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use cockpit_core::{
-    AgentRuntime, RuntimeError, RuntimeEvent, RuntimeEvents, RuntimeId, RuntimeSnapshot,
+    AgentRuntime, OutputFormat, PaneId, PaneOutput, RuntimeError, RuntimeEvent, RuntimeEvents,
+    RuntimeId, RuntimeSnapshot,
 };
-use herdr_client::client::{Client, EventStream, IncomingEvent, SessionSnapshotRequest};
+use herdr_client::client::{
+    Client, EventStream, IncomingEvent, PaneReadRequest, RequestError, SessionSnapshotRequest,
+};
 use herdr_client::connector::Connector;
 use herdr_client::types::{
-    EventKind, PaneClosedPayload, PaneMovedPayload, PanePayload, Subscription,
+    EventKind, PaneClosedPayload, PaneMovedPayload, PanePayload, PaneReadParams, ReadFormat,
+    ReadSource, Subscription,
 };
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc::{Sender, WeakSender};
 use tokio::task::{AbortHandle, JoinHandle};
 
@@ -230,6 +235,13 @@ pub struct HerdrRuntime {
     client: Arc<Client>,
     wsl: Option<WslProbe>,
     status: Arc<Mutex<StatusSubscription>>,
+    /// 只序列化同一個 runtime 的 `read_output` 彼此（design D5；live-output task 3.3）：
+    /// Windows named pipe 3 條並發會 `ERROR_PIPE_BUSY`，driver 已佔用訂閱與 snapshot 的連線，
+    /// 多個瀏覽器分頁同時讀輸出會自己撞出忙碌重試，所以同一個 runtime 的輸出讀取同時只放行
+    /// 一筆。`read_output` 整段持有這把鎖（含開連線、送 request、讀回應）；`snapshot()`／
+    /// `subscribe()` **不**取這把鎖，不讓 Live Output 拖慢狀態更新。持鎖的是呼叫端 future：
+    /// 客戶端斷線時 future 被 drop，鎖隨之釋放，不留下 detach 的工作。
+    read_output_lock: AsyncMutex<()>,
 }
 
 impl HerdrRuntime {
@@ -242,6 +254,7 @@ impl HerdrRuntime {
             client: Arc::new(Client::new(connector)),
             wsl,
             status: Arc::new(Mutex::new(StatusSubscription::default())),
+            read_output_lock: AsyncMutex::new(()),
         }
     }
 
@@ -478,6 +491,60 @@ impl AgentRuntime for HerdrRuntime {
 
         Ok(unstarted.start(tasks))
     }
+
+    /// 讀取一個 pane 的輸出：以 `pane.read` 固定參數 `source=recent`、`format=text`、
+    /// `lines=max_lines`、不送 `strip_ansi`，走與 [`HerdrRuntime::snapshot`] 相同的
+    /// `Client::request` 路徑（spec `herdr-runtime-session`「讀取 pane 輸出」；design D2、
+    /// D4）。回應的 `text`／`truncated` 原樣交回，不讀取 `revision`。
+    ///
+    /// live-output task 2.2／3.1／3.2：不做 WSL 探測、不重試（design D4：重試節奏在前端）。
+    /// 錯誤對應見 [`map_read_output_error`]：`pane_not_found` 錯誤碼對應成
+    /// `RuntimeError::PaneNotFound`，其他錯誤碼、端點不存在、回應無法解析一律
+    /// `RuntimeError::Failed`（spec「讀取 pane 輸出」情境「pane 不存在」「其他錯誤碼」
+    /// 「連不上」）。
+    ///
+    /// live-output task 3.3：整段（含開連線、送 request、讀回應）持有 `read_output_lock`，
+    /// 同一個 runtime 的多筆 `read_output` 因此彼此排隊、不並發（design D5；spec「同 runtime
+    /// 不並發」）。不與 `snapshot()`／`subscribe()` 互斥——那兩個方法不碰這把鎖。
+    async fn read_output(&self, pane: &PaneId, max_lines: u32) -> Result<PaneOutput, RuntimeError> {
+        let _guard = self.read_output_lock.lock().await;
+        let params = PaneReadParams {
+            pane_id: pane.as_str().to_string(),
+            source: ReadSource::Recent,
+            format: Some(ReadFormat::Text),
+            lines: Some(max_lines),
+            strip_ansi: None,
+        };
+        let result = self
+            .client
+            .request(PaneReadRequest(params))
+            .await
+            .map_err(|e| map_read_output_error(pane, e))?;
+        Ok(PaneOutput {
+            format: OutputFormat::Text,
+            text: result.read.text,
+            truncated: result.read.truncated,
+        })
+    }
+}
+
+/// [`HerdrRuntime::read_output`] 的錯誤對應（design D2；spec「讀取 pane 輸出」情境
+/// 「pane 不存在」「其他錯誤碼」「連不上」「回應無法解析」）。
+///
+/// 只有遠端明確回 `error` 物件、且 `code` 為 `pane_not_found` 時才是可區分的「pane 不存在」；
+/// 其餘一律 `RuntimeError::Failed`——其他錯誤碼（原因字串含該錯誤碼，來自 `RequestError::Remote`
+/// 的 `Display`）、連線失敗（`RequestError::Connect`，端點不存在）、I/O 錯誤
+/// （`RequestError::Io`）、回應無法解析（`RequestError::Protocol`，整行非 JSON 或 `result`
+/// 形狀不符）都不做 WSL 探測、不重試，直接把原因交回去。
+fn map_read_output_error(pane: &PaneId, error: RequestError) -> RuntimeError {
+    if let RequestError::Remote { code, .. } = &error
+        && code == "pane_not_found"
+    {
+        return RuntimeError::PaneNotFound {
+            pane_id: pane.clone(),
+        };
+    }
+    RuntimeError::Failed(format!("讀取 pane 輸出失敗：{error}"))
 }
 
 /// 把 `subscribe()` 開好的**初始** S reader 的 `AbortHandle` 安裝進 S 管理器

@@ -18,10 +18,17 @@
         <span id="version" class="version"></span>
       </div>
     </div>
-    <!-- 載入順序：render.js → actions.js → channel.js。channel.js 最後，收到第一則訊息時
+    <!-- Live Output 面板：#app 的兄弟節點，不在 render.js 的 replaceChildren 範圍內，捲動
+         位置與輪詢狀態不會被整頁重畫打斷（change live-output design D8）。內容由 output.js
+         在載入時自己建出來，這裡只留一個空殼容器。 -->
+    <section id="output"></section>
+    <!-- 載入順序：output.js → render.js → actions.js → channel.js。output.js 放最前面，
+         因為 render.js 每次重畫後會呼叫 window.liveOutput.setKnownPanes(...)（design D8；
+         接線在 live-output task 5.3），必須先存在。channel.js 最後，收到第一則訊息時
          window.onState／window.onChannel 一定已經綁好，不需要暫存訊息等 render.js 補齊；
          actions.js 在第一次重畫前就把 UI 狀態（window.cockpitActions）與 #app 上的事件委派
          準備好。 -->
+    <script src="/app/output.js"></script>
     <script src="/app/render.js"></script>
     <script src="/app/actions.js"></script>
     <script src="/app/channel.js"></script>

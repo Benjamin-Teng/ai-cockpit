@@ -69,6 +69,9 @@ fn clone_response(response: &Result<(), RuntimeError>) -> Result<(), RuntimeErro
             retry_after: *retry_after,
         }),
         Err(RuntimeError::Failed(message)) => Err(RuntimeError::Failed(message.clone())),
+        Err(RuntimeError::PaneNotFound { pane_id }) => Err(RuntimeError::PaneNotFound {
+            pane_id: pane_id.clone(),
+        }),
     }
 }
 

@@ -16,6 +16,7 @@
 //! `/api/state` 的 version，操作後輪詢到 version 真的遞增，斷言投影裡的 `stage`／`mark`／
 //! `binding` 反映出變化；(b) 讀回磁碟上真正的狀態檔，斷言其內容。
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -307,6 +308,7 @@ fn build_with_projects(
         state: handle.subscribe(),
         progress: Some(service),
         port: Arc::new(AtomicU16::new(0)),
+        runtimes: Arc::new(HashMap::new()),
     };
     (handle, state)
 }

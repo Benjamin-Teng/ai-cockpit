@@ -1,6 +1,7 @@
 /* style.css：深色配色，沿用 docs/cockpit-dashboard-concept.png 的用色精神（設計文件
    §8.3；本檔不重做那張圖的版面）。可點的只有「畫面操作」的按鈕（.action-button；spec
-   cockpit-dashboard「畫面操作」），其餘元素沒有 cursor: pointer、沒有 hover 暗示。 */
+   cockpit-dashboard「畫面操作」）與 Live Output 的選取操作（.pane-row.selectable；spec
+   live-output「選定一個 pane」；task 5.3），其餘元素沒有 cursor: pointer、沒有 hover 暗示。 */
 
 :root {
   --bg: #0f1115;
@@ -396,6 +397,9 @@ body {
   gap: 10px;
   padding: 4px 6px;
   border-radius: 4px;
+  /* 預留與 .selected 相同寬度的透明邊框，避免被選定時邊框「長出來」擠動版面
+     （change live-output design D8；task 5.3）。 */
+  border-left: 3px solid transparent;
 }
 
 .pane-agent {
@@ -545,4 +549,104 @@ body {
 .pane-row.bind-target {
   grid-template-columns: minmax(80px, auto) minmax(60px, auto) auto 1fr minmax(120px, auto) auto;
   background: var(--focused-tint);
+}
+
+/* Live Output 選取（spec live-output「選定一個 pane」；design D8；task 5.3）：未 exited 的
+   pane 列可點選；被選定的那一列用底色＋左邊框標示（CDP 腳本用 getComputedStyle 比對，不只
+   比 class 名）。跟 .focused（HERDR 焦點）、.bind-target（改綁模式）各自獨立、可疊加。 */
+.pane-row.selectable {
+  cursor: pointer;
+}
+
+.pane-row.selectable:hover {
+  background: var(--bg-inset);
+}
+
+.pane-row.selectable:focus-visible {
+  outline: 2px solid var(--status-done);
+  outline-offset: -2px;
+}
+
+.pane-row.selected {
+  background: rgba(88, 166, 255, 0.16);
+  border-left-color: var(--status-done);
+}
+
+/* Live Output 面板（change live-output design D8）：#app 的兄弟節點，不在整頁重畫的範圍
+   內，沿用既有的深色語彙與間距，不做 Direction 01。沒有選取時收起、不佔版面。 */
+.output-panel {
+  display: none;
+  position: sticky;
+  bottom: 0;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 16px 16px;
+  padding: 10px 16px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  max-height: 45vh;
+}
+
+.output-panel.is-open {
+  display: flex;
+}
+
+.output-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.output-title {
+  font-weight: 600;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.output-truncated-notice {
+  color: var(--status-blocked);
+  font-size: 12px;
+}
+
+.output-gone-notice {
+  color: var(--conn-disconnected);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* 失敗原因（503／504／其他非 2xx／請求本身失敗；spec live-output「失敗與消失的呈現」）。
+   跟 .output-gone-notice 用不同顏色語彙區分：這裡是「仍在重試中」的暫時性失敗，不是永久
+   消失。 */
+.output-error-reason {
+  color: var(--status-blocked);
+  font-size: 12px;
+}
+
+/* 等寬字體、保留換行與空白（spec live-output「輪詢與顯示」）；內容一律以 textContent 寫入
+   （output.js），這裡只管外觀。內容超過一屏時 pre 本身可捲動，貼底判定量的就是這個框。 */
+.output-text {
+  margin: 0;
+  padding: 8px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: "Cascadia Mono", "Consolas", "SFMono-Regular", Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  overflow: auto;
+  min-height: 4em;
+  max-height: 40vh;
+}
+
+/* 「標為過期」（spec live-output「失敗與消失的呈現」）：output.js 的 setStale() 加在
+   #output 上；這裡用 opacity 讓內容框呈現看得出來的視覺差異（brief 逐字要求：CDP 腳本用
+   getComputedStyle 驗，不能只加 class）。不動 .output-gone-notice／.output-error-reason
+   本身的顏色，這兩個節點的可見性已經足以傳達狀態。 */
+.output-panel.is-stale .output-text {
+  opacity: 0.55;
 }

@@ -7,6 +7,7 @@
 //! 測試用它驗「路由看得到登記的 runtime」與「停止把手 drop 之後驅動器真的結束」——都不
 //! 開 port、也不碰真的 HERDR（端點故意指到一個不存在的指令）。
 
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -153,6 +154,38 @@ async fn app_serves_state_and_shuts_down_on_stop() {
             .expect("停止把手 drop 後驅動器應該在 5 秒內結束")
             .expect("驅動器 task 不應該 panic");
     }
+}
+
+/// live-output task 4.1（design D2 第三點）：`Components::runtimes`（與路由表內
+/// `AppState::runtimes` 共用同一個 `Arc`，同 `Components::port` 的既有模式）要含設定裡
+/// 每一筆 `[[runtime]]` 的 id，且筆數相等——不多也不少。
+#[tokio::test]
+async fn app_state_holds_every_configured_runtime() {
+    let mut config = unreachable_config();
+    config.runtimes.push(RuntimeConfig {
+        id: "local2".to_string(),
+        kind: "herdr".to_string(),
+        endpoint: HerdrEndpoint::Command(vec!["cockpit-test-no-such-command-2".to_string()]),
+    });
+
+    let components = app::build_components(&config).expect("組裝應該成功");
+
+    let configured_ids: HashSet<RuntimeId> = config
+        .runtimes
+        .iter()
+        .map(|runtime| RuntimeId::new(runtime.id.clone()))
+        .collect();
+    let table_ids: HashSet<RuntimeId> = components.runtimes.keys().cloned().collect();
+
+    assert_eq!(
+        table_ids, configured_ids,
+        "runtimes 表應該恰好含設定裡每一筆 runtime id"
+    );
+    assert_eq!(
+        components.runtimes.len(),
+        config.runtimes.len(),
+        "runtimes 表筆數應該等於設定裡的 runtime 筆數"
+    );
 }
 
 /// repo 根的設定範例，內嵌進測試執行檔（不在執行期讀相對路徑）。
@@ -429,6 +462,7 @@ fn components_with_slow_driver() -> (Components, StoreHandle, Arc<AtomicBool>) {
             progress_service: None,
             stale_remover: None,
             port: Arc::new(AtomicU16::new(0)),
+            runtimes: Arc::new(HashMap::new()),
         },
         handle,
         finished,

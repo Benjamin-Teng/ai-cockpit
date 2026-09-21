@@ -20,7 +20,9 @@ pub use projection::{
     ProjectedRuntime, ProjectedState, ProjectedTab, ProjectedTask, ProjectedWorkspace,
     ProjectedWorkstream, StaleOverride, project, project_with_stale,
 };
-pub use runtime::{AgentRuntime, RuntimeError, RuntimeEvents, UnstartedEvents};
+pub use runtime::{
+    AgentRuntime, OutputFormat, PaneOutput, RuntimeError, RuntimeEvents, UnstartedEvents,
+};
 pub use store::{Drift, RECENT_EVENTS_CAPACITY, RecentEvent, RuntimeState, RuntimeStore};
 pub use types::{
     Agent, AgentStatus, ConnectionState, FocusChange, Focused, Pane, PaneId, RuntimeEvent,

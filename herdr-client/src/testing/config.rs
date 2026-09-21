@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use crate::types::Subscription;
 
@@ -24,6 +25,12 @@ pub enum MethodResponse {
     PongResult,
     /// 收到 request 後直接關閉連線，不回應（spec「回應前連線中斷」情境）。
     CloseBeforeReply,
+    /// 延遲一段時間（真實時間，`tokio::time::sleep`）之後才依內層 `MethodResponse` 產生回應。
+    /// 延遲期間這條連線仍計入該 method 的並發數（見 `FakeHerdr::max_concurrent_calls`）——
+    /// live-output task 3.3 用它製造「多筆並發、每筆延遲才回」的情境，驗證
+    /// `HerdrRuntime::read_output` 有沒有在 `HerdrRuntime` 內排隊。可以巢狀（`Delayed` 包
+    /// `Delayed`），依序睡完每一段延遲。
+    Delayed(Duration, Box<MethodResponse>),
 }
 
 /// `events.subscribe` 收到的訂閱清單要符合什麼條件，才套用某條 `SubscribeRule`（fix round 1

@@ -3,11 +3,36 @@
 
 use std::time::Duration;
 
+use serde::Serialize;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::types::{RuntimeEvent, RuntimeId, RuntimeSnapshot};
+use crate::types::{PaneId, RuntimeEvent, RuntimeId, RuntimeSnapshot};
+
+/// pane 輸出的格式標記。目前只有純文字一種；之後加上色只需要新增變體，不動
+/// `PaneOutput` 的其他欄位（design D2）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputFormat {
+    /// 純文字，不含任何控制序列或標記。
+    Text,
+}
+
+/// 讀取 pane 輸出的結果。
+///
+/// 刻意不含任何 runtime 專屬的修訂號或版本欄位（例如 HERDR 的 `revision`，實測恆為 0）：
+/// 放進這個型別只會誘導呼叫端依賴一個沒有意義的值（design D3）。去重與捲動狀態由前端
+/// 自行用 `text` 字串比較處理。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PaneOutput {
+    /// 輸出的格式。
+    pub format: OutputFormat,
+    /// 輸出內容。
+    pub text: String,
+    /// 是否還有更早的內容未回傳（超過讀取行數上限）。
+    pub truncated: bool,
+}
 
 /// 呼叫 `AgentRuntime` 時可能發生的錯誤。
 ///
@@ -25,14 +50,21 @@ pub enum RuntimeError {
     /// 呼叫本身失敗，沒有固定的重試間隔建議。
     #[error("{0}")]
     Failed(String),
+    /// 指定的 pane 不存在。
+    #[error("pane 不存在：{pane_id}")]
+    PaneNotFound {
+        /// 不存在的 pane id。
+        pane_id: PaneId,
+    },
 }
 
 impl RuntimeError {
-    /// 取得建議的重試間隔；只有 `Unavailable` 會回傳 `Some`，`Failed` 一律 `None`。
+    /// 取得建議的重試間隔；只有 `Unavailable` 會回傳 `Some`，其餘一律 `None`。
     pub fn retry_after(&self) -> Option<Duration> {
         match self {
             RuntimeError::Unavailable { retry_after, .. } => Some(*retry_after),
             RuntimeError::Failed(_) => None,
+            RuntimeError::PaneNotFound { .. } => None,
         }
     }
 }
@@ -121,4 +153,8 @@ pub trait AgentRuntime: Send + Sync {
 
     /// 建立一條已合併的事件流，供狀態庫持續套用增量更新。
     async fn subscribe(&self) -> Result<RuntimeEvents, RuntimeError>;
+
+    /// 讀取一個 pane 目前的輸出，最多回傳 `max_lines` 行。不經過狀態庫，呼叫這個方法不會
+    /// 影響投影 version（design D2、D4；spec `runtime-model`「讀取輸出不動狀態庫」）。
+    async fn read_output(&self, pane: &PaneId, max_lines: u32) -> Result<PaneOutput, RuntimeError>;
 }
