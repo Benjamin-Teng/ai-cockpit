@@ -3,24 +3,25 @@
 ## Purpose
 
 定義 `cockpit` 的 HTTP／WebSocket 服務與畫面：路由、整張圖推送、只綁 loopback、內嵌靜態資源、
-PWA、畫面呈現規則與通道重連、Factory Floor 網格與畫面操作。證據：設計文件 §8.1、§8.3、§9、§15、ADR-0004、ADR-0005。
+PWA、畫面呈現規則與通道重連、Factory Floor 網格與畫面操作、pane 選定與重畫時保留鍵盤焦點。證據：設計文件 §8.1、§8.3、§9、§15、ADR-0004、ADR-0005。
 
 ## Requirements
 
 ### Requirement: 路由與內嵌資源
 
-系統必須提供 `GET /`（`index.html`）、`GET /app/<檔名>`（`channel.js`、`render.js`、`actions.js`、`style.css`）、
-`GET /manifest.webmanifest`、`GET /icons/<檔名>`（192 與 512 px PNG）、`GET /api/state`（目前整張圖
-JSON）、`GET /ws`，以及 `pipeline-progress` 定義的寫入端點（`POST /api/projects/<project>/tasks/<task>/<操作>`、
+系統必須提供 `GET /`（`index.html`）、`GET /app/<檔名>`（`channel.js`、`render.js`、`actions.js`、`output.js`、
+`style.css`）、`GET /manifest.webmanifest`、`GET /icons/<檔名>`（192 與 512 px PNG）、`GET /api/state`（目前整張圖
+JSON）、`GET /ws`、`live-output` 定義的輸出讀取端點（`GET /api/runtimes/<runtime>/panes/<pane>/output`），
+以及 `pipeline-progress` 定義的寫入端點（`POST /api/projects/<project>/tasks/<task>/<操作>`、
 `PUT`／`DELETE /api/projects/<project>/workstreams/<workstream>/override`）；所有靜態內容內嵌在執行檔內；
 其他路徑回 404；服務只綁設定的 loopback 位址。
 
 #### Scenario: 路由與 content-type
 
-- **WHEN** 逐一請求 `/`、`/app/render.js`、`/app/actions.js`、`/app/style.css`、`/manifest.webmanifest`、
-  `/icons/icon-192.png`、`/api/state`
-- **THEN** 皆為 200，content-type 分別為 HTML、JavaScript、JavaScript、CSS、`application/manifest+json`、
-  `image/png`、`application/json`
+- **WHEN** 逐一請求 `/`、`/app/render.js`、`/app/actions.js`、`/app/output.js`、`/app/style.css`、
+  `/manifest.webmanifest`、`/icons/icon-192.png`、`/api/state`
+- **THEN** 皆為 200，content-type 分別為 HTML、JavaScript、JavaScript、JavaScript、CSS、
+  `application/manifest+json`、`image/png`、`application/json`
 
 #### Scenario: /api/state 與投影一致
 
@@ -69,8 +70,11 @@ JSON）、`GET /ws`，以及 `pipeline-progress` 定義的寫入端點（`POST /
 runtime 一張卡（`id`、`endpoint`、連線狀態與原因或 protocol 警告、server 版本、最後 snapshot 時間）；卡內
 依 workspace 分組（標籤、number、彙總狀態），每個 pane 一列（id、agent 名稱或 `shell`、狀態色塊：
 `working` 綠、`blocked` 琥珀、`done` 藍、`idle` 灰、`unknown` 與任何未知字串暗灰、`exited` 加刪除線、
-標題、cwd）；頁尾最近事件；深色配色；可點的互動只有「畫面操作」所列的按鈕；pane 的 `done` 顯示為
-`done`，不出現「完成」字樣。整頁重畫不得清除進行中的畫面操作狀態（改綁模式、最近一次操作的錯誤訊息）。
+標題、cwd）；頁尾最近事件；深色配色；可點的互動只有「畫面操作」所列的按鈕與 `live-output`「選定一個 pane」
+所列的選取操作；pane 的 `done` 顯示為 `done`，不出現「完成」字樣。整頁重畫不得清除進行中的畫面操作狀態
+（改綁模式、最近一次操作的錯誤訊息），也不得清除 Live Output 的選取、面板內容與捲動位置——Live Output 面板
+不屬於整頁重畫的範圍。整頁重畫也不得讓鍵盤焦點消失：重畫前焦點若在 `#app` 內某個可互動的元素上（pane 列、「畫面操作」的按鈕、
+「看輸出」等），重畫後焦點必須落在代表同一個對象、同一個操作的新元素上；該元素在新畫面中已不存在或已不可互動時，焦點才可以離開。
 
 #### Scenario: 兩個 runtime 的畫面
 
@@ -101,6 +105,18 @@ runtime 一張卡（`id`、`endpoint`、連線狀態與原因或 protocol 警告
 - **GIVEN** 頁面已連上
 - **WHEN** 收到一則 `{not json`，接著收到一份合法投影
 - **THEN** 第一則被略過、console 有警告，第二則正常重畫，通道狀態維持已連線
+
+#### Scenario: 重畫不丟鍵盤焦點
+
+- **GIVEN** 焦點在某個 task 節點的「推進」按鈕上，投影每 100 ms 推送一份新的 version
+- **WHEN** 經過 2 秒後按 Enter
+- **THEN** 這段期間焦點始終在該 task 的「推進」按鈕上（節點可以是新的），按 Enter 後服務收到該 task 的 `advance` 請求
+
+#### Scenario: 頻繁重畫不影響 Live Output 面板
+
+- **GIVEN** 已選定一個 pane、面板內容超過一屏且使用者已往上捲，投影每 100 ms 推送一份新的 version
+- **WHEN** 經過 3 秒
+- **THEN** 面板的 DOM 節點沒有被換掉，捲動位置不變，選定標示仍在
 
 ### Requirement: PWA 可安裝
 
