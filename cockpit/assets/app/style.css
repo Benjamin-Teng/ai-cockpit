@@ -1,529 +1,1419 @@
 /* style.css：深色配色，沿用 docs/cockpit-dashboard-concept.png 的用色精神（設計文件
    §8.3；本檔不重做那張圖的版面）。可點的只有「畫面操作」的按鈕（.action-button；spec
    cockpit-dashboard「畫面操作」）與 Live Output 的選取操作（.pane-row.selectable；spec
-   live-output「選定一個 pane」；task 5.3），其餘元素沒有 cursor: pointer、沒有 hover 暗示。 */
+   live-output「選定一個 pane」；task 5.3），其餘元素沒有 cursor: pointer、沒有 hover 暗示。
+   direction-01-visual task 2.2：色彩與字級改採 design D4／D10 的 token（見下方 :root），
+   系統字體採 D11 堆疊（見 html,body）。
+   fix round 1（控制端 Ruling R20，採 Codex high／medium）：畫面唯一色彩來源＝下面 :root 的
+   10 個色彩宣告；任何其他規則要嘛直接 `var(--那 10 個之一)`，要嘛用 `color-mix(in srgb,
+   var(--token) N%, transparent)` 從它們推導出半透明效果，不得出現任何其他 hex／rgb()／
+   rgba() 字面值。原本的 `--status-*`／`--conn-*`／`--stage-*` 舊調色盤（GitHub 深色主題色）
+   已整組移除，逐一狀態的對照見各自規則旁的註解（依 design D4「對象／狀態→顏色與符號」：
+   running→--accent、completed→--ok、failed→--bad、blocked→--warn、pending／idle／未知
+   →--text-dim、ready→--text、connected→--ok、connecting→--warn、disconnected→--bad；
+   done 是例外——D4 明文「不得使用成功色」，用 --text 文字＋--accent 空心環（task 3.3），不當成
+   一般狀態色處理）。字級同輪收斂：全部 `font-size` 只能是 `var(--fs-title|panel|dense|meta)`，見下方
+   `docs/research/2026-09-23/visual-check.js` 新增的靜態段。後續換皮 task（2.3、3.1–3.4、
+   4.1、4.2）只改結構（符號、色條、外框、圓角、間距），不得再引入新的色值或字級。 */
 
 :root {
-  --bg: #0f1115;
-  --bg-raised: #161a21;
-  --bg-inset: #1c212b;
-  --text: #e6e6e6;
-  --text-dim: #9aa4b2;
-  --border: #2a2f3a;
+  /* design D4：畫面唯一的 10 個色彩 token，值取自 docs/direction-01-visual-design.md 色彩表
+     （2026-09-23 對比實算見 design.md D4）。畫面上其他顏色一律引用這 10 個、或用 color-mix
+     從它們推導半透明效果——不得再出現任何其他 hex／rgb()／rgba() 字面值（fix round 1／
+     Ruling R20；`docs/research/2026-09-23/visual-check.js` 新段落機器驗證）。 */
+  --bg-deep: #091320; /* 頁面背景、Live Output 底色（design D8：像一扇嵌進面板的窗） */
+  --bg-base: #101a2a; /* 主要面板（topbar／project／runtime-card／recent-events 等）的基調 */
+  --surface: #142338; /* 卡片內的次級分區、選取背景、task 節點底 */
+  --text: #e5edf3;
+  --text-dim: #a3b7c9;
+  --accent: #63d5e8; /* 品牌強調：running／working、鍵盤焦點、選取提示的推導來源 */
+  --line: #294258; /* 靜態框線，只 1.6:1，不得單獨表達必要圖形（design D4 對比實算） */
+  --ok: #39d5ac; /* completed、connected */
+  --warn: #e9bc73; /* blocked、connecting */
+  --bad: #f47279; /* failed、disconnected */
 
-  --status-working: #3fb950;
-  --status-blocked: #d29922;
-  --status-done: #58a6ff;
-  --status-idle: #8b949e;
-  --status-unknown: #484f58;
+  /* design D10（字級四階；Ruling R13：刪掉未指派的 16px）：之後各 task 只准取用這四個
+     token，不得另開字級（fix round 1／Ruling R20：既有規則的殘留 px 字面值本輪已全部收斂，
+     見 .app-name／.project-name／.ff-binding-badge／.task-status-label 旁的註解）。行高留給
+     個別規則自訂（D10：中文內文 1.5、單行標籤 1.3、Live Output 1.4，不是全域統一值）。 */
+  --fs-title: 20px; /* Project 名（主標題），600 */
+  --fs-panel: 14px; /* 面板標題 600、一般內容 400、產品名（降級後） */
+  --fs-dense: 13px; /* 表格或列表密集處可用的內容字級，400 */
+  --fs-meta: 12px; /* 輔助資訊、時間、id、badge、狀態文字、按鈕，400，多半等寬（design D11） */
 
-  --conn-connecting: #d29922;
-  --conn-connected: #3fb950;
-  --conn-disconnected: #f85149;
+  /* design D11：無襯線與等寬字體堆疊（含 Windows 中文 UI 字型，已於本機
+     C:\Windows\Fonts 查證存在）。等寬字只用在時間、id、數值與 Live Output 這四類（D11），
+     其餘一律用無襯線——這裡只定義 token，各元素取用哪一種留給既有規則／後續 task。 */
+  --font-sans: -apple-system, "Segoe UI", "Microsoft JhengHei UI", sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, "Microsoft JhengHei UI", monospace;
 
-  --focused-tint: rgba(230, 230, 230, 0.06);
-
-  /* Factory Floor task 節點的六種狀態色（spec cockpit-dashboard「Factory Floor」）。
-     running／blocked／ready 沿用既有 pane 狀態色語彙；pending／unknown 沿用既有的暗灰
-     （status-unknown）；failed／completed 是本 change 新增的顏色——completed 刻意不用
-     --status-done 的藍色（spec：「completed 不得使用 pane done 的藍色」）。 */
-  --stage-running: var(--status-working);
-  --stage-blocked: var(--status-blocked);
-  --stage-ready: var(--status-idle);
-  --stage-pending: var(--status-unknown);
-  --stage-failed: #f85149;
-  --stage-completed: #a371f7;
+  /* 中性半透明色調（HERDR 焦點提示底色；.workspace.focused／.tab.focused／.pane-row.focused／
+     .pane-row.bind-target）：fix round 1 改用 color-mix 從 --text 推導，拿掉原本的 rgba()
+     字面值，語意不變（低透明度的中性提示，不是狀態色）。 */
+  --focused-tint: color-mix(in srgb, var(--text) 6%, transparent);
 }
 
 * {
   box-sizing: border-box;
 }
 
+/* design D5（不使用動畫與過渡；direction-01-visual task 2.2）：整頁重畫每次都換掉節點，
+   任何 animation／進場效果都會每次重播，所以 #app 內完全不用 animation、滑過與聚焦也不加
+   transition。這段是防止日後有人加回來的保護（本檔目前已經沒有任何 animation／transition
+   宣告——原本 running 節點的持續脈動已在本 task 拿掉，見下方 .task-status-running 上方
+   註解）。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* design D4「焦點」：2px 冰青外框，外推 outline-offset: 2px，和元素本體之間留一道底色縫；
+   全域預設值，個別元件如需要不同 offset 由自己的規則覆寫（同 specificity、後出現）。 */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 html,
 body {
   margin: 0;
   padding: 0;
-  background: var(--bg);
+  background: var(--bg-deep);
   color: var(--text);
-  font-family:
-    -apple-system, "Segoe UI", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
-  font-size: 14px;
+  font-family: var(--font-sans);
+  font-size: var(--fs-panel);
+  /* design D11：無襯線文字裡的數字採等寬數字（左欄計數等；spec cockpit-dashboard
+     「Direction 01 視覺語彙」「數字等寬」）。全域套用，個別等寬字體元素（.output-text 等）
+     另外設定 font-variant-numeric 沒有意義（monospace 數字天生等寬），不衝突。 */
+  font-variant-numeric: tabular-nums;
+  /* task 2.1 設計審核 carry-over：系統預設捲軸是淺灰色，不在 10 色 token 之內，且在右欄
+     吃掉約 15px 寬度。改用 token 上色（thumb＝--line）＋ scrollbar-width: thin，不引入新
+     顏色。scrollbar-color 會被繼承；scrollbar-width 不會（direction-01-visual task 5.1，3.2
+     設計 M3／Ruling R32），內層捲動容器要各自明設，見下一條規則。fix round 1／F5（設計審核）：
+     軌道原本固定用 --bg-base，放在底色不是 --bg-base 的容器上（.output-text 用 --surface、
+     頁面本身用 --bg-deep）會多出一條顏色不搭的色帶；改成 transparent，軌道就融入所在容器當下
+     的底色，不論哪一層都不會露出色帶。 */
+  scrollbar-color: var(--line) transparent;
+  scrollbar-width: thin;
 }
 
-#app {
-  min-height: 100vh;
+/* direction-01-visual task 5.1（3.2 設計 M3／Ruling R32）：scrollbar-width 不繼承，每個內層
+   捲動容器都要自己宣告，否則回到瀏覽器預設的粗捲軸。清單＝render.js SCROLL_KEEP_SELECTORS
+   的四個容器＋頂列燈號列（寬 ≥1200 時橫向捲動）與 Live Output 內容框；新增捲動容器時要加進
+   來（visual-check.js [DF1/scrollbar] 掃描全頁 overflow 為 auto／scroll 的節點）。 */
+[data-region="floor"] > .projects,
+[data-region="runtimes"] > .runtime-cards,
+[data-region="events"] > .recent-events-list,
+[data-region="projects"],
+.topbar-runtimes,
+.output-text {
+  scrollbar-width: thin;
 }
 
-.page {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 16px;
-}
-
-/* 頂列：產品名稱、通道狀態、version。 */
+/* 頂列：產品名稱（左）、每個 runtime 一個連線燈號（右；direction-01-visual task 2.3）。
+   通道狀態與 version 搬到底列，見 [data-region="statusbar"] 一節。 */
 .topbar {
   display: flex;
   align-items: center;
   gap: 16px;
   padding: 12px 16px;
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  /* direction-01-visual task 2.3 fix round 5／Ruling R27：行高寫明，--shell-topbar-h 用同一個
+     值推導頂列高度（見 .shell）。子元素（燈號）繼承這個無單位倍數，各自乘上自己的字級。 */
+  line-height: var(--topbar-line-height);
+  background: var(--bg-base);
+  border: 1px solid var(--line);
+  /* direction-01-visual task 5.1 fix round 1（設計 M2）：拿掉改版前留下的 6px 圓角，跟其他區塊
+     一樣是直角（圓角不影響高度與 --shell-topbar-h）。 */
 }
 
+/* fix round 1／F6（Ruling R20）：16px 不在 D10 四階內，產品名依「產品名用面板級 14」改用
+   --fs-panel，降級到跟面板標題同級（design D10：面板標題／降級後的產品名同一階）。
+   design 審核檢查清單「產品名低調」：字重維持 600（跟其他面板標題一致，不特別加重），顏色
+   沿用 body 預設的 --text（不用冰青），沒有另外強調。
+   M1（設計審核，task 2.3 fix round 1）：480／390 寬時產品名會被燈號擠到換成兩行、把頂列撐
+   高——`.topbar` 是 flex row，`.app-name` 預設可以縮小換行；加 `white-space: nowrap` 與
+   `flex-shrink: 0` 讓它固定寬度、永遠單行，換行的責任交給旁邊的 `.topbar-runtimes`（本來就
+   允許換行，design D3）。 */
 .app-name {
   font-weight: 600;
-  font-size: 16px;
+  font-size: var(--fs-panel);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
+/* 頂列 runtime 連線燈號容器（direction-01-visual task 2.3）：推到頂列右側，跟產品名分開，
+   窄視窗時允許換行（design D3「頁面不得出現橫向捲軸」）。
+   M1（設計審核，2.3 fix round 1）：原本單一 `gap: 16px` 同時當成欄距與列距，換行後兩列燈號
+   之間空出 16px（比燈號本身還高，見審核截圖 topbar-390-2rt）；拆成 `column-gap`（維持
+   16px，燈號之間的水平間距不變）與 `row-gap: 4px`（換行後的列距，設計指定值），並讓換行後的
+   燈號靠右對齊（`justify-content: flex-end`，維持「推到右側」的視覺意圖）。
+   Codex C3（fix round 1）：固定一屏（`≥1200px` 且 `≥720px` 高）下，`--shell-topbar-h` 是
+   `--shell-avail` 計算高度的依據，燈號換行會讓頂列實際高度偏離這個 token、連帶壓縮 Factory
+   Floor；後段 `@media (min-width: 1200px)` 另外覆寫成不換行＋橫向捲動（fix round 3／Ruling
+   R26；direction-01-visual task 5.1／R28 起寬 ≥1200 不論高度都套用，寬矮版面的 Factory Floor
+   高度上限同樣扣這個 token），這裡的 `flex-wrap: wrap` 只在寬 <1200 的版面生效。 */
+.topbar-runtimes {
+  display: flex;
+  align-items: center;
+  column-gap: 16px;
+  row-gap: 4px;
+  margin-left: auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+/* 單一 runtime 燈號：符號（.conn-symbol）＋id＋「最後已知」（I2，預設隱藏）＋狀態文字
+   （design D4）。顏色掛在這個外層節點本身（.runtime-lamp-connected 等），id／狀態文字／
+   符號都靠繼承／currentColor 拿到同一種狀態色——visual-check.js R1 直接讀這個節點的
+   getComputedStyle().color。
+   R2-2（設計審核，task 2.3 fix round 2；fix round 3 這裡落地）：寬 <1200 的斷點下，燈號
+   本身是 inline-flex 但沒有換行，加上 N4 的 white-space: nowrap，單一燈號（尤其斷線期間
+   多了「最後已知」）的最小寬度可能比容器還寬，`justify-content: flex-end` 讓它整顆往左溢出、
+   撞上產品名（見設計複審 r2narrow-390-n2-disconnected.png：叉號貼上「Cockpit」尾巴）。
+   加 `flex-wrap: wrap; justify-content: flex-end; row-gap: 2px;`：放不下時燈號「內部」
+   （符號、id、「最後已知」、狀態文字之間）換行，不是整顆燈號溢出容器——子元素都已經是
+   `white-space: nowrap`（見下方／N4），所以只會在這幾個元素之間分行，不會在詞的中間斷開。
+   寬 ≥1200 另外覆寫回 `flex-wrap: nowrap`（見後段媒體查詢），維持 Codex C3 的單行高度
+   不變量。 */
+.runtime-lamp {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  row-gap: 2px;
+  font-size: var(--fs-meta);
+}
+
+/* design D11：id 屬於「時間、id、數值、Live Output」四類等寬字之一；狀態文字（下面沒有另外
+   設定 font-family）刻意維持無襯線，跟 id 區分開，不整排都變成等寬。
+   N4（設計審核，task 2.3 fix round 2）：加 white-space: nowrap——id 裡的連字號（例如
+   "wsl-ubuntu"）在窄寬度換行時會被瀏覽器當成斷行機會，字會斷在連字號處；nowrap 讓整個 id
+   只在元素邊界換行，不在詞中間斷（跟 R2-2 的 .runtime-lamp 換行搭配：id 整體要嘛完整出現
+   在某一行，不會被攔腰截斷）。寬 ≥1200 另外加 flex／ellipsis（fix round 3，見後段媒體
+   查詢），這裡的規則在該斷點也繼續生效（font-family 不衝突）。 */
+.runtime-lamp-id {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+/* I2（使用者決定，task 2.3 fix round 1）：通道非 connected 時顯示的前綴，預設隱藏，見下方
+   [data-channel-state="connected"] 的規則。
+   N3（Codex fix round 1 review；控制端裁決採方案 (a)）：spec 字面是「頂列每個 runtime 的
+   連線燈號一律改用 --text-dim，不使用連線狀態原本對應的顏色」——上一輪誤用 --warn（剛好是
+   connecting 的顏色，等於帶著「連線中」的琥珀色去描述一顆可能是 connected 的燈號，語意
+   衝突）。改成 color: inherit：符號、id、「最後已知」、狀態文字四個子節點都不再各自宣告
+   顏色，全部從外層 [data-runtime] 節點（.runtime-lamp-connected 等，或非 connected 時的
+   [data-channel-state] 覆寫規則）繼承同一個 --text-dim，讀起來是「整條燈號安靜下來」，
+   不會有一截特別搶眼的顏色（設計複審 N3 傾向的做法 (a)：「頂列在斷線時整條安靜下來，引導
+   視線的工作交給底列的紅叉」）。N4 的 white-space: nowrap 見下方；flex-shrink: 0（fix
+   round 3）呼應控制端裁決 R26：「符號與狀態文字（含『最後已知』）一律 flex-shrink: 0，
+   不縮」——寬 ≥1200 空間不夠時只有 id 縮小（見後段媒體查詢的 .runtime-lamp-id），這個標籤
+   維持完整字樣，不會被壓成看不清楚的殘影。 */
+.runtime-lamp-stale {
+  color: inherit;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* N4（設計審核，task 2.3 fix round 2）：狀態文字（connected／connecting／disconnected）本身
+   不含連字號，但窄寬度下瀏覽器仍可能在別的斷點試著換行；跟 .runtime-lamp-id／
+   .runtime-lamp-stale 一致，整段不斷行。flex-shrink: 0（fix round 3／Ruling R26）：狀態
+   文字不縮，理由同 .runtime-lamp-stale。 */
+.runtime-lamp-state {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* fix round 1（Ruling R20 沿用的做法）：連線三色語彙直接指到 D4「連線」對照表核心 token
+   （connecting→--warn、connected→--ok、disconnected→--bad）；未知字串（理論上不會發生）
+   落在 --text-dim，跟專案其餘「未知不破壞畫面」的慣例一致。 */
+.runtime-lamp-connecting {
+  color: var(--warn);
+}
+
+.runtime-lamp-connected {
+  color: var(--ok);
+}
+
+.runtime-lamp-disconnected {
+  color: var(--bad);
+}
+
+.runtime-lamp-unknown {
+  color: var(--text-dim);
+}
+
+/* I2（使用者決定，task 2.3 fix round 1）：通道（瀏覽器→cockpit）不是 connected 時，頂列
+   每個燈號整體改用 --text-dim（不管這個 runtime 自己的連線狀態是什麼——資料可能已經過
+   期，用同一種暗色提醒使用者），並顯示「最後已知」前綴；恢復 connected 後兩者都還原。
+   `[data-channel-state]` 掛在 `[data-region="topbar"]` 本身，由 window.onChannel 不重畫直接
+   更新，也由 renderTopbar() 每次整頁重畫時用 latestChannelState 重新產生（render.js），兩條
+   路徑保證一致。選擇器特異度算法：`[data-region="topbar"]`（1 個屬性選擇器）＋
+   `:not([data-channel-state="connected"])`（:not() 的特異度等於其參數，即 1 個屬性選擇器）
+   ＋`.runtime-lamp`（1 個 class）＝ 3 個「class 層級」選擇器，比 `.runtime-lamp-connected`
+   等（1 個 class）更高，不需要 !important 就能覆蓋（CSS 特異度只看選擇器本身，不看樣式表
+   順序）。 */
+[data-region="topbar"]:not([data-channel-state="connected"]) .runtime-lamp {
+  color: var(--text-dim);
+}
+
+[data-region="topbar"][data-channel-state="connected"] .runtime-lamp-stale {
+  display: none;
+}
+
+/* 底列通道狀態徽章（direction-01-visual task 2.3；design D4「連線配色也適用底列通道
+   狀態」）：跟 .runtime-lamp 是同一套「連線三色＋燈號」語彙，但這裡是 pill 形狀（沿用既有
+   .channel-status 的 padding／border-radius／半透明底），不是純文字。改成 inline-flex 讓
+   符號（.channel-status-dot）跟文字（.channel-status-text）排成一行、中間留 gap；
+   #channel-status 本身仍是承載狀態色與 data-channel-state 的節點。 */
 .channel-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 2px 8px;
   border-radius: 999px;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  font-size: var(--fs-meta);
+  /* direction-01-visual task 2.2（設計審核檢查清單：沒有任何全大寫的標籤）：拿掉
+     text-transform: uppercase，通道狀態原字串（connecting／connected／disconnected）
+     照原大小寫顯示。fix round 1／F2：拉字距的 letter-spacing: 0.04em 是配合全大寫的做法，
+     套在小寫英文上會被拉開、看起來像生成式痕跡，一併拿掉（design 文件只允許「英文小標可少量
+     增加字距」，這裡的字串本來就不是小標）。 */
 }
 
+/* fix round 1（Ruling R20）：連線三色語彙改用 D4「連線」對照表直接指到核心 token
+   （connecting→--warn、connected→--ok、disconnected→--bad），半透明底色改用 color-mix
+   從同一個 token 推導（原本的 rgba(210,153,34,.18) 等字面值移除）。 */
 .channel-connecting {
-  background: rgba(210, 153, 34, 0.18);
-  color: var(--conn-connecting);
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+  color: var(--warn);
 }
 
 .channel-connected {
-  background: rgba(63, 185, 80, 0.18);
-  color: var(--conn-connected);
+  background: color-mix(in srgb, var(--ok) 18%, transparent);
+  color: var(--ok);
 }
 
 .channel-disconnected {
-  background: rgba(248, 81, 73, 0.18);
-  color: var(--conn-disconnected);
+  background: color-mix(in srgb, var(--bad) 18%, transparent);
+  color: var(--bad);
 }
 
-.version {
-  margin-left: auto;
+/* 防禦：window.onChannel／render.js 的 connStateClass() 理論上不會傳入這三種以外的字串
+   （通道狀態是受控的固定枚舉），跟其餘「未知不破壞畫面」的慣例一致，落在 --text-dim。 */
+.channel-unknown {
+  background: color-mix(in srgb, var(--text-dim) 18%, transparent);
   color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
 }
 
-/* Factory Floor：每個 Project 一塊，畫在 runtime 卡之前（spec「Factory Floor」）。 */
-.projects {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+/* M3（使用者決定，task 2.3 fix round 1）：連線三態改用三種 CSS 畫的形狀（顏色不變）——
+   connected 實心圓、connecting 空心圓（2px 邊框）、disconnected 叉（兩條 45 度線性漸層畫
+   出的對角線，CSS 畫、不用字元），灰階下也能靠形狀分辨，不是只靠文字（設計審核 M3：--ok
+   與 --warn 的亮度比只有 1.05:1，灰階下顏色幾乎分不開）。頂列 .runtime-lamp-dot 與底列
+   .channel-status-dot 共用同一組 `.conn-symbol` 規則——兩者都是 aria-hidden 的裝飾節點，
+   形狀由「父層的狀態 class」決定（`.runtime-lamp-connected` 等／`.channel-connected` 等），
+   不是符號元素自己的 class，這樣兩處只需要維護一份形狀定義。
+   direction-01-visual task 3.3：右欄 runtime 卡標題列的連線狀態（.runtime-conn-*）是第三個
+   使用者，一併掛進下面三組選擇器。
+   direction-01-visual task 5.1（2.3 設計 r5 延後項）：尺寸與空心圓的環寬改用 em，三處符號的
+   字級都是 --fs-meta，預設仍是 8px 見方、2px 環（8/12em、2/12em），文字放大時等比放大，不會
+   變成字旁邊的小點。叉是 background 漸層的百分比位置，跟著方框一起放大。 */
+.conn-symbol {
+  display: inline-block;
+  width: calc(8em / 12);
+  height: calc(8em / 12);
+  flex-shrink: 0;
+  box-sizing: border-box;
 }
 
-.project {
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 12px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+.runtime-lamp-connected .conn-symbol,
+.channel-connected .conn-symbol,
+.runtime-conn-connected .conn-symbol,
+.runtime-lamp-unknown .conn-symbol,
+.channel-unknown .conn-symbol,
+.runtime-conn-unknown .conn-symbol {
+  border-radius: 50%;
+  background: currentColor;
 }
 
-.project-header {
-  display: flex;
-  flex-direction: column;
+.runtime-lamp-connecting .conn-symbol,
+.channel-connecting .conn-symbol,
+.runtime-conn-connecting .conn-symbol {
+  border-radius: 50%;
+  border: calc(2em / 12) solid currentColor;
+  background: transparent;
+}
+
+.runtime-lamp-disconnected .conn-symbol,
+.channel-disconnected .conn-symbol,
+.runtime-conn-disconnected .conn-symbol {
+  border-radius: 0;
+  background:
+    linear-gradient(45deg, transparent 42%, currentColor 42%, currentColor 58%, transparent 58%),
+    linear-gradient(-45deg, transparent 42%, currentColor 42%, currentColor 58%, transparent 58%);
+}
+
+/* 底列的「cockpit 服務」標籤（design D4）：獨立於通道狀態色之外，維持次要文字色，跟頂列的
+   runtime id（也是次要資訊層級但屬於另一段連線）與通道狀態本身（會變色）都區分開。 */
+.statusbar-channel {
+  display: inline-flex;
+  align-items: center;
   gap: 6px;
 }
 
+.statusbar-channel-label {
+  color: var(--text-dim);
+}
+
+/* design 審核檢查清單「version 用等寬 --text-dim 顯示，不搶注意力」：等寬字屬於 design D11
+   「時間、id、數值……」四類之一，原本漏掉 font-family（沿用 body 的無襯線），這裡補上。 */
+.version {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Factory Floor（spec「Factory Floor」；direction-01-visual task 3.2）：外框
+   [data-region="floor"] 由上往下是標題列（.project-header，不捲動）與內層捲動容器
+   （.projects，兩個方向都在這裡捲）。 */
+.projects {
+  display: flex;
+  flex-direction: column;
+  /* sticky 欄首蓋住捲動容器最上面一段：scrollIntoView／focus() 把目標捲到「上緣」時，要讓開
+     欄首的高度，否則目標正好落在欄首底下，看不到也點不到（鍵盤焦點被蓋住）。高度由欄首的
+     組成推導（.ff-stage-header：上下框線 2px＋上內距 1em＋4px＋一行 1.3em＋下內距 6px，em
+     為 --fs-meta），不寫死像素。左側讓開 sticky 列首的寬度見 render.js（跟首欄軌道上限同一個
+     常數）。
+     direction-01-visual task 5.4 final review（Codex F2／5.2 M1）：四邊再多讓開 6px＝鍵盤焦點框
+     外推的 4px（outline-offset 2px＋outline 寬 2px，見 :focus-visible）＋2px 取整餘裕（捲動位置
+     是整數像素，實測差 0.5px）。沒有這段時，Tab 把右／下邊的按鈕捲進來只捲到按鈕本體貼齊容器
+     邊，焦點框那一側被 overflow 裁掉；上緣則是焦點框縮在 sticky 欄首底下。左側的 6px 加在
+     render.js 的 scroll-padding-left；Chrome 橫向不捲的例外由 render.js 的 focusin 補捲。 */
+  scroll-padding: calc(2.3 * var(--fs-meta) + 12px + 6px) 6px 6px;
+}
+
+/* 2.2 設計審核 F7「框中框」：外框（data-region="floor"）已經有框線、底色與內距，裡面的
+   .project 不再畫第二層框——不設 border／background／padding／圓角。面板寬度下限見
+   render.js renderProject()（inline min-width）。 */
+.project {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 標題列：主標題（Project name）＋逐則 warnings；下方留 8px 再接網格。 */
+.project-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 0 0 auto;
+  margin-bottom: 8px;
+}
+
+/* design D10：選定 Project 的 name 是全畫面主標題（--fs-title 20／600，--text）。單行省略，
+   完整名稱在 title（render.js）；line-height 用 D10 的單行標籤 1.3。 */
 .project-name {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--fs-title);
   font-weight: 600;
+  line-height: 1.3;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .project-warnings {
   margin: 0;
   padding-left: 18px;
-  color: var(--status-blocked);
-  font-size: 12px;
+  color: var(--warn); /* fix round 1（Ruling R20）：blocked→--warn，見 :root 對照 */
+  font-size: var(--fs-meta);
+  overflow-wrap: anywhere;
+  text-wrap: pretty; /* task 5.1 fix round 1（設計 M1）：同 .connection-details > dd，避免最後一行只剩一個字；li 繼承 */
 }
 
-/* 網格：第一欄是 workstream 列首，其餘欄是 stages（欄數由 render.js 算好寫進
-   grid-template-columns，這裡只定義固定樣式）。 */
-.factory-floor {
-  display: grid;
-  gap: 6px;
-  overflow-x: auto;
+/* 左欄 Project 項目（spec「Project 切換」；design D4／D6／D11；direction-01-visual task
+   3.1）：整塊是 <button>，reset 掉瀏覽器預設按鈕外觀，寬度撐滿欄位、文字靠左（跟一般置中的
+   按鈕語意不同，這是一列可點的清單項目）。左緣保留 2px 透明邊框佔位，選定時只換顏色、不改
+   版面尺寸（避免選定/取消選定時項目寬度或內距跳動）。 */
+.project-item {
+  display: block;
+  width: 100%;
+  padding: 6px 8px 6px 10px;
+  border: none;
+  border-left: 2px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
-.ff-corner {
-  /* 網格左上角的空白格，撐開版面用，不放內容。 */
+.project-item:hover {
+  /* --focused-tint：既有的中性半透明提示色（:root，color-mix 從 --text 推導），沿用同一個
+     token，不新增顏色（Ruling R20）。 */
+  background: var(--focused-tint);
 }
 
-.ff-stage-header {
-  padding: 4px 8px;
-  font-size: 12px;
-  color: var(--text-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+.project-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* design D4「冰青的形狀分工」：選定＝--surface 底＋左緣 2px 冰青條，不畫四邊外框——跟
+   running 節點「四邊框加柔光」在形狀上刻意分開，也跟 .pane-row.selected 用同一套視覺語彙
+   （design 審核檢查清單 3.1「選定的 Project 是『--surface 底＋左緣冰青條』」）。 */
+.project-item.selected {
+  background: var(--surface);
+  border-left-color: var(--accent);
+}
+
+.project-item-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* design D3「長字串不撐破所屬區域」：200 字的 Project 名稱沒有空白可斷行時，overflow-wrap:
+   anywhere 允許在任意字元換行（同 .ff-ws-name 的做法），配合左欄固定寬度（.shell
+   grid-template-columns 220px）避免撐破欄寬；完整名稱另外放 title（render.js）。
+   fix round 1／設計審核 M2：全文換行不撐破欄寬沒錯，但沒有行數上限時，200 字中文名稱單獨就要
+   佔約 17 行（361px），把清單裡其餘 Project 全部推出一屏，跟 Factory Floor 標題（同一個
+   Project 名稱，單行省略）的呈現方式也不一致。改成最多 2 行（-webkit-line-clamp，同
+   .runtime-lamp-id 用的技巧，Chrome/Chromium 完整支援），符合 D3「換行或省略，完整內容放
+   title」——2 行是換行與省略之間的折衷，保留 overflow-wrap: anywhere 讓沒有空白的長字串仍能
+   在任意字元斷行。 */
+.project-item-name {
+  font-size: var(--fs-panel);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  /* design D10「中文內文 1.5」：Project 名稱常是中英混排的標題文字，用這一階；明確寫死（不是
+     瀏覽器預設的 normal）也讓 -webkit-line-clamp 的「2 行」有固定、量得到的像素高度可以驗
+     （getComputedStyle().lineHeight 在沒有明確設定時回傳字串 "normal"，量不出行高，行數就無法
+     用 rect.height / lineHeight 反推）。 */
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* design D11「warnings 用 --warn，放在名稱同一行右側」。flex-shrink: 0：名稱換行時警告數字
+   本身不跟著被壓窄。 */
+.project-item-warnings {
+  flex-shrink: 0;
+  color: var(--warn);
+  font-size: var(--fs-meta);
+}
+
+/* fix round 1／設計審核 M3：欄距（column-gap）原本 10px，符號 span（1.25em、置中）的 ‖
+   （blocked）夾在兩個 chip 中間，離前一個 chip 的數字比離自己的文字更近，整列讀起來像用 ‖
+   當分隔線串接（design D11 明文不用中點串接，用分隔線一樣違反這個原則）。failed／blocked
+   固定排在最前兩格（D11 排序），這個誤讀剛好落在最需要一眼看懂的位置。改成 column-gap: 16px
+   （超過 chip 內間距 .project-count { gap: 3px } 的兩倍以上），讓符號明顯歸屬自己後面的文字；
+   row-gap 維持小間距即可（換列時不需要同樣寬的視覺區隔）。 */
+.project-item-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 4px;
+}
+
+/* 一個計數 chip＝符號＋status 文字＋數字（design D11「不用中點串接」）：三個子節點用 gap
+   分隔，不是拼成一個字串，符號固定寬度置中（design D4「符號 span 固定寬度」，跟 3.2 的
+   Factory Floor 節點符號用同一個尺寸慣例）。顏色依 D4「對象／狀態→顏色與符號」task 對照表，
+   逐一設在 chip（外層 span）上，子節點靠 CSS color 繼承，不必個別重覆設定。 */
+.project-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--fs-meta);
+}
+
+.project-count-symbol {
+  display: inline-block;
+  width: 1.25em;
   text-align: center;
 }
 
+.project-count-failed {
+  color: var(--bad);
+}
+
+.project-count-blocked {
+  color: var(--warn);
+}
+
+.project-count-running {
+  color: var(--accent);
+}
+
+.project-count-ready {
+  color: var(--text);
+}
+
+.project-count-pending {
+  color: var(--text-dim);
+}
+
+.project-count-completed {
+  color: var(--ok);
+}
+
+/* 未知 status（理論上不會發生——StageStatus 是封閉 enum；沿用整份檔案「未知不破壞畫面」的
+   慣例，跟 pending 同一個 --text-dim，符號用 "?"，見 render.js taskStatusSymbol()）。 */
+.project-count-unknown {
+  color: var(--text-dim);
+}
+
+/* 沒有 Project 的空狀態（spec「Project 切換」「沒有 Project」；design D11 逐字文案；
+   direction-01-visual task 3.1）：兩個區域都用次要文字色、不搶注意力，語氣直述、指向動作。 */
+.projects-empty-state {
+  padding: 8px 4px;
+  color: var(--text-dim);
+  font-size: var(--fs-meta);
+}
+
+.floor-empty-state {
+  padding: 24px 12px;
+  color: var(--text-dim);
+  font-size: var(--fs-panel);
+}
+
+/* 網格（design D3／D4／D8；direction-01-visual task 3.2）：第一欄是 workstream 列首，其餘欄是
+   stages（欄數由 render.js 算好寫進 grid-template-columns，這裡只定義固定樣式）。
+   - gap: 0：列首（sticky left）與欄首（sticky top）要連成一條不透明的帶子；網格若留 gap，
+     橫向／縱向捲過去的節點會從列首之間、欄首之間的縫裡透出來。格子之間的間距改由 .ff-cell
+     自己的 padding 負責，列與列之間用 1px --line 橫線分隔（純裝飾）。
+   - 網格本身不設 overflow：兩個方向的捲動都交給外層 .projects（task 2.1 fix round 2／I2：
+     欄首與列首往上找到的第一個捲動祖先必須就是 .projects，sticky 才黏得對）。 */
+.factory-floor {
+  display: grid;
+  gap: 0;
+}
+
+/* sticky 列首／欄首（design D3）：兩者都用不透明 --bg-base（跟外框底色相同，看起來像外框的
+   一部分），捲動時浮在格子上方。疊放順序：左上角格（兩個方向都 sticky）＞欄首＞列首——
+   同時捲兩個方向時，列首往上捲會鑽到欄首底下，兩者再一起被左上角格蓋住。 */
+.ff-corner,
+.ff-stage-header,
 .ff-row-header {
+  background: var(--bg-base);
+}
+
+/* 刻度基線：左上角格與欄首的上緣是同一條 1px --line，刻度從這條線往下垂（design D8）；
+   下緣另一條 1px --line 把固定的欄首列和捲動中的格子分開。 */
+.ff-corner,
+.ff-stage-header {
+  position: sticky;
+  top: 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.ff-corner {
+  left: 0;
+  z-index: 3;
+  border-right: 1px solid var(--line);
+}
+
+.ff-stage-header {
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+  line-height: 1.3; /* design D10 單行標籤；欄首高度因此可由字級推導，見 .projects 的 scroll-padding-top */
+  /* 上內距＝最長那一格刻度（running，1em）＋4px：每一格的 stage 名稱都落在同一條水平線上，
+     不會因為這一格有 running（刻度較長）就被往下推。 */
+  padding: calc(1em + 4px) 8px 6px;
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+  /* direction-01-visual task 2.2：stage 名稱照原字串大小寫顯示，不全大寫、不加字距。 */
+}
+
+.ff-stage-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 刻度（design D8，使用者 2026-09-24 裁決）：每個 stage 一格，是欄首第一個子元素，貼在欄首
+   上緣正中，跟下方欄位永遠對齊（它就在欄位裡，隨欄一起捲動）。一般格用 --text-dim 的細短線；
+   有 running task 的 stage 較長、較粗、改用 --text——不用冰青（D4「冰青的形狀分工」：冰青只
+   留給 running 節點本身）。長度以 em 表示，跟著欄首字級一起縮放。 */
+.ff-stage-tick {
+  /* 欄首是 sticky（本身就是定位元素），刻度以它為基準絕對定位在上緣正中，不佔版面高度。 */
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 1px;
+  height: 0.5em;
+  background: var(--text-dim);
+}
+
+.ff-stage-running .ff-stage-tick {
+  width: 2px;
+  height: 1em;
+  background: var(--text);
+}
+
+.ff-stage-running .ff-stage-name {
+  color: var(--text);
+}
+
+/* 列首（design D3）：sticky left: 0，右緣 1px --line，讓人看出它浮在捲過去的格子上方；列與
+   列之間 1px --line 橫線（跟 .ff-cell 同一條）。左內距 4px：.projects 會裁掉超出自己的內容，
+   列首貼齊它的左緣，按鈕的鍵盤焦點外框（2px＋外推 2px）要有地方畫。 */
+.ff-row-header {
+  position: sticky;
+  left: 0;
+  z-index: 1;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 6px 8px;
-  border-radius: 4px;
-  background: var(--bg-inset);
+  min-width: 0;
+  padding: 8px 10px 8px 4px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
 }
 
 .ff-ws-name {
   font-weight: 600;
+  color: var(--text);
 }
 
 .ff-binding {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  min-width: 0;
+  font-size: var(--fs-meta);
   color: var(--text-dim);
 }
 
+/* fix round 4／N3（Codex r3）：binding 文字可能很長、沒有斷行點，全文放在外層 .ff-binding 的
+   title（render.js）。min-width: 0 讓這個 flex 項目可以縮到比文字窄（flex 項目預設的自動
+   最小寬度是內容寬）。非 bound 的狀態（未綁定、歧義……）只有一段文字，單行省略。 */
+.ff-binding-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* bound 的「runtime / pane」（direction-01-visual task 3.2；2.1 設計審核 r4 Minor）：拆成三個
+   span，只讓 runtime 縮短。放不下時 pane id（連同前面的分隔）整段換到下一行，比 pane id 本身
+   還長才在任意字元斷行——任何寬度下 pane id 都完整可見。runtime 與 pane id 都是 id，用等寬字
+   （design D11）。 */
+.ff-binding-bound .ff-binding-text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  white-space: normal;
+  /* overflow 沿用上面的 hidden：容器高度隨換行長高（pane id 不會被裁），寬度上限就是列首，
+     任何子元素都畫不出這個框（runtime 的省略由它自己的 overflow 負責）。 */
+}
+
+.ff-binding-runtime,
+.ff-binding-pane {
+  font-family: var(--font-mono);
+}
+
+.ff-binding-runtime {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ff-binding-sep {
+  flex: none;
+  white-space: pre;
+}
+
+.ff-binding-pane {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* fix round 1（Ruling R20）：背景改用 color-mix 從 --text 推導（原始 rgba(230,230,230,.14)
+   已經非常接近 --text 的 RGB e5edf3，改用 token 推導視覺上幾乎無感知差異）；字級 11px 不在
+   D10 四階內，這裡顯示「改綁」（中文，不得低於 12px）， 改用 --fs-meta（12px）。 */
 .ff-binding-badge {
+  flex-shrink: 0;
   padding: 0 6px;
   border-radius: 999px;
-  background: rgba(230, 230, 230, 0.14);
+  background: color-mix(in srgb, var(--text) 14%, transparent);
   color: var(--text);
-  font-size: 11px;
+  font-size: var(--fs-meta);
 }
 
 .ff-row-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  margin-top: 2px;
+  margin-top: 4px;
 }
 
+/* 格子：透明底（看到的是外框的 --bg-base），內距兼作欄與欄、節點與節點之間的間距；下緣
+   1px --line 跟列首的下緣連成同一條列分隔線。task 3.2 fix round 1（設計審核 M1）：左右內距
+   8 → 6px（節點左右內距同樣 8 → 6px），跟首欄上限降到 200px 一起，讓 1280×650（含內層捲軸）
+   時 stage 欄約 154px 也放得下「推進＋Completed」同一列，三顆按鈕從三列變兩列。 */
 .ff-cell {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 6px;
-  min-height: 40px;
-  border: 1px dashed var(--border);
-  border-radius: 4px;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--line);
 }
 
-/* Task 節點：六種狀態色 + running 動態強調（spec「Factory Floor」）。 */
+/* Task 節點（spec「Factory Floor」；design D4；direction-01-visual task 3.2）：--surface 底、
+   左緣 4px 狀態色條、1px --line 細框（裝飾，只負責讓 --surface 的卡片跟 --bg-base 的格子分得
+   出邊界）。由上往下「標題 → 符號＋status 文字 → 按鈕」（render.js renderTaskNode()）。
+   狀態色只透過 --task-status-color 傳給色條與狀態列（符號＋status 文字同一個顏色，design
+   D4），標題固定 --text（未知 status 例外，見下）、按鈕固定中性（.action-button），都不吃
+   狀態色。 */
 .task-node {
+  --task-status-color: var(--text-dim);
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 4px 8px;
-  border-radius: 4px;
-  color: #0f1115;
-  font-size: 12px;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 6px 6px 8px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--task-status-color);
+  border-radius: 2px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+/* 標題：D10 表格密集處的 13px，600 讓它跟下一行 12/400 的狀態文字分出層次（2.2 設計複審
+   「狀態字與標題層次變平」）；最多兩行、超過省略，完整標題在 title（render.js）。 */
+.task-title {
+  font-size: var(--fs-dense);
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+/* 符號＋status 文字：同一個狀態色（design D4）。符號固定寬度置中（D4「符號 span 固定寬度
+   1.25em、text-align: center、display: inline-block」），不同狀態的 status 文字因此從同一個
+   x 開始，上下節點對得齊。 */
+.task-state {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  color: var(--task-status-color);
+  font-size: var(--fs-meta);
+  line-height: 1.3;
+}
+
+.task-status-symbol {
+  display: inline-block;
+  flex: none;
+  width: 1.25em;
+  text-align: center;
+}
+
+/* fix round 1／F6（Ruling R20）：status 文字一律 --fs-meta（12px）。direction-01-visual task
+   3.2：拿掉原本的 opacity: 0.85（降低透明度會把文字對比拉到 4.5:1 以下的風險留給每一種狀態
+   色，spec「文字對比」不允許）。status 文字照原字串大小寫顯示。 */
+.task-status-label {
+  font-size: var(--fs-meta);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* design D4「對象／狀態→顏色與符號」task 列（fix round 1／Ruling R20 起全部指到核心 token）：
+   running→--accent、blocked→--warn、ready→--text、pending→--text-dim、failed→--bad、
+   completed→--ok（刻意不是 pane done 的配色，spec「completed 不得與 pane done 使用同一種
+   顏色」）。這幾個 class 只決定狀態色，不再給整個節點上實底色（task 3.2 換皮前的做法）。 */
+.task-status-running {
+  --task-status-color: var(--accent);
+}
+
+.task-status-blocked {
+  --task-status-color: var(--warn);
+}
+
+.task-status-ready {
+  --task-status-color: var(--text);
+}
+
+.task-status-pending {
+  --task-status-color: var(--text-dim);
+}
+
+.task-status-failed {
+  --task-status-color: var(--bad);
+}
+
+.task-status-completed {
+  --task-status-color: var(--ok);
+}
+
+/* running 的靜止強調（spec「Factory Floor」；design D4／D5；spec「running 節點沒有動畫」）：
+   四邊 2px --accent 外框（左緣色條同色、維持 4px）＋靜止柔光。柔光只給 running（D4「冰青的
+   形狀分工」：其他地方一律不加發光的 box-shadow），用 color-mix 從 --accent 推導半透明，
+   不引入新色值；沒有 animation／transition（D5）。 */
+.task-node.task-status-running {
+  border-width: 2px 2px 2px 4px;
+  border-color: var(--accent);
+  box-shadow: 0 0 10px 1px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+/* failed／blocked 的強調（task 3.2 fix round 1，設計審核 I1／控制端 Ruling R31）：只有 4px 色條時，
+   failed 的 --bad 色條亮度比 pending 的 --text-dim 還低，需要注意的兩種狀態反而比 ready、completed
+   不醒目。這兩種的四邊細框改成 1px 狀態色（--bad 對 --surface 5.67:1、--warn 8.97:1，都滿足必要
+   圖形 ≥3:1），status 文字改 600。形狀跟 running 分得開：running 是 2px 冰青框加柔光，這裡是
+   1px 狀態色框、不發光。節點底色維持 --surface（spec「節點以表面色為底」）。 */
+.task-node.task-status-failed,
+.task-node.task-status-blocked {
+  border-color: var(--task-status-color);
+}
+
+.task-status-failed .task-status-label,
+.task-status-blocked .task-status-label {
   font-weight: 600;
 }
 
-.task-title {
+/* 未知 status（spec「未知 status 不破壞畫面」；design D4「未知 --text-dim ?（虛線外框）」）：
+   四邊（含色條）改成 --text-dim 虛線，整個節點的文字（標題也一起）用 --text-dim——和
+   pending（--text 標題＋實線細框＋--text-dim 色條）在形狀與亮度上都分得開。--text-dim 對
+   --surface 7.7:1，虛線外框滿足 spec「必要圖形 ≥3:1」（--line 只有 1.6:1，不能用）。 */
+.task-node.task-status-unknown {
+  border-style: dashed;
+  border-color: var(--text-dim);
+  color: var(--text-dim);
+}
+
+/* 節點上的操作按鈕獨佔最後一段（design D4「動作按鈕」：固定排在節點底部，和標題、狀態之間留
+   8px＝.task-node 的 gap 4px＋這裡的 margin-top 4px；放不下時換行，不縮字級）。按鈕本身就是
+   .action-button 的第三層級中性樣式，不另外覆寫任何顏色。 */
+.task-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+/* task 5.4 final review（Codex F3／5.2 M4）：「放不下時換行」原本只換到按鈕與按鈕之間——單一按鈕
+   的英文字（Completed）不可斷，文字放大 200%＋700 寬時比 stage 欄最窄的節點還寬，超出節點
+   10px。按鈕寬度上限是節點內容寬，字真的放不下時在字內斷行（一般字級下每顆按鈕都放得下，
+   這條不起作用）。 */
+.task-actions .action-button {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+/* 右欄：runtime 卡與最近事件（direction-01-visual task 3.3；design D4 agent 對照表、D10 字級、
+   D11 右欄層次）。
+   - 右欄區塊一層框（[data-region="runtimes"] 1px --line、--bg-base，跟左欄與最近事件同一組
+     規則）；runtime 之間只用上方 1px --line 分隔線區隔（第一個沒有），不畫四邊卡框——使用者
+     2026-09-25 裁決（task 3.3 fix round 1，design D11 同步更新），也避開 2.2 設計審核 F7 的
+     框中框。卡內 workspace 用一行標題列＋上方 1px --line 分隔、tab 用縮排 8px 的次標題，都不加框。
+   - 所有文字元素 min-width: 0＋單行省略（完整內容在 title，render.js），任何長 id／名稱／
+     cwd／未知狀態字串都不撐寬右欄（spec「長名稱不溢出」；visual-check V1 內層無橫向捲動斷言）。 */
+.runtime-cards {
+  display: flex;
+  flex-direction: column;
+}
+
+/* runtime 段落：左右 4px 內距是給 pane 列鍵盤焦點外框（外推 2px＋寬 2px）的空間——
+   .runtime-cards 是捲動容器，會裁掉超出自己邊界的外框（carry 10）。 */
+.runtime-card {
+  padding: 4px 4px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.runtime-card + .runtime-card {
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+/* 標題列：runtime id（面板標題級 14/600、等寬——id 屬 D11 等寬四類）＋靠右的連線狀態。 */
+.runtime-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.runtime-id {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-panel);
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.task-status-label {
-  font-size: 10px;
-  text-transform: uppercase;
-  opacity: 0.85;
+/* 連線狀態：符號共用 .conn-symbol 的三種形狀（見上方 M3 那組規則），狀態文字無襯線（D11）。
+   顏色依 design D4「連線」列。 */
+.runtime-conn {
+  flex: 0 0 auto;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-meta);
+  line-height: 1.3;
   white-space: nowrap;
 }
 
-.task-status-running {
-  background: var(--stage-running);
-  animation: task-running-pulse 1.6s ease-in-out infinite;
+.runtime-conn-connected {
+  color: var(--ok);
 }
 
-.task-status-blocked {
-  background: var(--stage-blocked);
+.runtime-conn-connecting {
+  color: var(--warn);
 }
 
-.task-status-ready {
-  background: var(--stage-ready);
+.runtime-conn-disconnected {
+  color: var(--bad);
 }
 
-.task-status-pending {
-  background: var(--stage-pending);
-  color: var(--text);
-}
-
-.task-status-failed {
-  background: var(--stage-failed);
-}
-
-.task-status-completed {
-  background: var(--stage-completed);
-}
-
-.task-status-unknown {
-  background: var(--status-unknown);
-  color: var(--text);
-}
-
-/* 節點上的操作按鈕獨佔一行，放在標題與狀態之下。 */
-.task-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  width: 100%;
-}
-
-@keyframes task-running-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.55);
-  }
-
-  50% {
-    box-shadow: 0 0 0 4px rgba(63, 185, 80, 0);
-  }
-}
-
-/* Runtime 卡片。 */
-.runtime-cards {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.runtime-card {
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 12px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.runtime-header {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-}
-
-.runtime-id {
-  font-weight: 600;
-}
-
-.runtime-endpoint {
+.runtime-conn-unknown {
   color: var(--text-dim);
-  font-size: 12px;
-  word-break: break-all;
 }
 
 .connection {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  font-size: 12px;
-  padding: 4px 8px;
-  border-radius: 4px;
-  border-left: 3px solid transparent;
+  min-width: 0;
 }
 
-.conn-connecting {
-  border-left-color: var(--conn-connecting);
+/* 連線明細（D11）：兩欄定義列表，左欄 --text-dim 標籤（無襯線）、右欄等寬值，一行一項；值
+   過長（斷線原因、長 endpoint）時在欄內換行，不撐寬卡片。
+   task 3.3 fix round 1（設計審核 M1）：標籤欄改成固定寬度，每個 runtime 的值欄才會上下對齊
+   （max-content 會依各自最長的標籤決定寬度）。7em 以明細字級計，放得下最長的「last snapshot」
+   （12px Segoe UI 約 69px）；換成更寬的字型時標籤在欄內換行，不撐寬。值改 --text-dim（設計審核
+   M4，D10「輔助資訊與時間（含等寬字）」）。 */
+.connection-details {
+  display: grid;
+  grid-template-columns: 7em minmax(0, 1fr);
+  column-gap: 12px;
+  row-gap: 2px;
+  margin: 0;
+  font-size: var(--fs-meta);
+  line-height: 1.5;
 }
 
-.conn-connected {
-  border-left-color: var(--conn-connected);
-}
-
-.conn-disconnected {
-  border-left-color: var(--conn-disconnected);
-}
-
-.connection-state {
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+.connection-details > dt {
+  min-width: 0;
   color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+/* direction-01-visual task 5.1（3.3 設計 N1）：值欄變窄時，斷線原因這類中文長句的最後一個字
+   會單獨掉到下一行；text-wrap: pretty 讓瀏覽器調整斷行點，避免最後一行只剩一個字。 */
+.connection-details > dd {
+  margin: 0;
+  min-width: 0;
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
 }
 
 .protocol-warning {
-  color: var(--status-blocked);
-}
-
-/* Workspace／tab 分組。 */
-.workspace {
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 8px;
   margin-top: 4px;
+  color: var(--warn); /* fix round 1（Ruling R20）：blocked→--warn */
+  font-size: var(--fs-meta);
+  overflow-wrap: anywhere;
 }
 
-.workspace.focused,
-.tab.focused,
-.pane-row.focused {
-  background: var(--focused-tint);
+/* workspace（D11）：一行標題列（label、#number、彙總狀態靠右）＋上方 1px --line 分隔，不加框。 */
+.workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
 }
 
 .workspace-header,
 .tab-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 2px 4px;
+  gap: 8px;
+  min-width: 0;
+  line-height: 1.3;
+}
+
+/* 彙總狀態靠右、不縮（空間不夠時縮的是 label，見 .workspace-label 的單行省略）。 */
+.workspace-header > .agent-state,
+.tab-header > .agent-state {
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .workspace-label {
+  flex: 0 1 auto;
+  min-width: 0;
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.workspace-number,
+.workspace-number {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+
+/* tab（D11）：縮排 8px 的次標題（「tab 1」＋狀態），--text-dim 12px，不加框；tab 底下的 pane
+   列跟著縮排。 */
+.tab {
+  display: flex;
+  flex-direction: column;
+  /* pane 列之間至少留 4px：鍵盤焦點外框外推 2px＋寬 2px（design D4「焦點」），相鄰列的
+     底色（選定、滑過）才不會蓋到它（carry 10）。 */
+  gap: 4px;
+  min-width: 0;
+  padding-left: 8px;
+}
+
+/* 相鄰 tab 之間多留 8px（task 3.3 fix round 1，設計審核 M2）：tab 標題跟 pane 第二行同字級、
+   同色，間距一樣時看起來像上一個 pane 多出的一行。不加框、不加線（D11「tab 不加框」）。 */
+.tab + .tab {
+  margin-top: 8px;
+}
+
+.tab-header {
+  font-size: var(--fs-meta);
+}
+
 .tab-number {
   color: var(--text-dim);
-  font-size: 12px;
+  font-size: var(--fs-meta);
 }
 
-.tab {
-  margin-top: 6px;
-  padding-left: 12px;
-  border-left: 2px solid var(--border);
-}
+/* HERDR 焦點（.focused class 保留）不用底色（task 3.3 fix round 1，設計審核 M3：跟滑過只差
+   1.03:1、跟改綁目標同色、畫面上沒有說明），改用 pane 列上的「作用中」文字標記
+   （.pane-herdr-focus，見下方）；workspace／tab 本來就不標。 */
 
-/* Pane 一列：id、agent、狀態色塊、標題、cwd。 */
+/* pane 列兩行（D11；CSS grid 定位、不改 DOM 順序——DOM 仍是 id、agent、狀態、標題、cwd，
+   HERDR 焦點標記在最後）：
+     第一行：狀態（符號＋文字）→ agent →（「作用中」）→ pane id（等寬、靠右）
+     第二行：標題 → cwd（兩者 --text-dim、單行省略；cwd 省略前段、保留尾段）
+   欄寬：狀態欄與右欄都用 fit-content（先拿到自己內容的寬度、各有上限），agent 拿剩下的（1fr，
+   最先被省略，但保留 3em 下限，名稱不會整個消失）；標題跨前兩欄，cwd 與 pane id 共用右欄。所有格子 min-width 0＋省略，整列永遠
+   不比右欄寬（task 2.1 的 minmax(80px, …) 下限與區內橫向捲動一併拿掉）。 */
 .pane-row {
   display: grid;
-  grid-template-columns: minmax(80px, auto) minmax(60px, auto) auto 1fr minmax(120px, auto);
-  align-items: center;
-  gap: 10px;
+  grid-template-columns: fit-content(60%) minmax(3em, 1fr) auto fit-content(45%);
+  grid-template-areas:
+    "state agent mark id"
+    "title title title cwd";
+  column-gap: 8px;
+  row-gap: 2px;
+  align-items: baseline;
+  min-width: 0;
   padding: 4px 6px;
-  border-radius: 4px;
-  /* 預留與 .selected 相同寬度的透明邊框，避免被選定時邊框「長出來」擠動版面
-     （change live-output design D8；task 5.3）。 */
-  border-left: 3px solid transparent;
+  line-height: 1.3;
+  /* 預留與 .selected 相同寬度的透明左緣，選定時只換顏色、不擠動版面（D4「選定」：左緣 2px
+     冰青條）。 */
+  border-left: 2px solid transparent;
 }
 
-.pane-agent {
-  color: var(--text-dim);
+.pane-row > .agent-state {
+  grid-area: state;
 }
 
-.pane-title {
+.pane-row > .pane-agent {
+  grid-area: agent;
+  min-width: 0;
+  font-size: var(--fs-dense);
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.pane-row > .pane-id {
+  grid-area: id;
+  justify-self: end;
+  max-width: 100%;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-row > .pane-title {
+  grid-area: title;
+}
+
+/* cwd 保留尾段（task 3.3 fix round 1，設計審核 I1）：render.js 拆成前段與尾段（最後一段路徑）；
+   空間不夠時前段先縮並省略，尾段完整可見；尾段本身比格子寬時才輪到它省略。 */
+.pane-row > .pane-cwd {
+  grid-area: cwd;
+  display: flex;
+}
+
+.pane-cwd-head {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-cwd-tail {
+  flex: 0 0 auto;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* HERDR 目前聚焦的 pane（設計審核 M3）：--text-dim 12px 的文字標記，排在 pane id 前面。 */
+.pane-row > .pane-herdr-focus {
+  grid-area: mark;
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.pane-title,
 .pane-cwd {
+  min-width: 0;
+  font-size: var(--fs-meta);
   color: var(--text-dim);
-  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* exited：id 與標題加刪除線（spec「exited 加刪除線」）；顏色不額外調暗，對比維持 token 值。 */
 .pane-row.exited .pane-id,
 .pane-row.exited .pane-title {
   text-decoration: line-through;
 }
 
-/* 狀態色塊：working 綠、blocked 琥珀、done 藍、idle 灰、unknown（含任何未知字串）暗灰。 */
+/* agent 狀態＝符號＋文字＋色彩（design D4 agent 對照表）：
+     working  --accent 實心點、--accent 文字
+     idle     --text-dim 實心點、--text-dim 文字
+     blocked  --warn 實心點、--warn 文字
+     done     --accent 2px 空心環、--text 文字（不得使用成功色，spec「done 不使用成功色」）
+     未知     --text-dim 1px 虛線環、--text-dim 文字（原字串；跟 idle 同色，靠形狀分開——carry 8；
+              呼應 task 未知 status 的虛線外框。2px 點線在 8px 圓上只剩四個點、不像環，不採）
+   符號是 CSS 畫的 8px 圓（.agent-dot，render.js 的 agentState()），不用 ●／○ 字元。外層
+   .agent-state 設 overflow: hidden，讓它在 grid 裡的自動最小寬度是 0：超長的未知字串只會在
+   .status 內單行省略，不會撐寬整列。 */
+.agent-state {
+  display: inline-flex;
+  /* 以狀態文字的基線當這一組的基線（點本身 align-self: center），pane 列第一行才能跟 agent、
+     pane id 基線對齊（三者字級、字體不同）。 */
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.agent-dot {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+
+.agent-dot-working {
+  background: var(--accent);
+}
+
+.agent-dot-idle {
+  background: var(--text-dim);
+}
+
+.agent-dot-blocked {
+  background: var(--warn);
+}
+
+.agent-dot-done {
+  border: 2px solid var(--accent);
+}
+
+.agent-dot-unknown {
+  border: 1px dashed var(--text-dim);
+}
+
+/* 狀態文字：無襯線 12px（D11 狀態文字不用等寬；D10 badge／status 12）。 */
 .status {
-  display: inline-block;
-  padding: 1px 8px;
-  border-radius: 999px;
-  font-size: 12px;
-  color: #0f1115;
-  font-weight: 600;
+  min-width: 0;
+  font-size: var(--fs-meta);
+  font-weight: 400;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .status-working {
-  background: var(--status-working);
+  color: var(--accent);
 }
 
 .status-blocked {
-  background: var(--status-blocked);
+  color: var(--warn);
 }
 
 .status-done {
-  background: var(--status-done);
-}
-
-.status-idle {
-  background: var(--status-idle);
-  color: #0f1115;
-}
-
-.status-unknown {
-  background: var(--status-unknown);
   color: var(--text);
 }
 
-/* 頁尾：最近事件。 */
-.recent-events {
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 12px 16px;
+.status-idle {
+  color: var(--text-dim);
 }
 
+.status-unknown {
+  color: var(--text-dim);
+}
+
+/* 最近事件（D11）：兩行一筆——第一行 時間（只顯示時間部分、等寬、窄欄對齊）→ runtime →
+   kind；第二行空出時間欄，接 subject（pane／tab／workspace id，等寬）→ detail。筆與筆之間用
+   1px --line 分隔，不用每筆一塊底色。 */
 .recent-events-title {
   margin: 0 0 8px;
-  font-size: 13px;
-  color: var(--text-dim);
+  font-size: var(--fs-panel);
+  color: var(--text);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  line-height: 1.3;
 }
 
+/* task 3.3 fix round 1（設計審核 M1）：欄寬由清單統一宣告、每筆事件用 subgrid 共用，kind／
+   subject 欄在各筆之間對齊（原本每筆各自一個 grid，第二欄依各筆內容決定寬度）。
+   align-content: start：固定一屏時清單比內容高，列不被拉高。 */
 .recent-events-list {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  max-height: 320px;
-  overflow-y: auto;
+  display: grid;
+  grid-template-columns: max-content fit-content(40%) minmax(0, 1fr);
+  column-gap: 8px;
+  align-content: start;
 }
 
 .event-row {
+  grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: minmax(140px, auto) minmax(60px, auto) minmax(140px, auto) minmax(80px, auto) 1fr;
-  gap: 10px;
-  padding: 3px 4px;
-  border-radius: 4px;
-  font-size: 12px;
-  background: var(--bg-inset);
+  grid-template-columns: subgrid;
+  grid-template-areas:
+    "at runtime kind"
+    ". subject detail";
+  min-width: 0;
+  padding: 4px 0;
+  font-size: var(--fs-meta);
+  line-height: 1.4;
+  border-top: 1px solid var(--line);
 }
 
-.event-at,
-.event-runtime {
+.event-row:first-child {
+  border-top: 0;
+}
+
+.event-at {
+  grid-area: at;
+  font-family: var(--font-mono);
   color: var(--text-dim);
+  white-space: nowrap;
 }
 
-/* 畫面操作（spec cockpit-dashboard「畫面操作」）：按鈕、改綁模式提示、錯誤訊息。只用既有的
-   配色變數。 */
+.event-runtime {
+  grid-area: runtime;
+  min-width: 0;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.event-kind {
+  grid-area: kind;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.event-subject {
+  grid-area: subject;
+  min-width: 0;
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.event-detail {
+  grid-area: detail;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-wrap: pretty; /* task 5.1 fix round 1（設計 M1）：同 .connection-details > dd，避免最後一行只剩一個字 */
+}
+
+/* 畫面操作（spec cockpit-dashboard「畫面操作」）：按鈕、改綁模式提示、錯誤訊息。
+   direction-01-visual task 2.2：按鈕改採 design D4「動作按鈕」小節的第三層級中性樣式——
+   透明底、1px --text-dim 外框（--line 只有 1.6:1，看不出是按鈕）、--text-dim 文字、12px；
+   hover 時文字和外框改成 --text。這個 class 是所有面板共用的按鈕（節點動作、列首改綁、
+   banner 取消／關閉等），不分屬單一區塊，所以在 base 層直接套用，不用等各區塊各自的換皮
+   task。按鈕本身**不得使用任何狀態色**，這裡沒有引用任何 --status-*／--stage-*／--conn-*。 */
 .action-button {
   padding: 1px 8px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--text-dim);
   border-radius: 4px;
-  background: var(--bg-raised);
-  color: var(--text);
+  background: transparent;
+  color: var(--text-dim);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--fs-meta);
   font-weight: 400;
   cursor: pointer;
 }
 
 .action-button:hover {
-  background: var(--bg-inset);
-  border-color: var(--text-dim);
+  color: var(--text);
+  border-color: var(--text);
 }
 
 .action-button:focus-visible {
-  outline: 2px solid var(--status-done);
-  outline-offset: 1px;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
+
+/* direction-01-visual task 3.2：2.2 fix round 2／3 為了「節點實底色上按鈕看不見」加的暫時規則
+   （`.task-node .action-button` 改用 --bg-deep 文字／外框、焦點外框改 --bg-deep）已刪除——節點
+   改成 --surface 底之後，上面 .action-button 的第三層級中性樣式直接生效（--text-dim 對
+   --surface 約 7.7:1），running 節點按鈕的冰青焦點外框對 --surface 也 ≥3:1
+   （visual-check.js G2 兩條對比斷言守著）。 */
 
 .action-banner {
   display: flex;
@@ -531,24 +1421,102 @@ body {
   justify-content: space-between;
   gap: 12px;
   padding: 8px 16px;
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: var(--bg-base);
+  border: 1px solid var(--line);
 }
 
+/* direction-01-visual task 3.4 fix round 1（設計 I1／控制端 Ruling R36）：`.action-banner-text`
+   原本沒有 flex 屬性，預設 `flex: 0 1 auto` 加內容決定的 `min-width: auto`——文字一長，flex
+   版面會去擠壓旁邊的 `.action-button`（預設同樣是 `flex: 0 1 auto`，會被壓縮），把「關閉」
+   兩個字擠成上下兩行、按鈕變成窄高的直條。伺服器 409 原因是任意長度字串（spec 要求含回應本體
+   的 `error`），1200×720 用預設文字就會觸發，不只是窄視窗才有的問題。改成按鈕固定不縮、不換行
+   （`flex: 0 0 auto; white-space: nowrap`），文字改成可以縮、可以在任意字元（例如 API 路徑）
+   間斷行（`flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere`），折行只發生在文字欄內，
+   不會把按鈕推擠變形。 */
+.action-banner > .action-button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.action-banner-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* direction-01-visual task 3.4 fix round 1（設計 M2／控制端 Ruling R36）：錯誤提示補一個
+   aria-hidden 的 ✕ 符號，跟 Factory Floor failed 節點（design D11「狀態符號」，見
+   `.task-status-symbol`）同規格——固定 1.25em 寬、不縮、置中；顏色沿用 `.error-banner` 的
+   `--bad`（inherit，不另外宣告新色值）。改綁提示不加符號（M2 只點名錯誤提示：灰階瞇眼圖下，
+   錯誤與改綁提示原本只靠色相與文字內容區分，符號給錯誤提示多一個不靠顏色的區分點）。
+   fix round 2（設計複審 N1／N2，兩個 Minor 一起修）：
+   N1——`.action-banner-symbol` 原本繼承 `.action-banner` 的 `align-items: center`，文字折成
+   多行後符號垂直置中在整段文字旁邊，不是對齊第一行（跟 Factory Floor 節點裡符號跟文字同一行
+   的行為不一致）。改成 `align-self: flex-start`：符號與文字欄的字級／行高相同，兩者的框都從
+   同一個 flex 起始位置往下排，符號的第一行（也是唯一一行）因此自然對齊文字的第一行。
+   N2——符號和文字之間吃到 `.action-banner` 的 `gap: 12px`，比 `.task-status-symbol` 跟同一個
+   `.task-state` 裡文字的 `gap: 2px` 寬得多，兩則提示同時出現時文字起點還因此錯開 29.5px。改成
+   在符號上加負的 `margin-right`，把符號與文字的視覺間距收到跟 Factory Floor 節點一致（約
+   4px），不動 `.action-banner` 本身的 12px（改綁提示沒有符號，仍要靠 12px 撐開左緣條到文字的
+   留白）。 */
+.action-banner-symbol {
+  display: inline-block;
+  flex: none;
+  width: 1.25em;
+  text-align: center;
+  align-self: flex-start;
+  margin-right: -8px;
+}
+
+/* fix round 2（Codex medium）：D4「改綁提示：只有左緣條和文字用冰青，底色維持 --surface，
+   不做冰青實底」——首輪把改綁提示錯誤併進 blocked／warn 語意（改綁不是「受阻」，是使用者
+   主動進行中的操作），改用 --accent。
+   fix round 3（設計複審，本輪新退步 R2-1）：fix round 2 只換了顏色、沒換形狀——
+   `border-color: var(--accent)` 蓋掉 `.action-banner` 的四邊 `border: 1px solid var(--line)`
+   之後變成一個四邊冰青框，形狀正好跟 `:focus-visible` 的焦點外框、running 節點的強調外框
+   撞在一起（提示裡的「取消」按鈕一聚焦，等於冰青框裡再套一個冰青框），也違反「冰青只標
+   此刻正在工作、不與 running 搶份量」。改成 D4 指定的形狀：三邊維持 --line（回到跟
+   `.action-banner` 一致的靜態框線），左緣單獨加 2px --accent 的色條，底色改 --surface
+   （跟 `.pane-row.selected`／`.status-done` 同一種「不畫四邊冰青」語彙）。完整規則仍然只
+   用核心 token。
+   direction-01-visual task 3.4（前面 task 帶入事項 2）：`.action-banner` 的 6px 圓角會把這條
+   左緣條的兩端彎成括號形，改綁提示因此收斂進「左緣條家族」時把圓角整條拿掉（banner 本來就
+   不再需要圓角——D4 的左緣條語彙本身是直角）。 */
 .rebind-banner {
-  border-color: var(--status-blocked);
+  border-color: var(--line);
+  border-left: 2px solid var(--accent);
+  background: var(--surface);
+  color: var(--accent);
 }
 
+/* direction-01-visual task 3.4（前面 task 帶入事項 3）：錯誤提示原本是四邊 --bad 實框（底色
+   繼承 `.action-banner` 的 --bg-base），跟改綁提示的形狀不同、也偏向「大片紅底」的既有 GitHub
+   深色主題色殘留語彙。收斂進同一套「左緣條家族」：三邊維持 --line（繼承 `.action-banner`，
+   不需要再覆寫）、左緣單獨改 2px --bad 色條，底色改 --surface（跟 `.rebind-banner` 相同，兩則
+   提示因此只在文字與左緣條顏色上不同，同時出現時看得出是同一家族、也分得開）。 */
 .error-banner {
-  border-color: var(--conn-disconnected);
-  color: var(--conn-disconnected);
+  border-left: 2px solid var(--bad);
+  background: var(--surface);
+  color: var(--bad);
 }
 
-/* 改綁模式下可綁定的 pane 列多一欄放「綁定到這裡」。 */
+/* 改綁模式下可綁定的 pane 列多一行放「綁定到這裡」（direction-01-visual task 3.3）：按鈕在
+   第三行靠右，不跟兩行內容搶寬度（放在同一行的第四欄時，agent 名稱與標題會被擠到只剩省略號）。
+   底色是中性的 --focused-tint（由 --text 推導的低透明度，不是狀態色，也不用冰青——D4「改綁
+   提示：只有左緣條和文字用冰青」講的是提示列，pane 列本身不搶份量）；fix round 1 之後 pane 列
+   只有改綁目標用這個底色（HERDR 焦點改用文字標記）。 */
 .pane-row.bind-target {
-  grid-template-columns: minmax(80px, auto) minmax(60px, auto) auto 1fr minmax(120px, auto) auto;
+  grid-template-areas:
+    "state agent mark id"
+    "title title title cwd"
+    "bind bind bind bind";
   background: var(--focused-tint);
+}
+
+.pane-row.bind-target > .action-button {
+  grid-area: bind;
+  justify-self: end;
+  margin-top: 2px;
 }
 
 /* Live Output 選取（spec live-output「選定一個 pane」；design D8；task 5.3）：未 exited 的
@@ -559,37 +1527,68 @@ body {
 }
 
 .pane-row.selectable:hover {
-  background: var(--bg-inset);
+  background: var(--surface);
 }
 
+/* direction-01-visual task 2.2：焦點外框改用 design D4「焦點」的 2px --accent、外推
+   outline-offset。task 3.3 重排間距後覆核（carry 10）：外框外推 4px（offset 2＋寬 2），
+   上下由 .tab 的 4px 列距、左右由 tab 縮排 8px 與 runtime 卡 12px 內距容納，不被相鄰列的
+   底色、卡片框或 .runtime-cards 的捲動邊界蓋住。 */
 .pane-row.selectable:focus-visible {
-  outline: 2px solid var(--status-done);
-  outline-offset: -2px;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
+/* fix round 2（Codex high）：D4「冰青的形狀分工」明定選取＝--surface 底＋左緣冰青條，
+   不得整列泛冰青——fix round 1 用 color-mix 從 --accent 推導半透明底色，雖然不是字面值了，
+   但視覺上仍是整列淡冰青，違反「冰青只標『此刻正在工作』，其餘用形狀或亮度差區分，不與
+   running 搶份量」。改回 --surface 實底（D4 指定的核心 token），左緣條維持 --accent。
+   task 3.3：左緣條寬度依 D4「左緣加 2px 冰青條」（預留寬度見 .pane-row 的 border-left）。 */
 .pane-row.selected {
-  background: rgba(88, 166, 255, 0.16);
-  border-left-color: var(--status-done);
+  background: var(--surface);
+  border-left-color: var(--accent);
 }
 
 /* Live Output 面板（change live-output design D8）：#app 的兄弟節點，不在整頁重畫的範圍
-   內，沿用既有的深色語彙與間距，不做 Direction 01。沒有選取時收起、不佔版面。 */
+   內。direction-01-visual task 4.1（design D7）：面板常駐——沒有選取時也畫出來，改顯示空狀態
+   （見下方 .output-empty），不再 display: none。
+   direction-01-visual task 5.1：改版前「貼齊視窗底部」的 position: sticky／bottom: 0／
+   max-height: 45vh／margin 與 10px 16px 內距、--bg-base 底、6px 圓角全部刪除——#output 同時是
+   [data-region="output"]，那幾條規則（同 specificity、後出現）早就把它們蓋成 static／none／0、
+   12px 內距、--bg-deep 底與切角，舊宣告在任何狀態都不生效。框線、內距、底色與切角見後段
+   [data-region="output"] 的規則。 */
 .output-panel {
-  display: none;
-  position: sticky;
-  bottom: 0;
+  display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin: 0 16px 16px;
-  padding: 10px 16px;
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  max-height: 45vh;
+  /* task 4.2 fix round 1（設計審核 M2／控制端 Ruling R41）：6px → 8px。截斷提示在真機近乎常駐
+     （見 .output-truncated-notice 上方註解），貼底捲動時內容頂端常常是被捲掉一半的一行，6px
+     的間距讓它看起來像壓在提示下面；4.1 決定的「.output-text 無框線、內容直接畫在 --bg-deep
+     上」維持不動，這裡只加寬提示與內容之間的呼吸空間。 */
+  gap: 8px;
 }
 
-.output-panel.is-open {
-  display: flex;
+/* 空狀態／有選取的切換（direction-01-visual task 4.1；design D7）：`.is-open` 維持「有選取」
+   的意義（output.js 的 showPanel()／showEmptyState() 切換）。沒有選取時只畫空狀態，標題列（含
+   「取消選取」）、各提示與內容框都收起；有選取時反過來。用子代選擇器而不是各節點的 hidden
+   屬性：.output-header 等節點自己有 display 宣告，會蓋掉 UA 的 [hidden] { display: none }。 */
+.output-panel:not(.is-open) > :not(.output-empty),
+.output-panel.is-open > .output-empty {
+  display: none;
+}
+
+/* 空狀態文案（design D7）：次要文字色、不搶注意力，比照 Factory Floor 的 .floor-empty-state
+   （同字級、同色）。flex: 1 讓它佔滿面板內容區（2.1 設計 M6：空狀態時也一樣佔滿
+   data-region="output"），不是內容多高就多高；文字靠上對齊，跟有選取時標題列的位置一致。 */
+.output-empty {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* task 4.1 fix round 1（設計審核 M2）：不加內距，空狀態文字與有選取時的標題落在同一個
+     起點（面板內容區左上），切換時第一行不跳。 */
+  padding: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-panel);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .output-header {
@@ -599,22 +1598,65 @@ body {
   gap: 12px;
 }
 
+/* task 4.2（design D7）：標題（.output-title）與「過期」文字（.output-stale-label）的群組——
+   .output-header 因此仍然只有兩個直接子節點（這個群組＋「取消選取」按鈕），
+   justify-content: space-between 把群組推到左側、按鈕推到右側，行為跟改版前一樣；min-width: 0
+   讓內層 .output-title 的 overflow: hidden／text-overflow: ellipsis 在空間不足時仍生效。 */
+.output-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* fix round 1／F4（Ruling R20）：理由同 .recent-events-title，面板標題用 --fs-panel。 */
 .output-title {
+  /* task 4.1 fix round 1（設計審核 I2）：標題是 runtime／pane id（例如 win / wJ:p1），依 spec
+     「時間、id、數值與 Live Output 使用等寬字體」與 D11 用 --font-mono（Factory Floor 列首同一
+     字串已是等寬）；字級字重維持面板標題 14px／600（D10）。 */
+  font-family: var(--font-mono);
   font-weight: 600;
-  font-size: 13px;
+  font-size: var(--fs-panel);
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* 標題列「過期」文字（design D7；task 4.2）：跟面板左緣色條、原因訊息同一組 --warn 語彙
+   （--warn 對 --bg-deep 10.58:1，遠高於 4.5:1）；只在 .is-stale 時顯示（output.js setStale()
+   切換 hidden，不靠 display——沒有另外宣告 display，UA 預設的 [hidden] { display: none }
+   生效）。flex: none：面板標題很長被截斷時，這個標籤仍固定寬度、不被擠壓或跟著換行。 */
+.output-stale-label {
+  flex: none;
+  color: var(--warn);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+}
+
+/* task 4.2 fix round 1（Codex medium／設計審核 I1／控制端 Ruling R40）：長標題時「取消選取」
+   被截斷提示、「過期」標籤一起擠壓 flex 空間，min-content 只剩一個中文字寬就會折成兩行（設計
+   審核 M1，`700x900-7-long-title-stale-panel.png` 實測）。跟 `.action-banner > .action-button`
+   同一個做法：固定不縮、不換行，折行只發生在標題（`.output-title` 的 ellipsis）。 */
+.output-close {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* task 4.2 fix round 1（Codex medium／設計審核 I1／控制端 Ruling R40）：截斷提示原本用 --warn，
+   跟過期色條／標籤／原因訊息撞色。真機的 `read_output` 固定用 `ReadSource::Recent`，`truncated`
+   幾乎恆為 true（docs/research/2026-09-19/pane-read-probe.md §3）——這則提示因此近乎常駐，用
+   警示色會稀釋「過期」的警示語彙（設計審核 I1）。改為 --text-dim：它只是說明「這是最近幾行、
+   不是從頭」的常駐資訊，跟 D10「輔助資訊用 --text-dim」同一級，不是狀態警示。「pane 已不存在」
+   （.output-gone-notice）維持 --bad——那是永久消失的失敗語意（D4），不屬本輪換皮範圍。 */
 .output-truncated-notice {
-  color: var(--status-blocked);
-  font-size: 12px;
+  color: var(--text-dim);
+  font-size: var(--fs-meta);
 }
 
 .output-gone-notice {
-  color: var(--conn-disconnected);
-  font-size: 12px;
+  color: var(--bad); /* fix round 1（Ruling R20）：disconnected→--bad */
+  font-size: var(--fs-meta);
   font-weight: 600;
 }
 
@@ -622,31 +1664,825 @@ body {
    跟 .output-gone-notice 用不同顏色語彙區分：這裡是「仍在重試中」的暫時性失敗，不是永久
    消失。 */
 .output-error-reason {
-  color: var(--status-blocked);
-  font-size: 12px;
+  color: var(--warn); /* fix round 1（Ruling R20）：blocked→--warn */
+  font-size: var(--fs-meta);
+  text-wrap: pretty; /* task 5.1 fix round 1（設計 M1）：同 .connection-details > dd，避免最後一行只剩一個字 */
 }
 
 /* 等寬字體、保留換行與空白（spec live-output「輪詢與顯示」）；內容一律以 textContent 寫入
    （output.js），這裡只管外觀。內容超過一屏時 pre 本身可捲動，貼底判定量的就是這個框。 */
 .output-text {
+  /* direction-01-visual task 4.1（2.1 設計 M6）：flex: 1 讓內容框撐滿面板剩下的高度；≥760px
+     面板有固定高度時另外拿掉 max-height（見下方 min-width: 760px 的規則）。 */
+  flex: 1 1 auto;
   margin: 0;
-  padding: 8px;
-  background: var(--bg-inset);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  font-family: "Cascadia Mono", "Consolas", "SFMono-Regular", Menlo, monospace;
-  font-size: 12px;
-  line-height: 1.5;
+  /* task 4.1 fix round 2（設計審核 N1）：左右內距 0，輸出內容與標題列、空狀態從同一條左緣起排
+     （面板本身已有 12px 內距）；上下 8px 保留與標題列的間隔。 */
+  padding: 8px 0;
+  /* task 4.1 fix round 1（設計審核 I1）：內容框撐滿面板後，改版前的 --surface 底＋框線＋4px
+     圓角會變成佔面板大半的卡片，蓋掉 design D8「底色用 --bg-deep，像一扇嵌進面板的窗」——
+     改為透明、無框線、無圓角，輸出文字直接畫在面板的 --bg-deep 上（D7 的對比也以此為前提）。 */
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.4; /* D10：Live Output 行高 1.4（task 4.1 fix round 1／設計審核 M1） */
   white-space: pre;
   overflow: auto;
   min-height: 4em;
   max-height: 40vh;
 }
 
-/* 「標為過期」（spec live-output「失敗與消失的呈現」）：output.js 的 setStale() 加在
-   #output 上；這裡用 opacity 讓內容框呈現看得出來的視覺差異（brief 逐字要求：CDP 腳本用
-   getComputedStyle 驗，不能只加 class）。不動 .output-gone-notice／.output-error-reason
-   本身的顏色，這兩個節點的可見性已經足以傳達狀態。 */
+/* 「標為過期」（spec live-output「失敗與消失的呈現」；direction-01-visual task 4.2；design
+   D7）：output.js 的 setStale() 加在 #output 上。原本用 opacity 讓內容框呈現看得出來的視覺
+   差異，會把文字對比拉到 4.5:1 以下（違反「Direction 01 視覺語彙」，見
+   docs/research/2026-09-23/visual-check.js CT1 的 stale 子斷言）——改為內容文字直接改色
+   --text-dim（對 --bg-deep 9.04:1，getComputedStyle color 驗得到差異）。不動
+   .output-gone-notice／.output-error-reason 本身的顏色，這兩個節點的可見性已經足以傳達狀態；
+   .output-error-reason 本來就是 --warn（見上方），符合 D7「原因訊息用 --warn」，本 task 不用改。 */
 .output-panel.is-stale .output-text {
-  opacity: 0.55;
+  color: var(--text-dim);
+}
+
+/* 面板左緣 --warn 色條（design D7；task 4.2）：只在過期時出現。用 inset box-shadow，不是
+   加寬 border-left——box-shadow 不參與 box model，過期切換時不會讓 padding-left／content-box
+   左緣跟著位移（4.1 的 LO1「[LO1/align]」守著空狀態／標題列／輸出內容三者的 content-box 左緣
+   對齊，這條色條不能打壞它；如果改成 2px --warn 的 border-left，會把原本 1px --line 的左框
+   寬度多推 1px，content-box 就會跟著往右移 1px）。色條落在既有 1px --line 框線內側的內距
+   區，被同一個 [data-region="output"] 的 clip-path 左上切角自然裁掉最上面約 10px（跟框線本身
+   可見的範圍一致：clip-path 的多邊形左緣本來就是從 y=10px 開始才出現），下方完整可見，符合
+   「面板左緣 --warn 色條……必須在切角下完整可見」。 */
+.output-panel.is-stale {
+  box-shadow: inset 2px 0 0 0 var(--warn);
+}
+
+/* ---------------------------------------------------------------------------
+   外框 grid（direction-01-visual task 2.1；design D2／D3；fix round 1 依控制端 Ruling R15
+   與使用者 2026-09-24 對 M9 的裁決整段重寫）。`.shell` 包住 `#app`（index.html 設
+   display: contents，讓 renderState() 畫出的各區塊直接參與這個 grid）與 `#output`
+   （Live Output，`#app` 的兄弟節點）。以下全部是新增規則（task 2.1 當時暫留的 .page／
+   #app{min-height:100vh} 等舊樣式已在 direction-01-visual task 5.1 清理時刪除）。
+
+   四種情形（design D3，寬跟高各自獨立判斷）：
+     - < 760px：單欄，取消固定高度，整頁捲動（.shell 沒有額外 @media 覆寫時的預設值）；
+       順序依 M7：頂列→Project→banner→Floor→runtime→Output→最近事件→底列。
+     - 760–1199px：兩欄（左欄＋中欄），runtime／最近事件併入中欄、排在 Live Output 下方；
+       取消固定高度、整頁捲動；Live Output 改固定高度 clamp(320px, 50vh, 560px) + 內部捲動；
+       banner 只占中欄（I1），不再橫跨左欄。
+     - ≥1200px 且 <720px 高：仍三欄，取消固定高度、整頁捲動；Live Output 同上固定高度＋內部
+       捲動；Factory Floor 最小高度維持 240px、新增最大高度上限（M9，使用者 2026-09-24 裁決：
+       約「視窗高度－頂列－提示列－200px」，超過的內容在 Factory Floor 內層捲動容器捲動，
+       讓第一屏至少看得到 Live Output 開頭）；banner 只占中欄。
+     - ≥1200px 且 ≥720px 高：固定一屏（.shell 高 100dvh、overflow: hidden，不整頁捲動）；
+       三欄；banner 只占中欄，且只從 Factory Floor 的份額扣、不動 Live Output 的份額（I1）；
+       右欄 runtime／最近事件改成獨立列軌道，比例約 70／30（M4），不再直接綁定中欄的
+       55／45。
+
+   I2（設計審核，區塊本身是不捲動的框、內層才是捲動容器）：Factory Floor
+   （data-region="floor" 外層＋沿用舊 class="projects" 的內層）、runtime 清單
+   （data-region="runtimes" 外層＋沿用舊 class="runtime-cards" 的內層）、最近事件
+   （data-region="events"，標題固定＋.recent-events-list 內層捲動，既有結構本來就這樣分）都
+   照這個模式；Live Output（#output）的內層捲動容器仍是既有的 .output-text（direction-01-visual
+   task 4.1 讓它撐滿面板，M6；見 .output-text 與 min-width: 760px 的規則）。
+   這樣之後 D8 的切角與 3.2 的 sticky 欄首／列首都能掛在「框」這一層，不會
+   跟著內層的捲動位置一起跑掉。M3：只有這四個會捲動的框需要 overflow: hidden；topbar／
+   banner／projects（左欄）／statusbar 維持預設 overflow: visible，避免裁掉鍵盤焦點外框。
+--------------------------------------------------------------------------- */
+
+/* design D2：#app 不生成自己的 box，renderState() 畫出的各區塊（data-region）因此直接是
+   `.shell` 的 grid item，用各自的 grid-area 就位（改版前的 #app { min-height: 100vh } 在
+   display: contents 之下不生效，direction-01-visual task 5.1 刪除）。 */
+#app {
+  display: contents;
+}
+
+/* --shell-topbar-h 的算式裡有 em：註冊成 <length> 之後，它在宣告處（.shell）就算成絕對長度
+   再往下繼承，.shell 的 --shell-avail 與頂列的 height 拿到的是同一個 px 值，getComputedStyle
+   也讀得到數字（未註冊的自訂屬性只會回傳原始算式字串）。 */
+@property --shell-topbar-h {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+
+/* --shell-statusbar-h 同理（direction-01-visual task 5.1）：算式裡有 var(--fs-meta)，註冊之後在
+   .shell 就算成 px，底列的 min-height 與各斷點的 calc() 拿到同一個值。 */
+@property --shell-statusbar-h {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+
+.shell {
+  /* 頂列／底列／單則提示目前的實測高度：`--shell-banner-1` 只是「一則」提示的代表值，用於
+     M9 的 Factory Floor 高度上限估算（那個情境允許整頁捲動，banner 本身不設上限，這裡只是
+     估算 Factory Floor 該讓多少）。三個值集中放這裡，下面各斷點的 calc() 共用。
+     direction-01-visual task 2.3：頂列改成「產品名＋runtime 燈號」、底列改成「通道狀態＋
+     version」後重新量過（visual-check.js V1／V4 在 700～1536 寬全數量到一致值），
+     `--shell-topbar-h` 從 task 2.1 的估計值 47px 改成實測值 45px；`--shell-statusbar-h`
+     維持 32px（實測仍然相符，沒有變動）。fix round 3／Ruling R17：拿掉
+     `--shell-banner-2`（曾經是 banner 的 max-height，兩則提示的代表值 84px）——banner 永遠
+     完整顯示，不再設任何上限。
+     頂列高度（fix round 5／Ruling R27：不寫死 px，跟著字級走）＝一行文字（行高倍數 × 字級，
+     em 以 .shell 與頂列共同繼承的 --fs-panel 計）＋上下 padding 各 12px＋上下框線各 1px。
+     頂列各斷點的自然高度就是這個算式；寬 ≥1200（不論高度，direction-01-visual task 5.1／R28）把
+     頂列寫死成這個高度，上下 padding 那 24px 改當橫向捲軸的 gutter（thin 捲軸約 11px），燈號那一行
+     用 --fs-meta，不會高於產品名那一行。預設字級下約 45.6px。
+     底列高度（direction-01-visual task 5.1，比照頂列 R27：不寫死 32px，跟著字級走）＝一行文字
+     （--statusbar-line-height × --fs-meta，底列與通道徽章的行高都繼承這個倍數）＋通道徽章
+     （.channel-status）上下 padding 各 2px＋底列上下 padding 各 5px＋上框線 1px；底列內最高的
+     就是通道徽章，所以這個算式就是底列的自然高度。預設字級下約 31.8px（原本寫死 32px）。 */
+  --topbar-line-height: 1.4;
+  --shell-topbar-h: calc(var(--topbar-line-height) * 1em + 2 * 12px + 2px);
+  --statusbar-line-height: 1.4;
+  --shell-statusbar-h: calc(var(--statusbar-line-height) * var(--fs-meta) + 2 * 2px + 2 * 5px + 1px);
+  --shell-banner-1: 44px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  /* M7（design 審核，2026-09-24 由控制端確認、不需使用者裁決）：Project 排在 Factory Floor
+     前、banner 緊貼在 Factory Floor 正上方（跟三欄版「中欄上方」語意一致）、runtime 排在
+     Live Output 前（單欄時是「清單→明細」關係）。 */
+  grid-template-areas:
+    "topbar"
+    "projects"
+    "banner"
+    "floor"
+    "runtimes"
+    "output"
+    "events"
+    "statusbar";
+  gap: 12px;
+  padding: 12px;
+  box-sizing: border-box;
+  min-height: 100vh;
+}
+
+/* 每個區塊帶 data-region（design D2）：一律 min-width／min-height: 0——grid item 預設
+   min-height: auto 會被內容撐開，蓋掉 overflow。設成 0 之後子層的 overflow: auto 才會真的在
+   自己的邊界內生效，而不是把外層一起撐大。 */
+[data-region] {
+  min-width: 0;
+  min-height: 0;
+}
+
+/* I2：Factory Floor／Live Output／runtime 清單／最近事件是會捲動的區塊，本身是不捲動的框
+   （overflow: hidden），撐滿當下的 grid-area，真正的捲動發生在內層。
+   M3：topbar／banner／projects（左欄）／statusbar 不在這裡，維持預設 overflow: visible——
+   direction-01-visual task 3.1 加入真正的 Project 清單後**刻意不**把左欄併進這組（見下面
+   「左欄捲動策略」的說明；跟 2.1 當時「還是空占位」的理由不同，是量測後發現的限制，不是疏漏）。
+   fix round 1 除錯記錄：`[data-region="output"]` 不能跟著 floor／runtimes／events 一起套用
+   `display: flex`——`#output` 沒有選取時要收起（既有的 `.output-panel { display: none; }`／
+   `.output-panel.is-open { display: flex; }`，spec live-output「沒有選取時顯示空狀態」的
+   前身行為），這條規則的 `[data-region="output"] { display: flex }` 跟 `.output-panel` 是
+   同 specificity（都是一個 class／屬性選擇器），只因為這裡在樣式表裡出現得比較晚就贏了，
+   把「沒有選取時應該 display: none」蓋掉、變成面板永遠可見（live-output-check.js A 段
+   「沒有選取時面板收起」FAIL，現場抓到）。`overflow: hidden` 對 `display: none` 的元素無害
+   （不會渲染，遑論捲動），所以 output 只留 overflow: hidden，display 交給既有的
+   .output-panel／.is-open 機制決定。direction-01-visual task 4.1：.output-panel 本身改為常駐
+   display: flex（design D7），.is-open 只決定面板裡畫空狀態還是標題與內容，這裡不必重複宣告。 */
+[data-region="floor"],
+[data-region="runtimes"],
+[data-region="events"] {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+[data-region="output"] {
+  overflow: hidden;
+}
+
+/* I2 的內層捲動容器：Factory Floor＝.projects（沿用舊 class）、runtime 清單＝
+   .runtime-cards（沿用舊 class）——兩者都是 renderState() 新增的外層框底下唯一的子節點，
+   flex: 1 填滿框剩下的高度、min-height: 0 讓 overflow: auto 真的生效。 */
+[data-region="floor"] > .projects,
+[data-region="runtimes"] > .runtime-cards {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* 左欄捲動策略（direction-01-visual task 3.1；跟 floor／runtimes／events 的 I2 模式刻意不同，
+   實測後才排除，不是隨手漏掉）：
+   - 頁面允許整頁捲動的三種版面（<760、760–1199、≥1200 但 <720 高）：`[data-region="projects"]`
+     維持預設 overflow: visible，讓左欄自然長高，頁面因此變長——這正是搭配下面「左欄
+     sticky」要的效果：`position: sticky` 要能在整段捲動範圍內生效，它跟它自己所有祖先都
+     不能有 `overflow` 不是 `visible`；曾經比照 floor／runtimes／events 把左欄也包進 I2
+     （`overflow: hidden` ＋內層 `.project-list` 再 `overflow: auto`），結果 sticky 完全
+     失效（`.project-list` 的最近可捲動祖先變成 `[data-region="projects"]` 自己，這個框沒有
+     實際可捲的範圍，sticky 沒有偏移空間可用，量到的行為等同 `position: static`）；改成
+     sticky 掛在外層 `[data-region="projects"]` 本身、且它與祖先鏈都不設 `overflow: hidden`
+     之後，sticky 才真正跟著 body／html 的捲動生效（見下面 media query）。
+   - 唯一固定一屏的版面（≥1200 且 ≥720 高，`.shell { overflow: hidden }`）：sticky 不適用
+     （沒有頁面捲動可以「跟著黏」），這裡改用 I2 同款模式（框 overflow: hidden＋內層
+     `.project-list` 捲動），避免 Project 很多時被 `.shell` 硬裁掉、無法看到超出的項目——見
+     下面 `@media (min-width: 1200px) and (min-height: 720px)` 區塊。 */
+[data-region="projects"] > .project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* fix round 2／I2（設計複審 r1）：`.ff-stage-header` 往上找到的第一個捲動祖先必須就是
+   `.projects`（上面那條規則），sticky 欄首／列首才有正確的基準可以黏。round 2 當時用一條
+   `.factory-floor { overflow-x: visible; }` 覆寫蓋掉舊的 `overflow-x: auto`（任一軸不是
+   visible 時另一軸會被算成 auto，`.factory-floor` 就會攔在欄首與 `.projects` 之間）；
+   direction-01-visual task 3.2 直接從 `.factory-floor` 的基本規則拿掉 overflow，這條覆寫
+   跟著刪除（visual-check.js V1 的「欄首往上第一個捲動祖先」斷言守著）。 */
+
+/* fix round 3／N3（設計複審 r2 新找到的退步）：上面把 `.factory-floor` 改成
+   `overflow-x: visible` 之後，網格的橫向溢出改由 `.projects` 承接（I2 的目的），但
+   `.project` 面板（框線、底色、Project 標題、warnings 與 workstream 列首的所在層）本身仍是
+   容器寬度，沒有跟著網格變寬——10 個 stage 橫向捲動時，S6 之後的欄位直接畫在面板外側的頁面
+   底色上，面板的框線在網格中段就結束，Project 標題與列首也被整段捲出畫面（`.factory-floor`
+   在 `.project` 裡面，捲動 `.projects` 時 `.project` 整塊一起橫向平移，但它自己的寬度
+   沒有跟著撐開，導致「框」比「內容」窄）。
+   第一版修法在這裡加 `width: max-content`，被 fix round 3 自查抓到新的迴歸：CSS Flexbox
+   規格（§9.9）規定「計算 `flex-wrap: wrap` 容器的 max-content 尺寸時，視同
+   `flex-wrap: nowrap`」，`.ff-row-actions`／`.task-actions` 都是 `flex-wrap: wrap`，
+   `width: max-content` 會讓瀏覽器去問 `.project` 的 max-content 尺寸，連帶問到這兩種按鈕列
+   「擠成一行」的寬度，把面板撐得比實際需要的還寬，即使 stage 數很少的預設投影也會被撐出可視
+   範圍，讓某些按鈕卡在裁切邊界上疊到 `.projects` 的（overlay）捲軸，點不到本人
+   （live-output-check.js E 段命中測試抓到，見 `.superpowers/sdd/tasks/task-2.1-report.md`
+   fix round 3 章節）。改成 `min-width` 而不是 `width`／`max-content`：面板寬度的下限直接由
+   `render.js` 的 `renderProject()` 用跟 `renderFactoryFloor()` 設 `gridTemplateColumns`
+   同一組數字（`minmax(160px, auto)`、`minmax(140px, 1fr)`、`gap: 6px`）用純算術算出來，寫成
+   inline `min-width: max(100%, …px)`，不觸發瀏覽器對子樹做 intrinsic-size 查詢，
+   `.ff-row-actions`／`.task-actions` 照正常版面演算法算、該怎麼換行就怎麼換行；這裡的
+   `min-width: 100%` 是 JS 算不出來時（理論上不會發生，防禦用）的後備值。 */
+[data-region="floor"] > .projects > .project {
+  min-width: 100%;
+  box-sizing: border-box;
+}
+
+/* 最近事件的標題固定在上方、清單本身捲動（render.js 本來就是這個 DOM 結構：h2 在前、
+   ul.recent-events-list 在後，這裡只是把它們納入 I2 的框／內層模式）；清單填滿框剩下的高度
+   （direction-01-visual task 5.1：改版前 .recent-events-list 自己的 max-height: 320px 與這裡
+   蓋掉它的 max-height: none 一起刪除——清單永遠在 data-region="events" 裡，舊值不會生效）。 */
+[data-region="events"] > .recent-events-title {
+  flex: 0 0 auto;
+}
+
+[data-region="events"] > .recent-events-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+[data-region="topbar"] {
+  grid-area: topbar;
+}
+
+[data-region="banner"] {
+  grid-area: banner;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* fix round 3／控制端 Ruling R17：banner 永遠完整顯示，不設任何 max-height，不得裁切
+     ——fix round 2 曾經給它 `max-height: var(--shell-banner-2)`（84px，1536 寬量到的兩則
+     提示高度），中欄變窄、錯誤文字折成兩行時內容會超過 84px，一樣被裁掉（跟 fix round 2 的
+     「grid row track 被壓縮」是不同機制，但外觀症狀相同：改綁提示與「取消」被切掉一半）。
+     UI 狀態最多只有 error＋rebind 兩則，不需要上限；拿掉 max-height 與 overflow: auto，讓
+     下面固定一屏段落的 `min-content` 列軌道完整容納內容，需要多少高度就給多少。
+     fix round 2 的 `min-height: auto` 蓋掉 `[data-region] { min-height: 0; }` 理由不變，
+     保留：固定一屏高度緊繃時，banner 是 grid 裡唯一「不得退讓」的軌道（R17 的優先序第一
+     順位），`min-height: 0` 會讓它的自動最小尺寸變成 0、失去這個保護。 */
+  min-height: auto;
+}
+
+[data-region="projects"] {
+  grid-area: projects;
+  /* direction-01-visual task 2.1 遺留：窄視窗（< 760px）下左欄當時是空占位，給個底線高度
+     避免變成 0×0（getBoundingClientRect 全零時視覺驗收腳本會判定它「不存在」）。task 3.1
+     加入真正的 Project 清單後這條下限通常不會生效（清單本身就有高度），保留無害，拿掉風險
+     比留著大（沒有 Project 的空狀態文字同樣需要一點高度才看得到）。 */
+  min-height: 48px;
+}
+
+/* 左欄在部分整頁捲動的版面下維持可見（design 審核 M8 carry-over，2.1 記錄、task 3.1 落地／
+   fix round 1／設計審核 I1、M1 修正範圍與參數）。
+   **I1（Important，設計審核）：< 760px 單欄不做 sticky。** fix round 1 之前三種整頁捲動版面
+   （<760、760–1199、≥1200 但 <720 高）都套用同一組 sticky；單欄時左欄和其他區塊同寬，貼頂
+   後 Factory Floor／runtime／最近事件全部從它底下捲過去，第一列節點被蓋掉一半，且加上 sticky
+   底列後最多 44% 的視窗高度被固定佔用（審核截圖 `fixture-700x900-scroll303.png`／
+   `many-700x900-scroll421.png`）。改法：媒體查詢排除 `< 760px`（下面條件改成
+   `(min-width: 760px) and (max-width: 1199.98px)`），單欄時 `[data-region="projects"]`
+   回到一般文件流（沒有這個 media query 涵蓋，預設 `position: static`）——單欄本來就是由上往下
+   讀，要切換 Project 就捲回頂端，是單欄版面的常見做法；2.1 設計審核 M8 的原始建議本來就只寫
+   「可整頁捲動的兩欄模式」，760–1199 與寬但矮兩種才是 sticky 真正要處理的情境。
+   **移除全域 `[data-action] { scroll-margin-top: 40vh; }`**（規格對照 Minor 1、設計審核 I1
+   都指出這條規則作用在所有帶 data-action 的可互動元素，不只左欄命中測試涉及的那幾個；I1 也
+   指出它「治標不治本」，真正的病灶是單欄時 sticky 蓋住內容，不是可互動元素的捲動對齊點沒留
+   緩衝）。拿掉單欄 sticky、加上下面 M1 的 `align-self: start` 之後，剩下的 760–1199／寬但矮
+   兩種版面重跑 V1–V4 與 P1，700×900 的命中測試（`scrollIntoView({block:'start'})` 觸發）
+   不需要它也全部通過——原本「sticky 元素在整個頁面可捲動範圍內幾乎全程貼頂」的行為，是
+   `align-items: stretch`（grid 預設）把 `[data-region="projects"]` 這個 sticky 元素的框
+   撐成跟同一組列一樣高（760–1199 時是右側 banner／floor／output／runtimes／events 疊起來的
+   總高度）造成的：sticky 的「貼多久」受它自己框的高度限制，框被撐得跟整個可捲動範圍一樣高，
+   自然幾乎全程都貼著。**M1（Minor，設計審核）：加 `align-self: start`** 讓這個 grid item
+   不再被拉伸、改成用自己的內容高度（受下面 `max-height` 限制），sticky 的「貼多久」因此正確
+   收斂到它自己那個小框的範圍，不再需要 `scroll-margin-top` 這種治標的緩衝。
+   **M1：`top: 0` → `top: 12px`、`max-height: 40vh` → 貼合可用高度的算式。** 原本貼齊視窗最
+   上緣，跟其他面板永遠和視窗邊緣留 12px 間距的樣子不一致（審核截圖
+   `fixture-1100x900-scroll333.png`：左欄上框線直接貼在 y=0，像被切掉）；`40vh` 是任意經驗值，
+   跟其他面板「用滿可用高度、Project 多才內捲」的樣子也不一致（`many-1100x900-top.png`：12 個
+   Project 時左欄卡在 358px、下面卻空了約 440px）。改用 `top: 12px`（沿用 `.shell` 的 12px
+   面板間距）。
+   **fix round 2／設計審核 N1(b)／控制端 Ruling R30：`max-height` 改成依頁面頂端（scrollY=0）
+   時的位置算，不是依「已經貼住 top:12」的位置算。** fix round 1 的算式
+   `calc(100dvh - 12px - var(--shell-statusbar-h) - 12px)` 隱含假設左欄一開始就貼在
+   `top: 12px`，但 sticky 元素在**還沒捲到需要貼住之前**，仍然照普通文件流排版——頁面頂端時
+   `[data-region="projects"]` 的框從「頂列下方」開始（y ≈ `.shell` 頂端 padding 12px ＋頂列
+   高度 `--shell-topbar-h` ＋列距 12px），不是從 `top: 12px` 開始，沿用同一個
+   `max-height` 會讓框的底緣比視窗底部還低 40–60px、壓到 sticky 底列上面（審核截圖
+   `many-1100x900-top.png`：底列「cockpit 服務」整段被左欄蓋住；`many-1280x650-top.png`：
+   左欄底緣甚至超出視窗）——Project 數量夠多（1100×900 下約 9 個以上）才會觸發，2 個 Project
+   的 fixture 量不到。改成扣掉頂列高度＋三個 12px 間距（`.shell` 頂端 padding、頂列到左欄的
+   列距、左欄到底列的列距）：`calc(100dvh - var(--shell-topbar-h) - 3 * 12px -
+   var(--shell-statusbar-h))`。頁面頂端時框的底緣因此正好停在底列上方 12px；捲動貼住
+   `top: 12px` 之後，框底緣會比視窗底部往上多留一些空白（框本來就沒有再長高的理由，這個算式
+   本來就是抓「最壞情況＝頁面頂端」的上限），不會蓋到任何東西，也解掉了 fix round 1 遺留的
+   「捲到底時左欄底緣跟底列頂緣疊在一起、中間沒有間距」的問題（審核 `many-1100x900-max.png`，
+   不影響判讀但這裡一併修掉）。z-index 的防線見上面 `[data-region="statusbar"]` 規則旁的
+   N1(a) 註解——兩個修法都做，任何一個算錯或算式本身在极端組合下有誤差時，另一個仍然守得住
+   「底列永遠看得到」這個承諾（控制端 Ruling R30）。 */
+@media (min-width: 760px) and (max-width: 1199.98px), (min-width: 1200px) and (max-height: 719.98px) {
+  [data-region="projects"] {
+    position: sticky;
+    top: 12px;
+    z-index: 1;
+    align-self: start;
+    max-height: calc(100dvh - var(--shell-topbar-h) - 3 * 12px - var(--shell-statusbar-h));
+    overflow-y: auto;
+  }
+}
+
+[data-region="floor"] {
+  grid-area: floor;
+}
+
+/* #output 是 `.shell` 的一般 grid item，位置、高度與格線對齊完全交給 grid-area 與下面各斷點
+   各自設定的 height（task 2.1 fix round 1／design 審核 M1 當時用 position: static 等宣告蓋掉
+   改版前 .output-panel 的 sticky／45vh／margin；direction-01-visual task 5.1 連同被蓋掉的
+   舊宣告一起刪除，見 .output-panel 上方註解）。 */
+[data-region="output"] {
+  grid-area: output;
+}
+
+[data-region="runtimes"] {
+  grid-area: runtimes;
+}
+
+[data-region="events"] {
+  grid-area: events;
+  /* task 3.3 fix round 1（Ruling R34）：整頁捲動的版面（<1200，或 ≥1200 但 <720 高）不給最近
+     事件高度上限，事件多時跟著整頁捲動（design D3「取消固定高度、整頁捲動」）；只有固定一屏時
+     由列軌道決定高度、在 .recent-events-list 內部捲動。 */
+}
+
+/* I1（設計審核，task 2.3 fix round 1）：整頁捲動的版面（<1200 寬，或 ≥1200 寬但 <720 高）
+   下，底列原本只是 `.shell` 最後一個 grid 列，捲動到那裡才看得到；通道斷線時使用者若還沒
+   捲到底，第一屏完全看不到任何斷線訊號（1280×650 實測 top=724，700×900 實測
+   top=1820，兩者都遠超視窗高度）。改成 `position: sticky; bottom: 0`：底列是這個捲動容器
+   （body／html——`.shell` 在這些版面沒有自己的 overflow，見下方各斷點）裡最後一個元素，
+   sticky 從導覽開始就會貼在視窗底部（沒有後續內容需要它「讓開」）。底色改 --bg-deep、
+   上緣加 1px --line，避免上方內容捲動時透出來、也讓它在視覺上像一條固定的狀態列而不是隨頁
+   面浮動的懸浮元素。固定一屏（`≥1200` 且 `≥720` 高）本來就整屏可見，下面的媒體查詢改回
+   position: static（sticky 在 `.shell { overflow: hidden }` 底下沒有機會真的觸發，改回
+   static 只是明確表態，不依賴「沒有可捲動祖先所以視覺無差異」這個隱含事實）。 */
+[data-region="statusbar"] {
+  grid-area: statusbar;
+  /* direction-01-visual task 5.1：高度由字級推導（算式見 .shell 的 --shell-statusbar-h），行高
+     明寫成同一個倍數，文字放大時底列跟著變高、不裁切內容，固定一屏的 --shell-avail 也扣得對。 */
+  min-height: var(--shell-statusbar-h);
+  line-height: var(--statusbar-line-height);
+  display: flex;
+  align-items: center;
+  padding: 5px 16px;
+  color: var(--text-dim);
+  font-size: var(--fs-meta);
+  position: sticky;
+  bottom: 0;
+  background: var(--bg-deep);
+  border-top: 1px solid var(--line);
+  /* fix round 2／設計審核 N1(a)／控制端 Ruling R30：底列 sticky 承諾通道狀態永遠看得到——
+     任何區塊都不得蓋住它，z-index 固定比左欄 sticky（見下面 media query，z-index: 1）高，
+     不管左欄的高度算式之後有沒有算錯，底列都贏。跟左欄的修法分開、兩個都做（R30：只做
+     z-index 會讓左欄清單本身在視窗底部被底列蓋住看不到最後幾項；只做左欄的 max-height，
+     捲到底時兩者框線相疊、間距是 0，仍然可能因為子像素誤差互相蓋到）。 */
+  z-index: 2;
+}
+
+/* ---------------------------------------------------------------------------
+   design D8 面板裝飾（direction-01-visual task 2.2）：只有 Factory Floor 與 Live Output
+   兩個面板有切角＋刻度，其餘面板不切角、不加刻度。裝飾（clip-path／背景／框線）掛在「框」
+   本身（[data-region="floor"]／[data-region="output"]，都是 task 2.1 定案、不捲動的外層），
+   不掛在會捲動的內層（.projects／.output-text），才不會跟著捲動位置一起跑掉（task 2.1
+   設計審核 carry-over：「The D8 corner cut, frame border and background must live on the
+   region frame, so they don't scroll away with content」）。左欄與右欄（projects／
+   runtimes／events）不切角、不加刻度，只用 1px --line 框線加底色層次表現邊界（design D8
+   「左欄與右欄」）；.recent-events 已經是 data-region="events" 本身、既有規則的
+   background／border 已經在檔案開頭的 sed 式改名（--bg-raised→--bg-base、--border→--line）
+   時自動換成新 token，這裡重複列出只是讓四個框的規則放在一起、方便對照，不衝突。
+   fix round 1／F3（設計審核）：三個 region 框的圓角與內距統一——events 原本沿用
+   `.recent-events` 舊規則的 6px 圓角、12px 16px 內距，跟 projects／runtimes 的直角、8px
+   內距不一致；這裡把 events 併進同一組規則（同 specificity、後出現，蓋掉 `.recent-events`
+   舊值），三個框一律直角、8px 內距。
+   direction-01-visual task 3.3 fix round 1（使用者 2026-09-25 裁決；design D11 同步更新）：
+   runtimes 維持在這組（區塊一層框），區內的 runtime 不畫四邊框、只用上方分隔線（見
+   .runtime-card），所以不會有 2.2 設計審核 F7 的框中框。 */
+[data-region="projects"],
+[data-region="runtimes"],
+[data-region="events"] {
+  border: 1px solid var(--line);
+  background: var(--bg-base);
+  border-radius: 0;
+  padding: 8px;
+}
+
+/* Factory Floor／Live Output 共用：10px 左上／右下切角（design D8「10px 切角」）、不透明
+   邊框、至少 12px 內距（design D8「面板內距至少 12px，避免切到子元素的焦點外框與 running
+   柔光」）、拿掉圓角（切角與圓角同框衝突，兩個未切的直角維持 90°）。
+   fix round 1／F1（設計審核 Important）：切角補線原本用 ::before／::after 偽元素定位——
+   偽元素 position: absolute 的 containing block 是最近定位祖先的 padding box，但下面的
+   clip-path 座標是以 border box 為準，兩者基準不同，疊上偽元素自己刻意內縮的 0.5–1px 之後，
+   實測補線整條浮在框內約 2.5px、兩端跟框線之間各有約 2px 缺口（1536／700 寬皆然，Live
+   Output 因為底色跟頁面同色，缺口更明顯）。改法：拿掉兩個偽元素，改用兩層跟 clip-path
+   同基準（border-box）的線性漸層背景畫補線——`background-origin`／`background-clip` 一起指定
+   `border-box`（`.../10px 10px no-repeat border-box` 這個寫法在 background 簡寫的最後一個
+   關鍵字同時設定 origin 與 clip），座標就不會再跟 clip-path 的 border-box 座標系統對不起來。
+   幾何：10×10 的正方形裡，`linear-gradient(to bottom right, ...)` 的 50% 等值線通過
+   (10,0)–(0,10)，恰好是左上切角的裁切邊本身（clip-path 的頂點正是這兩點）；顏色 stop 從
+   50% 到 calc(50% + 1px) 整段都落在「裁切邊往內」那一側，不會被同一個 clip-path 切掉一半。
+   右下角用 `to top left`、對齊 `bottom right`，同一組數學鏡射過去。兩個偽元素讓給 3.2
+   （D8 的刻度若改回偽元素形式可以用；本輪不動刻度骨架，見 fix round 1 report）。 */
+[data-region="floor"],
+[data-region="output"] {
+  /* 切角補線的顏色與粗細（下面兩條漸層共用）；Live Output 聚焦時改成焦點框的冰青 2px，見
+     [data-region="output"]:focus-visible（direction-01-visual task 5.1）。 */
+  --corner-line-color: var(--line);
+  --corner-line-width: 1px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  clip-path: polygon(
+    10px 0,
+    100% 0,
+    100% calc(100% - 10px),
+    calc(100% - 10px) 100%,
+    0 100%,
+    0 10px
+  );
+}
+
+[data-region="floor"] {
+  /* direction-01-visual task 3.2（design D8，使用者 2026-09-24 裁決）：2.2 留在標題列右側的
+     靜態刻度骨架（repeating-linear-gradient）已拿掉——刻度改成每個 stage 欄首上緣的 DOM 元素
+     （.ff-stage-tick），跟著欄位一起捲動、永遠對齊。這裡只剩兩層切角補線加底色。 */
+  background:
+    linear-gradient(
+        to bottom right,
+        transparent 50%,
+        var(--corner-line-color) 50% calc(50% + var(--corner-line-width)),
+        transparent calc(50% + var(--corner-line-width))
+      )
+      top left / 10px 10px no-repeat border-box,
+    linear-gradient(
+        to top left,
+        transparent 50%,
+        var(--corner-line-color) 50% calc(50% + var(--corner-line-width)),
+        transparent calc(50% + var(--corner-line-width))
+      )
+      bottom right / 10px 10px no-repeat border-box,
+    var(--bg-base);
+}
+
+[data-region="output"] {
+  /* design D8「Live Output……底色用 --bg-deep，像一扇嵌進面板的窗」：只有切角，不加刻度。 */
+  background:
+    linear-gradient(
+        to bottom right,
+        transparent 50%,
+        var(--corner-line-color) 50% calc(50% + var(--corner-line-width)),
+        transparent calc(50% + var(--corner-line-width))
+      )
+      top left / 10px 10px no-repeat border-box,
+    linear-gradient(
+        to top left,
+        transparent 50%,
+        var(--corner-line-color) 50% calc(50% + var(--corner-line-width)),
+        transparent calc(50% + var(--corner-line-width))
+      )
+      bottom right / 10px 10px no-repeat border-box,
+    var(--bg-deep);
+}
+
+/* task 4.1 fix round 1：取消選取後原本那一列 pane 已不在畫面上時，焦點退回面板本身
+   （output.js restoreFocusAfterDeselect()，#output tabindex="-1"）。焦點外框沿用 D4「焦點」的
+   2px --accent，但面板有 clip-path 切角，外推的外框會被切掉，改成往內 2px。
+   direction-01-visual task 5.1（4.1 設計 N2）：內縮的外框在兩個切角被 clip-path 切掉一段，
+   框在切角處斷開；聚焦時把切角補線改成同色同寬（冰青 2px，從裁切邊往內畫），接上外框的兩端，
+   焦點框因此沿著切角轉折、整圈不斷。 */
+[data-region="output"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  --corner-line-color: var(--accent);
+  --corner-line-width: 2px;
+}
+
+/* 760–1199px：兩欄（design D3）。runtime 卡／最近事件併入中欄，排在 Live Output 之下；
+   Factory Floor 最小高度 240px；Live Output 改固定高度＋內部捲動（取代桌面固定一屏那種按
+   Factory Floor／Live Output 比例分配剩餘高度的規則）；banner 只占中欄（I1／fix round 1；
+   design 審核建議：`"projects banner"` 接著 `"projects floor"`，不再橫跨左欄）。 */
+@media (min-width: 760px) and (max-width: 1199.98px) {
+  .shell {
+    grid-template-columns: 220px minmax(0, 1fr);
+    grid-template-areas:
+      "topbar    topbar"
+      "projects  banner"
+      "projects  floor"
+      "projects  output"
+      "projects  runtimes"
+      "projects  events"
+      "statusbar statusbar";
+  }
+
+  [data-region="floor"] {
+    min-height: 240px;
+  }
+
+  [data-region="output"] {
+    height: clamp(320px, 50vh, 560px);
+  }
+}
+
+/* direction-01-visual task 4.1（2.1 設計 M6）：≥760px 的三種版面裡 #output 的高度都由版面決定
+   （760–1199 與寬但矮是 clamp(320px, 50vh, 560px)，固定一屏是 grid 列），內容框撐滿面板、
+   不再受改版前 max-height: 40vh 的限制——否則面板比 40vh 高時底部會空一截。<760px 單欄時面板
+   沒有固定高度，維持 .output-text 原本的 max-height: 40vh，避免長輸出把整頁撐得很長。 */
+@media (min-width: 760px) {
+  [data-region="output"] > .output-text {
+    max-height: none;
+  }
+}
+
+/* ≥1200px：三欄（design D3）。banner 只占中欄（I1／fix round 1）；沒有 banner 時整條列連同
+   兩側的列間距一起消失（M2／fix round 1：用 :has() 切換兩組 grid-template-areas，不是留一條
+   0 高但間距還在的空列——Chrome 105+ 支援 :has()，本機測試用的 Chrome 153 沒有問題）。 */
+@media (min-width: 1200px) {
+  .shell {
+    grid-template-columns: 220px minmax(0, 1fr) 300px;
+    grid-template-areas:
+      "topbar    topbar   topbar"
+      "projects  floor    runtimes"
+      "projects  output   events"
+      "statusbar statusbar statusbar";
+  }
+
+  .shell:has([data-region="banner"]) {
+    grid-template-areas:
+      "topbar    topbar   topbar"
+      "projects  banner   runtimes"
+      "projects  floor    runtimes"
+      "projects  output   events"
+      "statusbar statusbar statusbar";
+  }
+
+  [data-region="floor"] {
+    min-height: 240px;
+  }
+
+  /* 頂列燈號溢出策略（direction-01-visual task 2.3；Ruling R26：純 CSS、不用 JS 量測）。
+     direction-01-visual task 5.1（R28，2.3 延後項）：原本只在固定一屏（≥1200 且 ≥720 高）生效，
+     寬但矮（≥1200 但 <720 高）的頂列仍可多行，Factory Floor 的高度上限卻只扣單行
+     --shell-topbar-h，頂列一折行 Live Output 就被推出第一屏；改成寬 ≥1200 不論高度都套用。
+     不變量：寬 ≥1200 時頂列高度恆等於 --shell-topbar-h（它是固定一屏 --shell-avail 與寬矮版面
+     Factory Floor 高度上限的輸入），不隨 runtime 數量、id 長度、通道狀態或捲軸有無而變；燈號
+     一律全部留在畫面上，不隱藏、不無聲裁切。
+     三層，依序生效：
+       1. 空間夠：每顆燈號用自然寬度，id 只佔文字本身的寬（flex: 0 1 auto，不拉長；R3-1）。
+       2. 空間不夠：燈號一起縮到各自的下限為止，只有 id 縮，縮到 min(10ch, 文字寬)（行尾「…」，
+          完整 id 在 title）；符號、「最後已知」、狀態文字 flex-shrink: 0 不縮。
+       3. 還是放不下：燈號列在頂列內橫向捲動（overflow-x: auto，只在真的溢出時出現捲軸）。
+     非直觀的 CSS 理由：
+       - 頂列高度固定為 token、上下 padding 歸 0、燈號列 stretch 滿高：捲軸出現時佔的是燈號列底部原本
+         的留白，不撐高頂列，也不蓋住燈號（燈號在剩下的高度裡置中，會上移約半條捲軸）。
+       - 燈號下限靠自動最小尺寸（min-content），所以 id 必須是可斷行文字＋line-clamp，不能是
+         nowrap（見 .runtime-lamp-id）；燈號 min-width: 0 或寫死 px 都會在字型變寬時讓子節點
+         溢出燈號、互相重疊。
+       - 頂列高度與 --shell-topbar-h 都由行高 × 字級推導（見 .shell），文字放大時一起變高。
+       - 兩層都用 justify-content: flex-start：往起始方向（左）的溢出不計入 scrollWidth、捲不到。 */
+  [data-region="topbar"] {
+    height: var(--shell-topbar-h);
+    padding-top: 0;
+    padding-bottom: 0;
+    align-items: stretch;
+  }
+
+  .app-name {
+    align-self: center;
+  }
+
+  .topbar-runtimes {
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .runtime-lamp {
+    /* 燈號的下限不寫死（fix round 5／R27）：min-width 維持 auto，瀏覽器用燈號內容的
+       min-content 當下限＝符號＋gap＋「最後已知」＋狀態文字（都不縮）＋id 自己的下限，全部
+       依實際字型與字級算。flex-grow 維持 0：空間夠時不被拉伸平分。 */
+    flex-shrink: 1;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+  }
+
+  .runtime-lamp-id {
+    /* id 的下限＝min(10ch, 整串文字寬)（R3-3；短 id 不被撐寬，R3-1），ch 以 id 自己的等寬字型
+       計。calc-size() 不支援時退回 10ch（短 id 會多出空白，但不會被壓扁）。
+       要讓燈號的 min-content 認得這個下限，id 的文字必須有斷行機會（nowrap 文字的 min-content
+       恆等於整串文字寬，燈號就永遠不縮）：改成可在任何字元斷行，再用 line-clamp 只顯示第一
+       行、行尾補「…」，畫面上仍是單行省略。用 word-break: break-all 而不是 overflow-wrap:
+       anywhere：後者只在一行裡找不到一般斷點時才用，id 裡的連字號就是一般斷點，第一行會斷在
+       「runtime-0-」、後面留一大段空白。 */
+    flex: 0 1 auto;
+    min-width: 10ch;
+    min-width: calc-size(max-content, min(size, 10ch));
+    white-space: normal;
+    word-break: break-all;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+    overflow: hidden;
+  }
+}
+
+/* ≥1200px 但高度 <720px：仍三欄，取消固定一屏高度、整頁捲動；Live Output 跟 760–1199px 同規則
+   （固定高度＋內部捲動），不是桌面固定一屏那種比例分配（design D3「寬但矮的視窗」）。
+   M9（使用者 2026-09-24 裁決）：這個情形整頁可以捲動，Factory Floor 原本沒有高度上限，內容
+   多時會把 Live Output 整個推到第一屏外面——加一個上限「視窗高度－頂列－提示列－200px」
+   （下限仍是 240px），超過的內容交給 Factory Floor 自己的內層捲動容器（.projects）捲動，
+   讓第一屏至少看得到 Live Output 開頭；banner 只占中欄（I1）。 */
+@media (min-width: 1200px) and (max-height: 719.98px) {
+  .shell {
+    grid-template-areas:
+      "topbar    topbar   topbar"
+      "projects  floor    runtimes"
+      "projects  output   events"
+      "statusbar statusbar statusbar";
+  }
+
+  .shell:has([data-region="banner"]) {
+    grid-template-areas:
+      "topbar    topbar   topbar"
+      "projects  banner   runtimes"
+      "projects  floor    runtimes"
+      "projects  output   events"
+      "statusbar statusbar statusbar";
+  }
+
+  [data-region="output"] {
+    height: clamp(320px, 50vh, 560px);
+  }
+
+  /* M9（使用者 2026-09-24 裁決）：Factory Floor 跟 runtime 清單共用同一列（grid-template-areas
+     的 "projects floor runtimes"），這一列的 auto 高度是兩者之中較高的那個——只幫 Factory
+     Floor 設 max-height 不夠，runtime 清單自然高度（兩張卡＋workspace／tab／pane 列）常常
+     比 Factory Floor 的上限還高，這一列還是會被撐高，Live Output 依然被推到第一屏外（fix
+     round 1 現場量到：只蓋 floor 時這一列量到 495px，比 floor 的上限 304px 還高）。runtime
+     清單本身已經有自己的內層捲動容器（design 審核 I2 的 `.runtime-cards`），一起設同一個
+     上限，這一列才會真的縮小。 */
+  [data-region="floor"],
+  [data-region="runtimes"] {
+    max-height: max(240px, calc(100dvh - var(--shell-topbar-h) - 200px));
+  }
+
+  .shell:has([data-region="banner"]) [data-region="floor"],
+  .shell:has([data-region="banner"]) [data-region="runtimes"] {
+    max-height: max(240px, calc(100dvh - var(--shell-topbar-h) - var(--shell-banner-1) - 200px));
+  }
+}
+
+/* ≥1200px 且 ≥720px 高：固定一屏，不整頁捲動。
+   控制端 Ruling R17（fix round 3，取代 fix round 1／2 的分配規則）：三個目標的優先序——
+   (1) banner 永遠完整顯示，不設 max-height、不得裁切；(2) Live Output 在固定一屏時
+   ≥240px，且高度不隨 banner 出現與否改變（不是「不動的份額」這種近似說法，是逐 px 相同）；
+   (3) Factory Floor ≥240px。三者無法同時滿足時（只可能發生在高約 720–761 且兩則提示折行
+   時），由 Factory Floor 讓出、降到 240px 以下並在內部捲動（`.projects` 本來就有
+   `overflow: auto`，接得住）；實測最小值見 fix round 3 report。
+
+   fix round 1／2 的做法（r2 用 `minmax(40px, …)` 讓 Live Output 的一部分退讓）被 Codex
+   fix round 2 複審與這裡的 R17 一起推翻：那個做法讓 Live Output 的高度會因為 banner
+   出現而改變（跟優先序 (2) 矛盾），且 D3／spec 原文明確寫「提示從 Factory Floor 扣」，不是
+   「從 Live Output 扣一部分」。改法：
+     - r2／r3（Live Output 的兩條列）改回固定值（`calc()` 直接算，不包 `minmax()`），公式
+       跟 banner 完全無關（`--shell-avail` 本來就沒有把 banner 算進去），高度因此逐 px
+       不受 banner 影響，滿足優先序 (2)。
+     - r1（Factory Floor）拿掉 `minmax(240px, …)` 的硬性下限，改成純 `1fr`——`[data-region]
+       { min-height: 0; }` 讓它的自動最小尺寸是 0，可用空間不夠時 grid 會把「短缺」全部反映
+       在這裡（唯一還有彈性、可以退讓的軌道；fix round 4 更正：≥1200px 段的 min-height: 240px 其實蓋掉了
+       這條，下限要在本段末另外歸零），滿足優先序 (1)／(2) 優先於 (3) 的要求；正常
+       尺寸下（topbar＋banner＋Live Output 兩列＋statusbar 遠小於 100dvh）r1 仍然拿到剩下的
+       絕大部分空間，不會無故變矮。
+     - banner 蓋回 `min-height: auto`＋track sizing function 用 `min-content`（fix round 2
+       已經驗證過，`auto` 加 item 的 `min-height: auto` 不夠，見下方 `[data-region="banner"]`
+       規則與 fix round 2 report）——banner 本身已經拿掉 max-height，只要這兩點還在，grid
+       就不會把它算進「可壓縮」的軌道。
+
+   M4（fix round 1，比例維持不變）：右欄同時拆成三條列，runtime 佔 r1＋r2（沒有 banner 時
+   ≈70%）、最近事件佔 r3（≈30%），比例數字 15／30（r2／r3），3.3 看實際內容截圖後再微調。
+   有 banner 時 runtime 額外多蓋 banner 那一列，總高度因此不受 banner 影響。 */
+@media (min-width: 1200px) and (min-height: 720px) {
+  .shell {
+    height: 100dvh;
+    overflow: hidden;
+    --shell-avail: calc(
+      100dvh - var(--shell-topbar-h) - var(--shell-statusbar-h) - 24px - 48px
+    );
+    grid-template-areas:
+      "topbar    topbar   topbar"
+      "projects  floor    runtimes"
+      "projects  output   runtimes"
+      "projects  output   events"
+      "statusbar statusbar statusbar";
+    grid-template-rows:
+      min-content
+      1fr
+      calc(var(--shell-avail) * 0.15)
+      calc(var(--shell-avail) * 0.3)
+      min-content;
+  }
+
+  .shell:has([data-region="banner"]) {
+    grid-template-areas:
+      "topbar    topbar   topbar"
+      "projects  banner   runtimes"
+      "projects  floor    runtimes"
+      "projects  output   runtimes"
+      "projects  output   events"
+      "statusbar statusbar statusbar";
+    grid-template-rows:
+      min-content
+      min-content
+      1fr
+      calc(var(--shell-avail) * 0.15)
+      calc(var(--shell-avail) * 0.3)
+      min-content;
+  }
+
+  [data-region="output"] {
+    height: auto;
+  }
+
+  /* direction-01-visual task 3.1：固定一屏（唯一 `.shell { overflow: hidden }` 生效的斷點）
+     下，左欄跟 floor／output／runtimes 共用同一組列，橫跨全部列高（見上面
+     `grid-template-areas` 的 "projects" 出現在每一列）——這裡沒有 sticky（頁面本身不捲動，
+     sticky 沒有作用對象），但 Project 數量夠多時清單仍可能比這個固定高度還高，`.shell` 的
+     `overflow: hidden` 會把超出的項目整段裁掉、也沒有其他捲動路徑看得到。加
+     `overflow-y: auto` 讓左欄自己在放不下時可以內部捲動；預設兩個 Project 遠低於這個高度，
+     看不到捲軸。 */
+  [data-region="projects"] {
+    overflow-y: auto;
+  }
+
+  /* fix round 4／N1＋N4（設計複審 r3，Ruling R17 第三順位）：上面 ≥1200px 段的
+     [data-region="floor"] { min-height: 240px; } 在這裡同樣生效，把 1fr 的自動最小值釘在
+     240——三者塞不下時 Factory Floor 讓不出來，缺口改由頂列（auto 列軌道＋[data-region]
+     { min-height: 0 }，被壓成 26px）與頁面底部（.shell overflow: hidden 把底列裁出視窗）吸收，
+     違反 R17。固定一屏時 Factory Floor 的下限歸零：它是唯一的彈性軌道（1fr），只有在頂列、
+     banner、Live Output、底列都拿到自己的高度之後還不夠 240 時才會低於 240，內容交給內層
+     .projects 的 overflow: auto 捲動。 */
+  [data-region="floor"] {
+    min-height: 0;
+  }
+
+  /* 頂列與底列維持自然高度、不得被壓縮：列軌道改成 min-content（比照 banner），頂列另外蓋回
+     min-height: auto（[data-region] { min-height: 0 } 會讓它的自動最小尺寸變成 0）；底列本身
+     已有 min-height: var(--shell-statusbar-h)。 */
+  [data-region="topbar"] {
+    min-height: auto;
+  }
+
+  /* I1：固定一屏本來就整屏可見（.shell 沒有整頁捲動），底列不需要 sticky——改回
+     position: static，不依賴「.shell overflow: hidden 底下 sticky 沒有可捲動祖先、視覺上
+     沒有差異」這個隱含事實。 */
+  [data-region="statusbar"] {
+    position: static;
+  }
+}
+
+/* 長字串不撐破所屬區域（design D3；direction-01-visual task 2.1）：workstream 名稱、pane
+   cwd 用 overflow-wrap: anywhere 換行，取代原本 .pane-cwd 的單行省略——單行省略
+   （overflow: hidden + white-space: nowrap）不會改變 scrollWidth（瀏覽器仍然把完整、沒截斷
+   的文字寬度算進 scrollWidth，只是視覺上被裁掉），200 字元的名稱在窄欄位裡 scrollWidth 還是
+   會大於 clientWidth；换行才能讓內容真的落在容器邊界內。同 specificity、後出現的規則蓋掉
+   .pane-cwd 原本的 overflow／text-overflow／white-space（不動原本那條規則的文字）。
+   direction-01-visual task 3.3：pane cwd 改回 design D11 的單行省略（完整內容在 title）——
+   它是 grid 裡 overflow: hidden、min-width: 0 的格子，省略掉的部分不計入右欄內層捲動容器的
+   scrollWidth（visual-check V1 的內層無橫向捲動斷言實測），原本這裡的換行覆寫拿掉。 */
+.ff-ws-name {
+  overflow-wrap: anywhere;
 }

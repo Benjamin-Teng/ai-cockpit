@@ -99,6 +99,8 @@
 //   # finding A 驗證 (iii) 專用模式（見上方「所有權憑證＝PID＋starttime＋comm」段落）：
 //   #   HERDR_CLIENT_TEST_ALLOW_WSL_WRITES=1 COCKPIT_ACCEPT_WSL_DISTRO=Ubuntu-24.04 \
 //   #     node docs/research/2026-09-19/live-output-real-check.js --verify-ownership-mismatch
+//   # 純邏輯自我測試（task 4.2 fix round 2；不需要 WSL、不需要環境變數、不需要瀏覽器）：
+//   #   node docs/research/2026-09-19/live-output-real-check.js --self-test-stale-signals
 //
 // 流程（對應 brief「驗收步驟」1–8）：
 //   0.（round 3 換路：不再需要「拒絕執行」檢查——專屬 socket 路徑不可能有別人的 server，見上方
@@ -141,7 +143,8 @@
 //      round 3 的路徑不共用，這個風險不存在）。
 //
 // 這支腳本操作真的 WSL HERDR，跑一次即結束（不像 live-output-check.js 那樣可重複跑驗回歸），
-// 沒有 A–N 那種可選段落旗標；`--verify-ownership-mismatch` 是唯一的例外分支，見上方說明。
+// 沒有 A–N 那種可選段落旗標；`--verify-ownership-mismatch` 與 `--self-test-stale-signals`
+// 是僅有的兩個例外分支，見上方說明與 `selfTestStaleSignals()` 上方註解。
 "use strict";
 
 const os = require("node:os");
@@ -890,10 +893,26 @@ function listTabs() {
 // curl（帶自訂 Host 標頭，驗 source_check 與端點行為；沿用 handover.md 既有的 curl 用法）
 // ---------------------------------------------------------------------------
 
-const CURL_SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-live-output-real-curl-"));
+// fix round 3（Codex r2 medium）：改成惰性建立——原本在模組載入當下就 `fs.mkdtempSync()`，比
+// `--self-test-stale-signals`／`--verify-ownership-mismatch` 這些「分流要跑哪個 entry point」的
+// 判斷還早，導致這兩個不會呼叫 `curlGet()` 的模式也會無條件建出一個暫存目錄：唯讀環境下
+// `mkdtempSync()` 直接以 `EPERM` 終止（連旗標判斷都還沒走到就死在這裡）；可寫環境下，這些模式
+// 用 `process.exit()` 直接結束，不會經過 `main()` `finally` 裡的 `fs.rmSync(CURL_SCRATCH, ...)`，
+// 留下一個空目錄。改成只有真的呼叫 `curlGet()`（目前只有 `main()` 的步驟 4 用到）時才建立，
+// 且只有真的建立過才需要清理——`getCurlScratchDir()` 用 `curlScratchDir` 記住「有沒有建立過」，
+// `main()` 的 `finally` 改成有建立才刪，沒建立就什麼都不做（不會誤刪、也不會對著不存在的路徑
+// 呼叫 `rmSync` 而觸發例外——`force: true` 本來就會吞掉「路徑不存在」，這裡額外判斷純粹是不做
+// 沒必要的檔案系統呼叫）。
+let curlScratchDir = null;
+function getCurlScratchDir() {
+  if (curlScratchDir === null) {
+    curlScratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-live-output-real-curl-"));
+  }
+  return curlScratchDir;
+}
 
 function curlGet(url, hostHeader) {
-  const bodyFile = path.join(CURL_SCRATCH, `body-${Date.now()}-${Math.random().toString(16).slice(2)}.txt`);
+  const bodyFile = path.join(getCurlScratchDir(), `body-${Date.now()}-${Math.random().toString(16).slice(2)}.txt`);
   const r = spawnSync(
     "curl",
     ["-s", "-D", "-", "-o", bodyFile, "-w", "\n%{http_code}", "-H", `Host: ${hostHeader}`, url],
@@ -1072,6 +1091,98 @@ function findStalls(samples, windowMs) {
     }
   }
   return violations;
+}
+
+// 過期標示的計算值（direction-01-visual task 4.2；design D7）：R18 原本比對 `.output-text` 的
+// opacity（現行 `.is-stale` 做法），D7 拿掉 opacity（會把文字對比拉到 4.5:1 以下），改成內容
+// 文字色（正常 `--text`／過期 `--text-dim`）、面板左緣 `--warn` 色條（inset box-shadow，正常是
+// `none`）、標題列「過期」文字（`.output-stale-label` 的 `hidden`）、`is-stale` class 本身、可見
+// 的原因訊息或「pane 已不存在」提示的顏色。跟 `docs/research/2026-09-19/live-output-check.js`
+// 用同一組計算值、同一組 `assessMarkedStale()`／`assessNotStale()`／`checkMarkedStale()`／
+// `checkNotStale()`，避免兩份腳本的邏輯與 token 換算各自漂移。本 task 只改寫斷言，不在這台機器上
+// 執行（要接 WSL 測試 server，5.4 視環境實跑）。
+//
+// task 4.2 fix round 1（Codex medium (2)；控制端 Ruling R41）：round 0 的 `checkNotStale()` 只驗
+// `textColor !== TEXT_DIM_RGB`——任何錯誤色甚至 `null` 都會判定「不是過期」而通過，也完全沒用到
+// `isStale` 欄位；`checkMarkedStale()` 也沒有驗過可見原因訊息或「pane 已不存在」提示本身的顏色。
+// 改成 `assessNotStale()`／`assessMarkedStale()`：回傳「哪裡不對」的問題清單（純函式），
+// `checkMarkedStale()`／`checkNotStale()` 只是薄包裝；純邏輯的辨識力自我測試見
+// `docs/research/2026-09-19/live-output-check.js` 的 W 段（同一組函式，這裡不重複寫一份自我測試，
+// 兩份腳本共用同一套邏輯已經用 `node --check` 核對過語法一致）。
+const TEXT_RGB = "rgb(229, 237, 243)"; // --text: #e5edf3（正常內容文字色）
+const TEXT_DIM_RGB = "rgb(163, 183, 201)"; // --text-dim: #a3b7c9（過期內容文字色）
+const WARN_RGB = "rgb(233, 188, 115)"; // --warn: #e9bc73（面板左緣色條／可見的原因訊息）
+const BAD_RGB = "rgb(244, 114, 121)"; // --bad: #f47279（「pane 已不存在」提示）
+
+async function readStaleSignals(cdp) {
+  return cdp.eval(`(() => {
+    var out = document.getElementById('output');
+    var text = document.querySelector('.output-text');
+    var label = document.querySelector('.output-stale-label');
+    var reason = document.querySelector('.output-error-reason');
+    var gone = document.querySelector('.output-gone-notice');
+    return {
+      isStale: !!out && out.classList.contains('is-stale'),
+      textColor: text ? getComputedStyle(text).color : null,
+      panelBoxShadow: out ? getComputedStyle(out).boxShadow : null,
+      labelHidden: label ? label.hidden : null,
+      labelText: label ? label.textContent : null,
+      reasonHidden: reason ? reason.hidden : null,
+      reasonColor: reason ? getComputedStyle(reason).color : null,
+      goneHidden: gone ? gone.hidden : null,
+      goneColor: gone ? getComputedStyle(gone).color : null,
+    };
+  })()`);
+}
+
+function assessMarkedStale(signals) {
+  const problems = [];
+  if (signals.isStale !== true) problems.push(`isStale 應該是 true，實際 ${signals.isStale}`);
+  if (signals.textColor !== TEXT_DIM_RGB) problems.push(`textColor 應該是 --text-dim（${TEXT_DIM_RGB}），實際 ${signals.textColor}`);
+  if (
+    !(
+      signals.panelBoxShadow &&
+      signals.panelBoxShadow !== "none" &&
+      signals.panelBoxShadow.indexOf(WARN_RGB) !== -1 &&
+      signals.panelBoxShadow.indexOf("inset") !== -1
+    )
+  ) {
+    problems.push(`panelBoxShadow 應該含 --warn 的 inset 色條，實際 ${signals.panelBoxShadow}`);
+  }
+  if (!(signals.labelHidden === false && signals.labelText === "過期")) {
+    problems.push(`標題列「過期」標籤應該可見，實際 hidden=${signals.labelHidden} text=${JSON.stringify(signals.labelText)}`);
+  }
+  if (signals.reasonHidden === false) {
+    if (signals.reasonColor !== WARN_RGB) {
+      problems.push(`可見的原因訊息應該是 --warn（${WARN_RGB}），實際 ${signals.reasonColor}`);
+    }
+  } else if (signals.goneHidden === false) {
+    if (signals.goneColor !== BAD_RGB) {
+      problems.push(`「pane 已不存在」提示應該是 --bad（${BAD_RGB}），實際 ${signals.goneColor}`);
+    }
+  } else {
+    problems.push("過期時原因訊息與「pane 已不存在」提示應該至少有一個可見，實際兩者都隱藏");
+  }
+  return problems;
+}
+
+function assessNotStale(signals) {
+  const problems = [];
+  if (signals.isStale !== false) problems.push(`isStale 應該是 false，實際 ${signals.isStale}`);
+  if (signals.textColor !== TEXT_RGB) problems.push(`textColor 應該是 --text（${TEXT_RGB}），實際 ${signals.textColor}`);
+  if (signals.panelBoxShadow !== "none") problems.push(`panelBoxShadow 應該是 none，實際 ${signals.panelBoxShadow}`);
+  if (signals.labelHidden !== true) problems.push(`標題列「過期」標籤應該隱藏，實際 hidden=${signals.labelHidden}`);
+  return problems;
+}
+
+function checkMarkedStale(signals, label) {
+  const problems = assessMarkedStale(signals);
+  check(problems.length === 0, `${label}：應該標為過期（${problems.length === 0 ? "通過" : problems.join("；")}）`);
+}
+
+function checkNotStale(signals, label) {
+  const problems = assessNotStale(signals);
+  check(problems.length === 0, `${label}：不應該標為過期（${problems.length === 0 ? "通過" : problems.join("；")}）`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1257,10 +1368,8 @@ async function main() {
       15000,
       "停 server 後面板在時限內標為過期（is-stale）"
     );
-    const staleOpacity = await cdp.eval(
-      "getComputedStyle(document.querySelector('.output-text')).opacity"
-    );
-    check(staleOpacity !== "1", `過期期間 opacity 應該不是 1（實際 ${staleOpacity}）`);
+    const staleSignals = await readStaleSignals(cdp);
+    checkMarkedStale(staleSignals, "R18：runtime 斷線後（503）");
     await cdp.waitFor(
       "!document.querySelector('.output-error-reason').hidden",
       5000,
@@ -1354,10 +1463,8 @@ async function main() {
       check(goneHiddenAfter === true, "(a) 恢復後 gone 提示應該仍隱藏");
       const reasonHiddenAfter = await cdp.eval("document.querySelector('.output-error-reason').hidden");
       check(reasonHiddenAfter === true, "(a) 恢復後失敗原因應該消失");
-      const opacityAfter = await cdp.eval(
-        "getComputedStyle(document.querySelector('.output-text')).opacity"
-      );
-      check(opacityAfter === "1", `(a) 恢復後 opacity 應該變回 1（實際 ${opacityAfter}）`);
+      const recoveredSignals = await readStaleSignals(cdp);
+      checkNotStale(recoveredSignals, "(a) R18 恢復後");
       const textAfter = await cdp.eval("document.querySelector('.output-text').textContent");
       check(
         typeof textAfter === "string" && textAfter.length > 0,
@@ -1379,6 +1486,11 @@ async function main() {
     } else if (r18Outcome === "b") {
       const goneText = await cdp.eval("document.querySelector('.output-gone-notice').textContent");
       check(goneText === "pane 已不存在", `(b)「pane 已不存在」文字應該逐字一致（實際 ${JSON.stringify(goneText)}）`);
+      // fix round 2（Codex r1 medium）：round 1 補了 checkMarkedStale()／checkNotStale()，但這條
+      // 真機的「pane 已不存在」路徑本身還沒呼叫到——只驗了提示文字，過期樣式（gone 提示 --bad、
+      // is-stale、內容文字 --text-dim、面板左緣 --warn 色條、標題列「過期」文字）完全沒被驗過。
+      const goneSignals = await readStaleSignals(cdp);
+      checkMarkedStale(goneSignals, "(b) R18 重啟後 pane 已不存在");
     }
 
     // brief 備註：重啟後若要繼續後面步驟，需要重新建測試 tab（不管 (a)／(b)，用一個乾淨的新
@@ -1422,6 +1534,9 @@ async function main() {
       goneTextClose === "pane 已不存在",
       `「pane 已不存在」文字應該逐字一致（實際 ${JSON.stringify(goneTextClose)}）`
     );
+    // fix round 2（Codex r1 medium）：同上，這條「真的關掉 tab」路徑原本也只驗提示文字。
+    const goneCloseSignals = await readStaleSignals(cdp);
+    checkMarkedStale(goneCloseSignals, "步驟 6：tab.close 後 pane 已不存在");
 
     // 停止輪詢：先讓已經在飛的請求落地（1.5 s），清空計數，再開一段 5 秒的乾淨觀察視窗。
     await sleep(1500);
@@ -1552,10 +1667,13 @@ async function main() {
         check(false, `刪除暫存設定目錄失敗：${e.message}`);
       }
     }
-    try {
-      fs.rmSync(CURL_SCRATCH, { recursive: true, force: true });
-    } catch {
-      // 忽略。
+    // fix round 3：只有真的呼叫過 curlGet()（因此 getCurlScratchDir() 真的建立過目錄）才需要清理。
+    if (curlScratchDir !== null) {
+      try {
+        fs.rmSync(curlScratchDir, { recursive: true, force: true });
+      } catch {
+        // 忽略。
+      }
     }
   }
 }
@@ -1647,12 +1765,90 @@ async function verifyOwnershipMismatchDoesNotStop() {
   return stillConnectable && identityUnchanged && failures.length === 0 ? 0 : 1;
 }
 
+// ---------------------------------------------------------------------------
+// 自我測試（fix round 2；Codex r1 medium）：純邏輯，不需要瀏覽器、不需要 WSL、不對 WSL 送出任何
+// 請求——`node docs/research/2026-09-19/live-output-real-check.js --self-test-stale-signals`
+// 執行。刻意放在 `assertWslWriteOptIn()` 之前並且不受它限制：那道閘門保護的是「會不會誤動到真的
+// WSL server」，這個模式完全沒有機會誤動（不呼叫任何 `wslRpc()`／`startWslServer()`），要求它也
+// 得先設 `HERDR_CLIENT_TEST_ALLOW_WSL_WRITES=1` 只會讓離線驗證變得不必要地麻煩。
+//
+// Codex r1 medium：round 1 沒有像 `docs/research/2026-09-19/live-output-check.js` 的 W 段那樣
+// 補一份純邏輯自我測試，只靠「跟 live-output-check.js 逐字相同的邏輯」佐證——但這支腳本本身要接
+// WSL 測試 server，5.4 才會視環境實跑，round 1／round 2 都不會真的執行到 `assessMarkedStale()`。
+// 這裡針對 Codex 點名的缺口（真機 gone 路徑先前完全沒呼叫 `checkMarkedStale()`，已在上面兩處
+// 補上）另外用不需要 WSL 的自我測試直接證明：`assessMarkedStale()` 對「pane 已不存在」這個分支
+// ——gone 色彩錯誤、is-stale 沒有加上——確實會判定失敗，不是恆真的斷言。跟
+// `live-output-check.js` W 段的 gone 相關否定對照同一組設計，這裡只保留跟 gone 分支直接相關的
+// 案例（W 段已經涵蓋 503／原因分支與正常態，不重複整份）。
+function selfTestStaleSignals() {
+  log('=== 自我測試：assessMarkedStale 對「pane 已不存在」分支的錯誤值有辨識力（不需要 WSL）===');
+
+  const goodStaleGone = {
+    isStale: true,
+    textColor: TEXT_DIM_RGB,
+    panelBoxShadow: `${WARN_RGB} 2px 0px 0px 0px inset`,
+    labelHidden: false,
+    labelText: "過期",
+    reasonHidden: true,
+    reasonColor: null,
+    goneHidden: false,
+    goneColor: BAD_RGB,
+  };
+  check(assessMarkedStale(goodStaleGone).length === 0, "合法的過期（gone）signals 應該通過 assessMarkedStale（0 個問題）");
+
+  const wrongGoneColor = { ...goodStaleGone, goneColor: WARN_RGB };
+  check(
+    assessMarkedStale(wrongGoneColor).some((p) => p.indexOf("pane 已不存在") !== -1),
+    "否定對照：「pane 已不存在」提示顏色不是 --bad 時 assessMarkedStale 應該抓到（例如退回跟過期原因一樣的 --warn）"
+  );
+
+  const missingIsStale = { ...goodStaleGone, isStale: false };
+  check(
+    assessMarkedStale(missingIsStale).some((p) => p.indexOf("isStale") !== -1),
+    "否定對照：is-stale class 沒有加上時 assessMarkedStale 應該抓到（即使 gone 提示本身顏色正確）"
+  );
+
+  const missingTextDim = { ...goodStaleGone, textColor: TEXT_RGB };
+  check(
+    assessMarkedStale(missingTextDim).some((p) => p.indexOf("textColor") !== -1),
+    "否定對照：內容文字沒有標為過期（還是 --text）時 assessMarkedStale 應該抓到（即使 gone 提示本身顏色正確）"
+  );
+
+  const missingWarnBar = { ...goodStaleGone, panelBoxShadow: "none" };
+  check(
+    assessMarkedStale(missingWarnBar).some((p) => p.indexOf("panelBoxShadow") !== -1),
+    "否定對照：面板左緣沒有 --warn 色條時 assessMarkedStale 應該抓到（即使 gone 提示本身顏色正確）"
+  );
+
+  const missingLabel = { ...goodStaleGone, labelHidden: true };
+  check(
+    assessMarkedStale(missingLabel).some((p) => p.indexOf("過期」標籤") !== -1),
+    "否定對照：標題列沒有顯示「過期」文字時 assessMarkedStale 應該抓到（即使 gone 提示本身顏色正確）"
+  );
+
+  const neitherVisible = { ...goodStaleGone, goneHidden: true };
+  check(
+    assessMarkedStale(neitherVisible).some((p) => p.indexOf("兩者都隱藏") !== -1),
+    "否定對照：gone 提示與原因訊息都隱藏時（過期卻沒有任何說明）assessMarkedStale 應該抓到"
+  );
+
+  return failures.length === 0;
+}
+
+const SELF_TEST_STALE_SIGNALS_MODE = process.argv.includes("--self-test-stale-signals");
+if (SELF_TEST_STALE_SIGNALS_MODE) {
+  const ok = selfTestStaleSignals();
+  console.log(ok ? "RESULT: PASS" : `RESULT: FAIL (${failures.length})`);
+  process.exit(ok ? 0 : 1);
+}
+
 // finding 3：寫入 opt-in 檢查搬到這裡——選擇要跑哪個 entry point「之前」的共用入口，任何模式
 // （目前是 `main()` 與 `--verify-ownership-mismatch`；以後新增的模式也要一律經過這裡）都逃不掉。
 // 先前的版本只在 `main()` 裡檢查，`--verify-ownership-mismatch` 完全沒有這道防線，帶著這個旗標
 // 執行就會直接對 WSL 端寫入、啟動 server，繞過了「沒有這個環境變數就不對 WSL 送出任何請求」的
 // 保證。這裡 fail closed：沒有 `HERDR_CLIENT_TEST_ALLOW_WSL_WRITES=1` 就同步印出訊息並
-// `process.exit(0)`，兩個 entry point 函式都不會被呼叫到，WSL 端不會收到任何請求。
+// `process.exit(0)`，兩個 entry point 函式都不會被呼叫到，WSL 端不會收到任何請求。`
+// --self-test-stale-signals` 在這道閘門之前就已經 exit，不會走到這裡（見上方）。
 function assertWslWriteOptIn() {
   if (process.env.HERDR_CLIENT_TEST_ALLOW_WSL_WRITES !== "1") {
     console.log(

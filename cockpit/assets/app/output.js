@@ -10,7 +10,7 @@
 //     1 秒才排下一次。
 //   - 同一時間至多一個進行中的請求——不只是「觀察 10 秒符合」，是結構上不可能有第二個：
 //     每次發請求建立一個 `AbortController`，`inFlightController` 追蹤目前那一個（`null` 表示
-//     沒有）；`select()`／`clear()`／`markGone()`／關閉面板時都會 `abortInFlight()` 中止它，
+//     沒有）；`select()`／`clear()`／`markGone()`／按「取消選取」時都會 `abortInFlight()` 中止它，
 //     `select()` 並**立即**對新選取排一次輪詢（不必等舊請求落地）。這個不變量的前提是瀏覽器
 //     原生 `fetch` 真的遵守 `AbortSignal`（呼叫 `abort()` 會在網路層結束底層連線）——這是產品
 //     實際執行的環境（headless／真實 Chrome），不是憑空假設：`live-output-check.js` N 段用
@@ -48,8 +48,11 @@
 //   - 200 → `applySuccess()` 一律先清掉過期標示與原因（即使 `text` 與目前內容相同、
 //     `writeText()` 提早 return 不重寫 `<pre>`，也不能連帶略過清除標示——這兩件事分開處理）。
 //
-// 「標為過期」：`#output` 加 `is-stale` class（`setStale()`），CSS 對 `.output-text` 套用
-// `opacity`，`getComputedStyle` 驗得到看得見的差異（brief 要求，不只是加 class）。
+// 「標為過期」（direction-01-visual task 4.2；design D7）：`#output` 加 `is-stale` class
+// （`setStale()`），CSS 依此把內容文字改成 `--text-dim`、面板左緣加一條 `--warn` 色條
+// （見 style.css），`setStale()` 同時切換標題列「過期」文字（`.output-stale-label`，
+// `staleLabelEl`）的顯示。不再用 opacity（會把文字對比拉到 4.5:1 以下，違反「Direction 01
+// 視覺語彙」）。`getComputedStyle` 驗得到看得見的差異，不只是加 class。
 // 「顯示原因」：獨立節點 `.output-error-reason`（`reasonEl`），文字一律 `textContent` 寫入
 // （spec「輪詢與顯示」「內容不被當成 HTML」的同一個原則，這裡延伸到錯誤原因）。404／
 // `markGone()` 的情況不顯示這個節點——「pane 已不存在」本身就是完整的訊息，不疊加上一輪
@@ -63,7 +66,7 @@
 // 「端點回 404」情境額外驗過這個競態：疊加 `COCKPIT_PREVIEW_VANISH_PANE` 讓投影消失晚於
 // 404，確認晚到的那個觸發沒有任何可觀察的副作用）。`render.js` 每次重畫後呼叫它。
 //
-// 「關閉」按鈕與「pane 已不存在」都要回呼 actions.js 清掉 `ui.selected`（design D8）：兩者
+// 「取消選取」按鈕（原「關閉」）與「pane 已不存在」都要回呼 actions.js 清掉 `ui.selected`（design D8）：兩者
 // 都呼叫 `window.cockpitActions.clearSelected()`（若存在）。這個回呼只在 output.js **自己**
 // 決定要停止時才觸發；外部呼叫 `window.liveOutput.clear()`（例如 actions.js 自己已經在處理
 // `ui.selected` 的改變時）不會再呼叫回去，避免來回互叫。
@@ -87,6 +90,9 @@
   // 前端逾時（跟上面的「請求本身失敗」分開一個字串：這是頁面自己放棄等待，不是連線層面的
   // reject，原因不同，顯示的說明也應該不同）。
   var TIMEOUT_REASON_TEXT = "請求逾時（超過 6 秒沒有回應），正在重試";
+  // 空狀態文案（direction-01-visual task 4.1；design D7 逐字）：不提位置（760–1199 與 <760 時
+  // runtime 清單不在右側），直接用畫面上的按鈕名稱。
+  var EMPTY_TEXT = "還沒選 pane。點 runtime 清單裡的任一列，或按 Factory Floor 列首的「看輸出」。";
 
   function seg(value) {
     return encodeURIComponent(value);
@@ -105,28 +111,76 @@
     return;
   }
 
-  var titleEl, closeButton, truncatedNotice, goneNotice, reasonEl, preEl;
+  var emptyEl, titleEl, staleLabelEl, closeButton, truncatedNotice, goneNotice, reasonEl, preEl;
 
+  // 面板常駐（direction-01-visual task 4.1；design D7）：骨架一載入就可見。沒有選取時只畫出
+  // 空狀態（`.output-empty`），標題列、各提示與內容框都收起；有選取（`#output.is-open`）時反過來。
+  // 兩種狀態的切換只靠 `.is-open` 這一個 class，由 style.css 決定哪些子節點畫出來
+  // （`.output-panel:not(.is-open) > :not(.output-empty)` 與 `.output-panel.is-open > .output-empty`），
+  // 各提示節點自己的 `hidden` 仍只表達「這則提示此刻該不該出現」，兩者互不干擾。
   function buildSkeleton() {
     outputSection.classList.add("output-panel");
     outputSection.textContent = "";
+    // task 4.1 fix round 1：取消選取後，原本那一列 pane 已不在畫面上時的焦點退路（見
+    // restoreFocusAfterDeselect()）；-1 只讓程式可以聚焦，不進 Tab 順序。
+    outputSection.tabIndex = -1;
+
+    emptyEl = document.createElement("div");
+    emptyEl.className = "output-empty";
+    emptyEl.textContent = EMPTY_TEXT;
+    outputSection.appendChild(emptyEl);
 
     var header = document.createElement("div");
     header.className = "output-header";
 
+    // task 4.2（design D7）：標題（runtime／pane id）與「過期」文字放進同一個群組
+    // （.output-title-group），兩者緊鄰、跟著標題一起被推到標題列左側；.output-header 本身仍只有
+    // 兩個直接子節點（這個群組＋closeButton），justify-content: space-between 的行為不變。
+    var titleGroup = document.createElement("div");
+    titleGroup.className = "output-title-group";
+
     titleEl = document.createElement("span");
     titleEl.className = "output-title";
-    header.appendChild(titleEl);
+    titleGroup.appendChild(titleEl);
+
+    // 標題列「過期」文字（design D7；跟內容文字 --text-dim、面板左緣 --warn 色條、原因訊息
+    // --warn 同一組語彙）：預設隱藏，setStale() 切換。
+    staleLabelEl = document.createElement("span");
+    staleLabelEl.className = "output-stale-label";
+    staleLabelEl.textContent = "過期";
+    staleLabelEl.hidden = true;
+    titleGroup.appendChild(staleLabelEl);
+
+    header.appendChild(titleGroup);
 
     closeButton = document.createElement("button");
     closeButton.type = "button";
     closeButton.className = "action-button output-close";
-    closeButton.textContent = "關閉";
-    closeButton.addEventListener("click", handleCloseClick);
+    closeButton.textContent = "取消選取"; // live-output delta spec「取消選取」（原「關閉」）
+    closeButton.addEventListener("click", handleDeselectClick);
     header.appendChild(closeButton);
 
     outputSection.appendChild(header);
 
+    // 失敗原因（503／504／其他非 2xx／請求本身失敗）；文字一律 textContent 寫入，見
+    // showReason()。跟 goneNotice 分開一個節點：「pane 已不存在」不需要（也不應該）疊加上一輪
+    // 重試留下的原因文字。
+    // task 4.2 fix round 1（Codex medium／設計 I1／Ruling R40）：排在截斷提示之前，緊貼標題列——
+    // 截斷提示改用 --text-dim 之後是常駐的資訊性提示（見 truncatedNotice 建立處），原因訊息才是
+    // 「現在有問題」的訊號，兩者同時出現時原因應該先被看到，不能被截斷提示擠到第三行。
+    reasonEl = document.createElement("div");
+    reasonEl.className = "output-error-reason";
+    reasonEl.hidden = true;
+    outputSection.appendChild(reasonEl);
+
+    // 截斷提示（spec live-output「截斷提示」：面板頂端出現「更早的輸出未顯示」）：改版前用
+    // --warn，跟過期色條／標籤／原因訊息撞色——task 4.2 design 審核 I1／Ruling R40：真機的
+    // `read_output` 固定用 `ReadSource::Recent`，`truncated` 幾乎恆為 true（見
+    // docs/research/2026-09-19/pane-read-probe.md §3），這則提示因此近乎常駐，用警示色會稀釋
+    // 「過期」語彙。它只是說明「這是最近幾行、不是從頭」的常駐資訊，改用 --text-dim（見
+    // style.css），跟「pane 已不存在」（--bad，永久消失）、原因訊息（--warn，暫時性失敗）三種
+    // 語意分開。排在 reasonEl 之後、仍在 preEl（輸出內容）之前，滿足 spec「頂端出現」（頂端＝
+    // 內容區頂端，在實際輸出文字之上）。
     truncatedNotice = document.createElement("div");
     truncatedNotice.className = "output-truncated-notice";
     truncatedNotice.textContent = TRUNCATED_TEXT;
@@ -139,14 +193,6 @@
     goneNotice.hidden = true;
     outputSection.appendChild(goneNotice);
 
-    // 失敗原因（503／504／其他非 2xx／請求本身失敗）；文字一律 textContent 寫入，見
-    // showReason()。跟 goneNotice 分開一個節點：「pane 已不存在」不需要（也不應該）疊加上一輪
-    // 重試留下的原因文字。
-    reasonEl = document.createElement("div");
-    reasonEl.className = "output-error-reason";
-    reasonEl.hidden = true;
-    outputSection.appendChild(reasonEl);
-
     preEl = document.createElement("pre");
     preEl.className = "output-text";
     outputSection.appendChild(preEl);
@@ -157,7 +203,7 @@
   // --- 選取狀態（output.js 自己需要的最小狀態；「誰被選」的 UI 狀態仍在 actions.js）---
 
   var generation = 0;
-  var current = null; // { runtime, paneId } | null；gone 之後仍保留（給標題用），直到 clear()／關閉／重新 select()
+  var current = null; // { runtime, paneId } | null；gone 之後仍保留（給標題用），直到 clear()／取消選取／重新 select()
   var gone = false;
   var lastRenderedText = null;
   var pollTimer = null;
@@ -181,12 +227,24 @@
 
   // --- 面板顯示 ---
 
+  // `.is-open`＝「有選取」（design D7 保留這個意義）：標題、提示、內容框與「取消選取」畫出來，
+  // 空狀態收起。
   function showPanel() {
     outputSection.classList.add("is-open");
   }
 
-  function hidePanel() {
+  // 回到空狀態（direction-01-visual task 4.1；spec live-output「取消選取」：「面板回到空狀態」）。
+  // 面板本身不收起；上一個選取留下的標題、內容、提示與過期標示一併清掉，不留在 DOM 裡等下次
+  // 選取才被蓋掉（收起的節點仍在 textContent 裡，輔助工具與腳本都讀得到）。
+  function showEmptyState() {
     outputSection.classList.remove("is-open");
+    titleEl.textContent = "";
+    preEl.textContent = "";
+    lastRenderedText = null;
+    truncatedNotice.hidden = true;
+    goneNotice.hidden = true;
+    hideReason();
+    setStale(false);
   }
 
   function resetPanelForSelection(runtime, paneId) {
@@ -215,28 +273,51 @@
     }
   }
 
-  function setTruncated(isTruncated) {
-    truncatedNotice.hidden = !isTruncated;
+  // 內容框上方的提示行（截斷提示、失敗原因、「pane 已不存在」）出現或消失會改變內容框的高度：
+  // 寬 ≥760 時面板高度由版面決定，提示行一出現內容框就變矮，scrollTop 不變的話原本貼底的最後
+  // 幾行會被擠出可視範圍、最後一行被切一半，之後也不再被判定為貼底（direction-01-visual task
+  // 5.1，4.2 觀察）。切換前原本貼底，切換後就重新捲到底；使用者往上捲（不貼底）時不動，不把人
+  // 拉回去（spec live-output「往上捲不被拉回」）。
+  function keepPinnedAcross(change) {
+    var pinned = isPinnedToBottom();
+    change();
+    if (pinned) {
+      preEl.scrollTop = preEl.scrollHeight;
+    }
   }
 
-  // 「標為過期」：加／拿掉 #output 的 is-stale class，CSS 對 .output-text 套用 opacity（見
-  // style.css），getComputedStyle 驗得到看得見的差異——brief「精確值」明文要求不能只加 class。
+  function setTruncated(isTruncated) {
+    keepPinnedAcross(function () {
+      truncatedNotice.hidden = !isTruncated;
+    });
+  }
+
+  // 「標為過期」（direction-01-visual task 4.2；design D7）：加／拿掉 #output 的 is-stale
+  // class，CSS 依此把內容文字改 --text-dim、面板左緣加 --warn 色條（見 style.css），
+  // getComputedStyle 驗得到看得見的差異——brief「精確值」明文要求不能只加 class。同步切換
+  // 標題列「過期」文字（staleLabelEl）：三者（內容文字、左緣色條、標題文字）跟 is-stale 這一個
+  // class 的生滅完全同步，不會有其中一項忘了跟著切換。
   function setStale(isStale) {
     if (isStale) {
       outputSection.classList.add("is-stale");
     } else {
       outputSection.classList.remove("is-stale");
     }
+    staleLabelEl.hidden = !isStale;
   }
 
   function showReason(text) {
-    reasonEl.textContent = text;
-    reasonEl.hidden = false;
+    keepPinnedAcross(function () {
+      reasonEl.textContent = text;
+      reasonEl.hidden = false;
+    });
   }
 
   function hideReason() {
-    reasonEl.hidden = true;
-    reasonEl.textContent = "";
+    keepPinnedAcross(function () {
+      reasonEl.hidden = true;
+      reasonEl.textContent = "";
+    });
   }
 
   // 成功回應之後統一清除「過期」的兩個視覺線索（標示＋原因）。獨立於 writeText()：即使
@@ -293,7 +374,7 @@
   }
 
   // 中止目前追蹤的那個進行中請求（若有），並**同步**把 `inFlightController` 清成 null（G4 fix
-  // wave R20）：select()／clear()／markGone()／關閉都呼叫這個函式，接著都需要能立刻判斷「現在
+  // wave R20）：select()／clear()／markGone()／取消選取都呼叫這個函式，接著都需要能立刻判斷「現在
   // 沒有請求在飛」（select() 需要立刻排下一次輪詢）——不能等異步的 reject 回呼才清旗標，那樣會
   // 跟「立即對新選取發請求」互相卡住。先把 controller 存到區域變數再呼叫 `abort()`：`abort()`
   // 本身不會同步觸發 reject 回呼（那是之後的 microtask），所以這裡的同步歸零與稍後那個回呼裡
@@ -426,7 +507,9 @@
     generation += 1; // 讓 abort 之後仍可能到達的舊回應被丟棄（世代序號檢查兜底，見 runPoll()）。
     cancelScheduledPoll();
     gone = true;
-    goneNotice.hidden = false;
+    keepPinnedAcross(function () {
+      goneNotice.hidden = false;
+    });
     hideReason(); // 「pane 已不存在」是完整訊息，不疊加上一輪 503 可能留下的原因文字。
     setStale(true); // 保留最後一份文字（不清空 <pre>），但標為過期。
     notifyClosedExternally();
@@ -453,20 +536,43 @@
     current = null;
     gone = false;
     cancelScheduledPoll();
-    hidePanel();
+    showEmptyState();
   }
 
-  function handleCloseClick() {
+  function handleDeselectClick() {
     if (current === null) {
       return;
     }
+    var previous = current;
     abortInFlight();
     generation += 1;
     current = null;
     gone = false;
     cancelScheduledPoll();
-    hidePanel();
-    notifyClosedExternally();
+    showEmptyState();
+    notifyClosedExternally(); // actions.js clearSelected() 會同步整頁重畫
+    restoreFocusAfterDeselect(previous);
+  }
+
+  // 焦點交接（direction-01-visual task 4.1 fix round 1；Codex medium／設計審核 M3）：「取消選取」
+  // 按鈕隨空狀態收起，焦點若不處理就掉到 body、下一次 Tab 回到頁首。改成回到剛取消的那一列
+  // pane（重畫之後才找，拿到的是新節點；以 data-runtime／data-pane 逐一比對，不拼選擇器字串，
+  // id 裡的特殊字元不必跳脫）；那一列已不在畫面上或此刻不可選（pane 已不存在、改綁模式）時
+  // 退回面板本身。preventScroll：不為了還原焦點而捲動頁面或區塊。
+  function restoreFocusAfterDeselect(target) {
+    var rows = document.querySelectorAll('.pane-row[data-action="select-pane"]');
+    for (var i = 0; i < rows.length; i += 1) {
+      if (
+        rows[i].getAttribute("data-runtime") === target.runtime &&
+        rows[i].getAttribute("data-pane") === target.paneId
+      ) {
+        rows[i].focus({ preventScroll: true });
+        if (document.activeElement === rows[i]) {
+          return;
+        }
+      }
+    }
+    outputSection.focus({ preventScroll: true });
   }
 
   function setKnownPanes(panes) {

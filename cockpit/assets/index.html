@@ -8,20 +8,60 @@
     <link rel="stylesheet" href="/app/style.css" />
   </head>
   <body>
-    <!-- app 容器：初始內容是靜態的頂列（產品名稱、通道狀態、version 占位），在第一則
-         /ws 訊息抵達前就先顯示；收到第一份投影後，render.js 會用 replaceChildren 整個換掉
-         （含這個頂列），之後每次都整頁重畫。 -->
-    <div id="app">
-      <div id="topbar" class="topbar">
-        <span id="app-name" class="app-name">AI Agent Cockpit</span>
-        <span id="channel-status" class="channel-status channel-connecting">connecting</span>
-        <span id="version" class="version"></span>
+    <!-- 外框（direction-01-visual task 2.1；design D2）：`.shell` 是一個 CSS grid 容器，包住
+         `#app` 與 `#output`。`#app` 設 `display: contents`，所以 render.js 的 renderState()
+         畫出的各區塊（帶 data-region）直接成為 `.shell` 的 grid item，用 grid-area 就位；
+         `#output`（Live Output）同樣是 `.shell` 的 grid item，DOM 上仍是 `#app` 的兄弟節點，
+         不在 render.js 的 replaceChildren 範圍內（design D2：DOM 歸屬與版面位置分開）。 -->
+    <div class="shell">
+      <!-- app 容器：初始內容是跟 renderState() 輸出同一組 data-region 的靜態占位（首份投影
+           到達前顯示），讓 grid 從第一幀就照 design D3 的欄位就位，避免真正投影抵達、
+           replaceChildren 換掉這些占位節點時版面跳動。之後每次都整頁重畫（換掉這裡全部
+           children，不含 #output）。 -->
+      <div id="app">
+        <!-- data-channel-state（使用者決定 I2；task 2.3 fix round 1）：跟 render.js 的
+             renderTopbar() 一致，初值 connecting——window.onChannel 在第一份投影到達前就會
+             把它改成實際狀態（connected／disconnected）。 -->
+        <div id="topbar" class="topbar" data-region="topbar" data-channel-state="connecting">
+          <span id="app-name" class="app-name">AI Agent Cockpit</span>
+          <!-- 每個 runtime 一個連線燈號（design D4；direction-01-visual task 2.3）：內容由
+               render.js 的 renderRuntimeLamp() 填入，這裡先留空容器（首份投影到達前還沒有
+               runtime 清單）。 -->
+          <div class="topbar-runtimes"></div>
+        </div>
+        <nav class="region-projects" data-region="projects"></nav>
+        <!-- fix round 1（design 審核 I2）：Factory Floor／runtime 清單外層現在是不捲動的框，
+             內層（沿用舊 class="projects"／"runtime-cards"）才是真正捲動的容器，跟
+             render.js 的 renderState() 輸出結構一致。 -->
+        <div class="region-floor" data-region="floor">
+          <div class="projects"></div>
+        </div>
+        <div class="region-runtimes" data-region="runtimes">
+          <div class="runtime-cards"></div>
+        </div>
+        <div class="recent-events" data-region="events">
+          <h2 class="recent-events-title">最近事件</h2>
+          <ul class="recent-events-list"></ul>
+        </div>
+        <!-- 底列（design D4「連線配色也適用底列通道狀態」；direction-01-visual task 2.3）：
+             通道狀態（channel.js 尚未連上前的初始外觀是 connecting）＋version（首份投影到達
+             前還沒有版本號，留空）。結構要跟 render.js 的 renderStatusbarRegion() 一致，讓
+             window.onChannel 在第一份投影到達前就能正確更新 #channel-status。 -->
+        <div class="region-statusbar" data-region="statusbar">
+          <span class="statusbar-channel" title="瀏覽器 → cockpit 服務：connecting">
+            <span class="statusbar-channel-label">cockpit 服務</span>
+            <span id="channel-status" class="channel-status channel-connecting" data-channel-state>
+              <span class="channel-status-dot conn-symbol" aria-hidden="true"></span>
+              <span class="channel-status-text">connecting</span>
+            </span>
+          </span>
+          <span id="version" class="version"></span>
+        </div>
       </div>
+      <!-- Live Output 面板：內容由 output.js 在載入時自己建出來，這裡只留一個空殼容器＋
+           data-region="output"（design D2）。 -->
+      <section id="output" data-region="output"></section>
     </div>
-    <!-- Live Output 面板：#app 的兄弟節點，不在 render.js 的 replaceChildren 範圍內，捲動
-         位置與輪詢狀態不會被整頁重畫打斷（change live-output design D8）。內容由 output.js
-         在載入時自己建出來，這裡只留一個空殼容器。 -->
-    <section id="output"></section>
     <!-- 載入順序：output.js → render.js → actions.js → channel.js。output.js 放最前面，
          因為 render.js 每次重畫後會呼叫 window.liveOutput.setKnownPanes(...)（design D8；
          接線在 live-output task 5.3），必須先存在。channel.js 最後，收到第一則訊息時

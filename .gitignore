@@ -3,3 +3,4 @@
 /cockpit.toml
 cockpit.state.json
 __pycache__/
+.superpowers/

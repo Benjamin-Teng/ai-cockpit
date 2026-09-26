@@ -33,6 +33,27 @@
 //     （round 1 版本沒有載入樣式表，`getComputedStyle` 只會量到瀏覽器預設值）並且新增
 //     `/app/style.css` 路由，對「對照組 running 節點」與「未知 status 節點」都補上顏色比對。
 //
+// direction-01-visual task 3.2（Factory Floor 換皮）：節點改成 --surface 底＋左緣狀態色條＋
+// aria-hidden 的狀態符號 span＋status 文字，標題 span 多了 title 屬性，bound 的綁定摘要拆成
+// runtime／分隔／pane 三個子 span。依 tasks.md 3.2 把「逐字 HTML 字串斷言」與「顏色斷言」改成
+// 以 DOM 結構與屬性判斷（全部改在即時 CDP session 裡讀 DOM，不再對 --dump-dom 的序列化字串做
+// regex）：
+//   - 六種已知 status 的 class／status 文字／標題：原本 regex 比對 `class="task-title">標題<`
+//     等片段，改成讀 `.task-node` 的 classList、`.task-status-label`／`.task-title` 的
+//     textContent，另外斷言 `.task-status-symbol` 存在且 aria-hidden（spec「狀態不只靠顏色」）。
+//   - 六種已知 status 的實際顏色：節點不再是狀態色實底（spec「節點以表面色為底、左緣一條狀態
+//     色條……狀態文字與色條使用狀態色」），原本讀 backgroundColor，改成讀左緣色條
+//     （borderLeftColor）與 status 文字（.task-status-label 的 color），並斷言節點底色是
+//     --surface。EXPECTED_COLORS 的值不變，仍能抓到「兩個狀態色互換」。
+//   - 綁定摘要：原本 regex 比對 `class="ff-binding-text">文字<`，改成讀 .ff-binding-text 的
+//     textContent（bound 時是三個子 span 串起來的「runtime / pane」全文）與 .ff-binding-badge。
+//   - 未知 status（情境二）：原本 `html.includes('class="task-node task-status-unknown"
+//     title="whatever"')` 等逐字片段，改成讀節點的 className、title 屬性、status 文字與標題；
+//     顏色從 backgroundColor 改成 status 文字色＋虛線外框（spec「以次要文字色與虛線外框顯示
+//     原字串」），對照組 running 改讀色條與 status 文字色。
+// --dump-dom 仍用來驗 warning 內容、左欄 Project 順序、只畫一張 Factory Floor、.projects 在
+// .runtime-cards 之前（這幾條不受本 task 影響，逐字斷言維持原樣）。
+//
 // 做法：直接執行 `cargo build -p cockpit --example ui_preview` 產生的執行檔
 // （target/debug/examples/ui_preview.exe），不透過 `cargo run` 啟動——`cargo run` 會多一層
 // wrapper 行程，實際監聽 port 的是它的子行程，PID 追蹤與收尾容易對不上；直接執行 build
@@ -42,15 +63,14 @@
 //
 // headless Chrome 用 `--dump-dom --virtual-time-budget=<ms>`：讓 Chrome 在收到 index.html
 // 的 load 事件後，繼續跑一段虛擬時間（WebSocket 連線、收到第一份投影、render.js 整頁重畫
-// 都在這段時間內完成），時間到才把最終 DOM 序列化成 HTML 字串輸出到 stdout。取格子／列首
-// 內容用簡單的括號深度計數（`extractBalancedDiv`），不用正規表達式硬吃到下一個
-// `</div>`——cell 裡可能巢狀一層 task-node 的 `</div>`，正規表達式會提早收尾判斷錯。
+// 都在這段時間內完成），時間到才把最終 DOM 序列化成 HTML 字串輸出到 stdout。（格子／列首
+// 內容的比對在 direction-01-visual task 3.2 改到即時 CDP session 讀 DOM，見檔頭說明。）
 //
 // `scenarioUnknownStatus` 不透過 ui_preview／dump-dom，改用 CDP（跟 task 5.1
 // channel-backoff-check.js 同一套手法）：起一個只服務兩個檔案（harness html＋真正的
 // render.js 檔案內容）的極簡 http server，headless Chrome 開起來後用 CDP
 // `Runtime.evaluate` 直接呼叫 `window.onState(syntheticState)`（render.js 唯一暴露在
-// window 上、會觸發整頁重畫的入口），再讀 `#app` 的 innerHTML 斷言。
+// window 上、會觸發整頁重畫的入口），再讀 DOM 斷言（task 3.2 前是讀 `#app` 的 innerHTML）。
 //
 // 用法（repo 根，需先 `cargo build -p cockpit --example ui_preview`）：
 //   node docs/research/2026-09-16/factory-floor-check.js
@@ -76,14 +96,27 @@ const SCREENSHOT_PATH = path.join(__dirname, 'task-5.2-scenario-d.png');
 // CSS 屬性是 `background`（shorthand，只給顏色值＝只設 `background-color`，見
 // `cockpit/assets/app/style.css` 的 `.task-status-*` 規則），所以斷言讀
 // `getComputedStyle(node).backgroundColor`。
+//
+// direction-01-visual task 2.2 fix round 1（控制端 Ruling R20，採 Codex high／medium）：
+// spec `cockpit-dashboard`「Direction 01 視覺語彙」與 design D4「對象／狀態→顏色與符號」
+// task 對照表一直都要求畫面只用 10 個核心色彩 token；2.2 首輪把舊 GitHub 深色主題色盤
+// （--status-*／--stage-*）留給後續 task，被 Codex 與設計審核判定為未落實「把既有規則改為
+// 取用 token」，R20 裁決 2.2 本輪就要收斂。下面六個值全部換成 design D4 對照表指定的核心
+// token（running→--accent、blocked→--warn、ready→--text、pending／unknown→--text-dim、
+// failed→--bad、completed→--ok），是同一個 spec scenario（Factory Floor Requirement）
+// 底下、承載色值的 token 換了，不是新增或放寬斷言。
+// direction-01-visual task 3.2：承載狀態色的屬性從節點 background 改成左緣色條
+// （border-left-color）與 status 文字（.task-status-label 的 color），值不變；節點底色一律
+// 是 SURFACE_COLOR。
+const SURFACE_COLOR = '#142338'; // --surface
 const EXPECTED_COLORS = {
-  running: '#3fb950', // --status-working
-  blocked: '#d29922', // --status-blocked
-  ready: '#8b949e', // --status-idle
-  pending: '#484f58', // --status-unknown（pending 沿用既有「暗灰」語彙）
-  failed: '#f85149', // --stage-failed（本 change 新增）
-  completed: '#a371f7', // --stage-completed（本 change 新增，刻意不是 --status-done 的藍）
-  unknown: '#484f58', // --status-unknown（task-status-unknown fallback，跟 pending 同一個值）
+  running: '#63d5e8', // --accent
+  blocked: '#e9bc73', // --warn
+  ready: '#e5edf3', // --text
+  pending: '#a3b7c9', // --text-dim（design D4：pending／unknown 同一個 token）
+  failed: '#f47279', // --bad
+  completed: '#39d5ac', // --ok（刻意不是 --status-done／pane done 的顏色，spec 明文兩者不得同色）
+  unknown: '#a3b7c9', // --text-dim（task-status-unknown fallback，跟 pending 同一個值）
 };
 
 function hexToRgb(hex) {
@@ -98,7 +131,6 @@ function check(cond, label) {
 }
 const log = (s) => console.log(`[${new Date().toISOString()}] ${s}`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 function spawnTracked(cmd, args, label, opts) {
   const child = spawn(cmd, args, { stdio: 'ignore', windowsHide: true, ...(opts || {}) });
@@ -151,72 +183,34 @@ async function waitForServer(port, deadlineMs) {
   return false;
 }
 
-// 找 `openTag`（例如 `<div class="ff-cell" ...>`）開頭、跟它配對的 `</div>` 之間的內容：
-// 不用正規表達式硬吃到下一個 `</div>`（裡面可能巢狀一層子 div），改用簡單的深度計數，掃到
-// 與開頭配對的那個 `</div>` 才停。
-function extractBalancedDiv(html, openTag) {
-  const start = html.indexOf(openTag);
-  if (start === -1) return null;
-  let i = start + openTag.length;
-  let depth = 1;
-  while (depth > 0 && i < html.length) {
-    const nextOpen = html.indexOf('<div', i);
-    const nextClose = html.indexOf('</div>', i);
-    if (nextClose === -1) return null;
-    if (nextOpen !== -1 && nextOpen < nextClose) {
-      depth += 1;
-      i = nextOpen + 4;
-    } else {
-      depth -= 1;
-      i = nextClose + 6;
-    }
-  }
-  return html.slice(start + openTag.length, i - 6);
-}
+// direction-01-visual task 3.2：原本在這裡的 extractBalancedDiv／extractCellHtml／
+// extractRowHeaderHtml／assertTaskNode／assertBinding（對 --dump-dom 字串做括號計數與 regex
+// 逐字比對）已移除，同樣的比對改在即時 CDP session 裡讀 DOM，見 scenarioGridAndCoverage 的
+// assertLiveTaskNode／assertLiveBinding。
 
-function extractCellHtml(html, ws, stage) {
-  return extractBalancedDiv(html, `<div class="ff-cell" data-workstream="${ws}" data-stage="${stage}">`);
-}
-
-function extractRowHeaderHtml(html, ws) {
-  return extractBalancedDiv(html, `<div class="ff-row-header" data-workstream="${ws}">`);
-}
-
-// 逐項比對一個 task 節點的狀態 class、狀態文字、標題文字（fix round 1 的核心訴求：不能只
-// 斷言「有沒有節點」，要斷言「這個節點是不是這個狀態」）。
-function assertTaskNode(html, ws, stage, status, title) {
-  const cell = extractCellHtml(html, ws, stage);
-  check(cell !== null, `應該找到格子 (${ws}, ${stage})`);
-  if (cell === null) return;
-  check(
-    cell.includes(`class="task-node task-status-${status}"`),
-    `(${ws}, ${stage}) 節點應該有 class "task-status-${status}"（實際片段：${cell.slice(0, 120)}）`
-  );
-  check(
-    new RegExp(`class="task-status-label">${escapeRe(status)}<`).test(cell),
-    `(${ws}, ${stage}) 節點的狀態文字應該是 "${status}"`
-  );
-  check(
-    new RegExp(`class="task-title">${escapeRe(title)}<`).test(cell),
-    `(${ws}, ${stage}) 節點的標題應該是 "${title}"`
-  );
-}
-
-// 逐項比對一條 workstream 列首的綁定摘要文字、以及 override 時的「改綁」標示。
-function assertBinding(html, ws, expectedText, expectBadge) {
-  const row = extractRowHeaderHtml(html, ws);
-  check(row !== null, `應該找到 workstream 列首 (data-workstream="${ws}")`);
-  if (row === null) return;
-  check(
-    new RegExp(`class="ff-binding-text">${escapeRe(expectedText)}<`).test(row),
-    `workstream ${ws} 的綁定摘要應該是 "${expectedText}"（實際片段：${row.slice(0, 160)}）`
-  );
-  const hasBadge = row.includes('class="ff-binding-badge">改綁<');
-  check(
-    hasBadge === expectBadge,
-    `workstream ${ws} ${expectBadge ? '應該' : '不應該'} 顯示「改綁」標示（實際${hasBadge ? '有' : '沒有'}）`
-  );
-}
+// 一個 task 節點的 DOM 結構與屬性（兩個情境共用）：classList、status 文字、標題、狀態符號
+// span（aria-hidden）、左緣色條色、status 文字色、節點底色、外框樣式、title 屬性。
+const NODE_INFO_JS = `function (node) {
+  if (!node) return null;
+  var cs = getComputedStyle(node);
+  var label = node.querySelector('.task-status-label');
+  var title = node.querySelector('.task-title');
+  var symbol = node.querySelector('.task-status-symbol');
+  return {
+    className: node.className,
+    titleAttr: node.getAttribute('title'),
+    statusText: label ? label.textContent : null,
+    titleText: title ? title.textContent : null,
+    symbolText: symbol ? symbol.textContent : null,
+    symbolHidden: symbol ? symbol.getAttribute('aria-hidden') : null,
+    stripeColor: cs.borderLeftColor,
+    labelColor: label ? getComputedStyle(label).color : null,
+    background: cs.backgroundColor,
+    borderStyle: cs.borderStyle,
+    borderTopColor: cs.borderTopColor,
+    borderWidths: [cs.borderTopWidth, cs.borderRightWidth, cs.borderBottomWidth, cs.borderLeftWidth].map(parseFloat),
+  };
+}`;
 
 async function scenarioGridAndCoverage() {
   log('=== 情境一：Factory Floor 網格位置、六種已知 status、五種綁定摘要（含 override）、Project 順序、warning ===');
@@ -257,44 +251,19 @@ async function scenarioGridAndCoverage() {
     const html = dump.stdout || '';
     check(html.includes('factory-floor'), 'dump-dom 輸出應該含 Factory Floor 網格');
 
-    // --- Scenario D：三個節點位於正確（列, 欄），其餘六格沒有節點 ---
-    log('--- Scenario D 網格位置 ---');
-    const scenarioDCells = [
-      ['backend', 'Plan', false],
-      ['backend', 'Implement', true],
-      ['backend', 'Test', false],
-      ['frontend', 'Plan', true],
-      ['frontend', 'Implement', false],
-      ['frontend', 'Test', false],
-      ['tests', 'Plan', false],
-      ['tests', 'Implement', false],
-      ['tests', 'Test', true],
-    ];
-    for (const [ws, stage, expectNode] of scenarioDCells) {
-      const cell = extractCellHtml(html, ws, stage);
-      check(cell !== null, `應該找到格子 (${ws}, ${stage})`);
-      const hasNode = !!cell && cell.includes('class="task-node');
-      check(
-        hasNode === expectNode,
-        `(${ws}, ${stage}) ${expectNode ? '應該有' : '不應該有'} task 節點（實際${hasNode ? '有' : '沒有'}）`
-      );
-    }
-    assertTaskNode(html, 'backend', 'Implement', 'running', '後端實作');
-    assertTaskNode(html, 'frontend', 'Plan', 'running', '前端規劃');
-    assertTaskNode(html, 'tests', 'Test', 'running', '測試執行');
+    // direction-01-visual task 3.1：中上區域改成只顯示目前選定的 Project（spec「兩個
+    // Project」：「中上區域只有一張 Factory Floor……另一個的網格不在畫面上，改由左欄切換」）；
+    // `--dump-dom` 是單次靜態快照、不能點擊切換，所以這裡只能驗到未選定過時預設顯示的第一個
+    // Project（cockpit）。Scenario D（Project `p`）的網格位置與 workstream `frontend` 的
+    // 「歧義」綁定摘要改到下面「六種已知 status 的實際顏色」那段共用的即時 CDP session 裡，
+    // 先點左欄切到 `p` 再驗（見下方「Scenario D 網格位置（即時 CDP，切換 Project 後）」）。
 
-    // --- 六種已知 status 逐項比對 class／文字（fix round 1）---
-    log('--- 六種已知 status（class／文字逐項比對）---');
-    assertTaskNode(html, 'be', 'Implement', 'running', '投影擴充');
-    assertTaskNode(html, 'docs', 'Spec', 'pending', 'README');
-    assertTaskNode(html, 'ops', 'Review', 'completed', '部署腳本');
-    assertTaskNode(html, 'qa', 'Implement', 'blocked', '程式碼審查');
-    assertTaskNode(html, 'release', 'Spec', 'ready', '發布準備');
-    assertTaskNode(html, 'ops', 'Spec', 'failed', '上線檢查');
+    // 六種已知 status 逐項比對 class／文字（fix round 1）：direction-01-visual task 3.2 起改在
+    // 下面的即時 CDP session 以 DOM 結構判斷（assertLiveTaskNode），這裡只留 running 節點總數。
     const runningNodes = (html.match(/task-status-running/g) || []).length;
     check(
-      runningNodes === 4,
-      `running 節點總數應該是 4（cockpit 專案 1 個 + Scenario D 3 個，實際 ${runningNodes}）`
+      runningNodes === 1,
+      `未選定過時預設顯示 cockpit，畫面上應該只有 cockpit 專案的 1 個 running 節點（Scenario D 的 3 個屬於另一個 Project、要切換過去才看得到，實際 ${runningNodes}）`
     );
 
     // --- 六種已知 status 的實際顏色（fix round 2）---
@@ -334,25 +303,158 @@ async function scenarioGridAndCoverage() {
       }
       check(ready, '即時頁面應該在 5 秒內畫出全部 9 個 task 節點');
 
-      const knownCells = [
-        ['be', 'Implement', 'running'],
-        ['docs', 'Spec', 'pending'],
-        ['ops', 'Review', 'completed'],
-        ['qa', 'Implement', 'blocked'],
-        ['release', 'Spec', 'ready'],
-        ['ops', 'Spec', 'failed'],
-      ];
-      for (const [ws, stage, status] of knownCells) {
-        const selector = `.ff-cell[data-workstream="${ws}"][data-stage="${stage}"] .task-node`;
-        const bg = await cdp.eval(
-          `getComputedStyle(document.querySelector('${selector}')).backgroundColor`
+      // 逐項比對一個 task 節點的狀態 class、狀態文字、標題文字（fix round 1 的核心訴求：不能只
+      // 斷言「有沒有節點」，要斷言「這個節點是不是這個狀態」）。direction-01-visual task 3.2：
+      // 原本對 --dump-dom 字串 regex 比對 `class="task-node task-status-X"`、
+      // `class="task-status-label">X<`、`class="task-title">標題<`，改成讀 DOM：classList 恰好是
+      // task-node＋task-status-X、.task-status-label／.task-title 的 textContent 完全相等，另外
+      // 斷言狀態符號 span 存在且 aria-hidden（spec「狀態不只靠顏色」：task status 另有符號）。
+      async function assertLiveTaskNode(ws, stage, status, title) {
+        const cellSel = `.ff-cell[data-workstream="${ws}"][data-stage="${stage}"]`;
+        const info = await cdp.eval(`(() => {
+          const cell = document.querySelector(${JSON.stringify(cellSel)});
+          return (${NODE_INFO_JS})(cell ? cell.querySelector('.task-node') : null);
+        })()`);
+        check(info !== null, `(${ws}, ${stage}) 應該有 task 節點可供比對`);
+        if (info === null) return null;
+        check(
+          info.className === `task-node task-status-${status}`,
+          `(${ws}, ${stage}) 節點的 class 應該恰好是 "task-node task-status-${status}"（實際 ${JSON.stringify(info.className)}）`
         );
+        check(info.statusText === status, `(${ws}, ${stage}) 節點的狀態文字應該是 "${status}"（實際 ${JSON.stringify(info.statusText)}）`);
+        check(info.titleText === title, `(${ws}, ${stage}) 節點的標題應該是 "${title}"（實際 ${JSON.stringify(info.titleText)}）`);
+        check(
+          info.symbolText !== null && info.symbolText !== '' && info.symbolHidden === 'true',
+          `(${ws}, ${stage}) 節點應該有 aria-hidden 的狀態符號 span（實際 ${JSON.stringify({ t: info.symbolText, h: info.symbolHidden })}）`
+        );
+        return info;
+      }
+
+      // 六種已知 status：class／文字（原 dump-dom 版 assertTaskNode）＋實際顏色（fix round 2；
+      // task 3.2 起讀色條與 status 文字色，節點底色是 --surface）。
+      log('--- 六種已知 status（class／文字／符號逐項比對＋getComputedStyle 顏色）---');
+      const knownCells = [
+        ['be', 'Implement', 'running', '投影擴充'],
+        ['docs', 'Spec', 'pending', 'README'],
+        ['ops', 'Review', 'completed', '部署腳本'],
+        ['qa', 'Implement', 'blocked', '程式碼審查'],
+        ['release', 'Spec', 'ready', '發布準備'],
+        ['ops', 'Spec', 'failed', '上線檢查'],
+      ];
+      for (const [ws, stage, status, title] of knownCells) {
+        const info = await assertLiveTaskNode(ws, stage, status, title);
+        if (info === null) continue;
         const expected = hexToRgb(EXPECTED_COLORS[status]);
         check(
-          bg === expected,
-          `(${ws}, ${stage}) 節點（${status}）的 background-color 應該是 ${expected}（style.css ${EXPECTED_COLORS[status]}，實際 ${bg}）`
+          info.stripeColor === expected,
+          `(${ws}, ${stage}) 節點（${status}）的左緣色條 border-left-color 應該是 ${expected}（style.css ${EXPECTED_COLORS[status]}，實際 ${info.stripeColor}）`
+        );
+        check(
+          info.labelColor === expected,
+          `(${ws}, ${stage}) 節點（${status}）的 status 文字顏色應該是 ${expected}（實際 ${info.labelColor}）`
+        );
+        check(
+          info.background === hexToRgb(SURFACE_COLOR),
+          `(${ws}, ${stage}) 節點（${status}）的底色應該是 --surface ${hexToRgb(SURFACE_COLOR)}（實際 ${info.background}）`
         );
       }
+
+      // --- 綁定摘要文字（含 override 標示）逐項比對（fix round 1）---
+      // direction-01-visual task 3.2：原本對 dump-dom 字串 regex 比對
+      // `class="ff-binding-text">文字<` 與 `class="ff-binding-badge">改綁<`；bound 的摘要拆成
+      // runtime／分隔／pane 三個子 span 後，改成讀 .ff-binding-text 的 textContent（全文）與
+      // .ff-binding-badge 的 textContent。frontend（歧義／2）屬於 Project p，在下面切換過去後驗。
+      log('--- 五種綁定摘要文字（含 override）---');
+      async function assertLiveBinding(ws, expectedText, expectBadge) {
+        const b = await cdp.eval(`(() => {
+          const row = document.querySelector('.ff-row-header[data-workstream="${ws}"]');
+          if (!row) return null;
+          const text = row.querySelector('.ff-binding-text');
+          const badge = row.querySelector('.ff-binding-badge');
+          return { text: text ? text.textContent : null, badge: badge ? badge.textContent : null };
+        })()`);
+        check(b !== null, `應該找到 workstream 列首 (data-workstream="${ws}")`);
+        if (b === null) return;
+        check(b.text === expectedText, `workstream ${ws} 的綁定摘要應該是 "${expectedText}"（實際 ${JSON.stringify(b.text)}）`);
+        const hasBadge = b.badge === '改綁';
+        check(
+          hasBadge === expectBadge && (expectBadge || b.badge === null),
+          `workstream ${ws} ${expectBadge ? '應該' : '不應該'} 顯示「改綁」標示（實際 ${JSON.stringify(b.badge)}）`
+        );
+      }
+      await assertLiveBinding('be', 'win / wJ:p1', false);
+      await assertLiveBinding('docs', 'runtime 未連線', false);
+      await assertLiveBinding('ops', '無綁定', false);
+      await assertLiveBinding('qa', 'win / wJ:p3', true);
+      await assertLiveBinding('release', '未綁定', false);
+
+      // --- Scenario D 網格位置（即時 CDP，切換 Project 後；direction-01-visual task 3.1）---
+      // `--dump-dom` 是單次靜態快照、無法點擊，Scenario D（Project `p`）的網格改在這個「真的」
+      // headless Chrome 上，先點左欄切到 `p`（design D6：data-action="select-project"），
+      // 等 Factory Floor 真的換成 `p` 的網格後再驗三個節點的（列, 欄）與其餘六格沒有節點，
+      // 跟原本 dump-dom 版本比對的內容完全對應，只是換了取值方式（cdp.eval 讀即時 DOM，不是
+      // 序列化字串）。同一個 session 沿用同一份 fixture（cockpit／p 兩個 Project），不需要
+      // 另外注入投影。
+      log('--- Scenario D 網格位置（即時 CDP，切換 Project 後）---');
+      await cdp.eval('document.querySelector(\'[data-action="select-project"][data-project="p"]\').click(); true');
+      let switchedToP = false;
+      for (let i = 0; i < 50 && !switchedToP; i++) {
+        switchedToP = await cdp.eval('!!document.querySelector(\'.project[data-project="p"]\')');
+        if (!switchedToP) await sleep(100);
+      }
+      check(switchedToP, '點左欄的 p 之後，Factory Floor 應該在 5 秒內換成 Scenario D 的網格');
+
+      const scenarioDCells = [
+        ['backend', 'Plan', false],
+        ['backend', 'Implement', true],
+        ['backend', 'Test', false],
+        ['frontend', 'Plan', true],
+        ['frontend', 'Implement', false],
+        ['frontend', 'Test', false],
+        ['tests', 'Plan', false],
+        ['tests', 'Implement', false],
+        ['tests', 'Test', true],
+      ];
+      for (const [ws, stage, expectNode] of scenarioDCells) {
+        const cellSel = `.ff-cell[data-workstream="${ws}"][data-stage="${stage}"]`;
+        const cellInfo = await cdp.eval(`(() => {
+          const cell = document.querySelector(${JSON.stringify(cellSel)});
+          if (!cell) return null;
+          return { hasNode: !!cell.querySelector('.task-node') };
+        })()`);
+        check(cellInfo !== null, `應該找到格子 (${ws}, ${stage})`);
+        const hasNode = !!cellInfo && cellInfo.hasNode;
+        check(
+          hasNode === expectNode,
+          `(${ws}, ${stage}) ${expectNode ? '應該有' : '不應該有'} task 節點（實際${hasNode ? '有' : '沒有'}）`
+        );
+      }
+
+      await assertLiveTaskNode('backend', 'Implement', 'running', '後端實作');
+      await assertLiveTaskNode('frontend', 'Plan', 'running', '前端規劃');
+      await assertLiveTaskNode('tests', 'Test', 'running', '測試執行');
+
+      const runningNodesInP = await cdp.eval("document.querySelectorAll('.task-status-running').length");
+      check(
+        runningNodesInP === 3,
+        `切到 p 之後，畫面上應該只有 Scenario D 的 3 個 running 節點（cockpit 的已經不在畫面上，實際 ${runningNodesInP}）`
+      );
+
+      // frontend 的「歧義（2）」綁定摘要（原本 dump-dom 版本的 assertBinding('frontend', ...)，
+      // 同理搬到這裡：frontend 屬於 Project p，切換過去才看得到）。
+      const frontendBinding = await cdp.eval(`(() => {
+        const row = document.querySelector('.ff-row-header[data-workstream="frontend"]');
+        const text = row ? row.querySelector('.ff-binding-text') : null;
+        return {
+          text: text ? text.textContent : null,
+          hasBadge: !!(row && row.querySelector('.ff-binding-badge')),
+        };
+      })()`);
+      check(
+        frontendBinding.text === '歧義（2）',
+        `workstream frontend 的綁定摘要應該是 "歧義（2）"（實際 ${JSON.stringify(frontendBinding.text)}）`
+      );
+      check(frontendBinding.hasBadge === false, 'workstream frontend 不應該顯示「改綁」標示');
     } finally {
       try {
         if (colorWs) colorWs.close();
@@ -370,14 +472,9 @@ async function scenarioGridAndCoverage() {
       }
     }
 
-    // --- 五種綁定摘要文字（含 override 標示）逐項比對（fix round 1）---
-    log('--- 五種綁定摘要文字（含 override）---');
-    assertBinding(html, 'be', 'win / wJ:p1', false);
-    assertBinding(html, 'docs', 'runtime 未連線', false);
-    assertBinding(html, 'ops', '無綁定', false);
-    assertBinding(html, 'qa', 'win / wJ:p3', true);
-    assertBinding(html, 'release', '未綁定', false);
-    assertBinding(html, 'frontend', '歧義（2）', false);
+    // 五種綁定摘要文字（含 override 標示）：direction-01-visual task 3.2 起改在上面的即時 CDP
+    // session 以 DOM 判斷（assertLiveBinding）；frontend（歧義／2）屬於 Project p，在切換過去
+    // 之後驗（task 3.1）。
 
     // --- warning 內容（fix round 1）---
     log('--- warning 內容 ---');
@@ -388,29 +485,38 @@ async function scenarioGridAndCoverage() {
       'project「cockpit」應該顯示指定內容的 warning'
     );
 
-    // --- 兩個 Project 上下順序在 runtime 卡之前 ---
-    log('--- 兩個 Project 上下順序 ---');
-    // task 5.3 起操作按鈕也帶 data-project（design D9），這裡只算 Project 區塊本身。
-    const projectMatches = [...html.matchAll(/class="project" data-project="([^"]*)"/g)].map((m) => m[1]);
-    check(
-      projectMatches.length === 2,
-      `應該恰好有兩個 data-project（實際 ${projectMatches.length}：${JSON.stringify(projectMatches)}）`
+    // --- 左欄 Project 順序＋Factory Floor 只顯示選定的一個（direction-01-visual task 3.1；
+    // 原本這裡驗「兩個 Project 上下順序」，spec「兩個 Project」情境把行為改成「中上區域只有
+    // 一張 Factory Floor……另一個的網格不在畫面上，改由左欄切換」，斷言跟著改：左欄仍然依
+    // state.projects 順序列出兩個 Project（cockpit 在上、p 在下），但 Factory Floor
+    // （.project，data-project）在這份未選定過的快照裡應該恰好只有一個，且是 cockpit）---
+    log('--- 左欄 Project 順序＋Factory Floor 只顯示選定的一個 ---');
+    // 左欄項目用 data-action="select-project" 搭 data-project 指認（design D6），跟 Factory
+    // Floor 面板本身、節點操作按鈕的 data-project 不會混淆（後兩者的 data-action 分別是
+    // undefined／advance 等，不是 select-project）。
+    const projectItemMatches = [...html.matchAll(/data-action="select-project" data-project="([^"]*)"/g)].map(
+      (m) => m[1]
     );
     check(
-      projectMatches[0] === 'cockpit' && projectMatches[1] === 'p',
-      `Project 順序應該是 cockpit 在上、p（Scenario D）在下（實際 ${JSON.stringify(projectMatches)}）`
+      projectItemMatches.length === 2,
+      `左欄應該恰好有兩個 Project 項目（實際 ${projectItemMatches.length}：${JSON.stringify(projectItemMatches)}）`
+    );
+    check(
+      projectItemMatches[0] === 'cockpit' && projectItemMatches[1] === 'p',
+      `左欄 Project 順序應該是 cockpit 在上、p（Scenario D）在下（實際 ${JSON.stringify(projectItemMatches)}）`
+    );
+    // task 5.3 起操作按鈕也帶 data-project（design D9），這裡只算 Factory Floor 面板本身
+    // （class="project"，不是 class="project-item"）。
+    const projectPanelMatches = [...html.matchAll(/class="project" data-project="([^"]*)"/g)].map((m) => m[1]);
+    check(
+      projectPanelMatches.length === 1 && projectPanelMatches[0] === 'cockpit',
+      `spec「兩個 Project」：未選定過時 Factory Floor 應該只畫出第一個 Project（cockpit）一張（實際 ${JSON.stringify(projectPanelMatches)}）`
     );
     const projectsIdx = html.indexOf('class="projects"');
     const runtimeCardsIdx = html.indexOf('class="runtime-cards"');
     check(
       projectsIdx !== -1 && runtimeCardsIdx !== -1 && projectsIdx < runtimeCardsIdx,
       'Factory Floor（.projects）應該整塊畫在 runtime 卡（.runtime-cards）之前'
-    );
-    const cockpitIdx = html.indexOf('class="project" data-project="cockpit"');
-    const pIdx = html.indexOf('class="project" data-project="p"');
-    check(
-      cockpitIdx !== -1 && pIdx !== -1 && cockpitIdx < pIdx && pIdx < runtimeCardsIdx,
-      'cockpit 專案應該在 p（Scenario D）之上，兩者都在 runtime 卡之前'
     );
 
     // --- 附帶：截圖存研究目錄，供人眼核對視覺 ---
@@ -606,52 +712,89 @@ async function scenarioUnknownStatus() {
       !evalResult.result || !evalResult.result.exceptionDetails,
       `window.onState 呼叫不應該丟例外（實際：${JSON.stringify(evalResult.result && evalResult.result.exceptionDetails)}）`
     );
-    const appHtml = await cdp.eval("document.getElementById('app').innerHTML");
-    check(typeof appHtml === 'string' && appHtml.length > 0, '#app 應該有內容（重畫沒有整頁壞掉）');
+    const appLen = await cdp.eval("document.getElementById('app').innerHTML.length");
+    check(typeof appLen === 'number' && appLen > 0, '#app 應該有內容（重畫沒有整頁壞掉）');
 
-    const cell = extractCellHtml(appHtml, 'ws1', 'Stage1');
-    check(cell !== null, '應該找到格子 (ws1, Stage1)');
-    const html = cell || '';
+    // direction-01-visual task 3.2：原本把 #app 的 innerHTML 取出來、用括號計數切出格子再做
+    // 逐字 regex（`class="task-node task-status-running"`、`class="task-title">已知狀態對照<`、
+    // `class="task-node task-status-unknown" title="whatever"`、`class="task-status-label">
+    // whatever<`、`class="task-title">未知狀態<`、`class="task-node` 的出現次數）；節點多了狀態
+    // 符號 span、標題 span 多了 title 屬性後，改成直接讀 DOM 的 className／屬性／textContent，
+    // 比對的內容一一對應。
+    const cellInfo = await cdp.eval(`(() => {
+      const cell = document.querySelector('.ff-cell[data-workstream="ws1"][data-stage="Stage1"]');
+      if (!cell) return null;
+      const info = ${NODE_INFO_JS};
+      const nodes = cell.querySelectorAll('.task-node');
+      return {
+        nodeCount: nodes.length,
+        known: info(cell.querySelector('.task-node.task-status-running')),
+        unknown: info(cell.querySelector('.task-node.task-status-unknown')),
+      };
+    })()`);
+    check(cellInfo !== null, '應該找到格子 (ws1, Stage1)');
+    const known = cellInfo ? cellInfo.known : null;
+    const unknown = cellInfo ? cellInfo.unknown : null;
 
     // 對照組：已知 status 的節點正常（沒有因為隔壁的未知 status 節點而壞掉）。
     check(
-      html.includes('class="task-node task-status-running"') &&
-        /class="task-title">已知狀態對照</.test(html),
-      '同格內已知 status（running）的節點應該正常渲染'
+      known !== null && known.className === 'task-node task-status-running' && known.titleText === '已知狀態對照',
+      `同格內已知 status（running）的節點應該正常渲染（實際 ${JSON.stringify(known)}）`
     );
 
     // 未知 status：暗灰 class（task-status-unknown）＋ title 屬性保留原字串＋文字顯示原字串。
     check(
-      html.includes('class="task-node task-status-unknown" title="whatever"'),
-      `未知 status 節點應該落 class "task-status-unknown" 並帶 title="whatever"（實際片段：${html.slice(0, 300)}）`
+      unknown !== null && unknown.className === 'task-node task-status-unknown' && unknown.titleAttr === 'whatever',
+      `未知 status 節點應該落 class "task-status-unknown" 並帶 title="whatever"（實際 ${JSON.stringify(unknown)}）`
     );
-    check(
-      /class="task-status-label">whatever</.test(html),
-      '未知 status 節點的文字應該保留原字串 "whatever"'
-    );
-    check(
-      /class="task-title">未知狀態</.test(html),
-      '未知 status 節點的標題應該正常顯示'
-    );
+    check(unknown !== null && unknown.statusText === 'whatever', '未知 status 節點的文字應該保留原字串 "whatever"');
+    check(unknown !== null && unknown.titleText === '未知狀態', '未知 status 節點的標題應該正常顯示');
 
-    const nodeCount = (html.match(/class="task-node/g) || []).length;
-    check(nodeCount === 2, `這格應該恰好有兩個 task 節點（實際 ${nodeCount}）`);
+    check(cellInfo !== null && cellInfo.nodeCount === 2, `這格應該恰好有兩個 task 節點（實際 ${cellInfo && cellInfo.nodeCount}）`);
 
     // fix round 2：實際顏色（不只是 class 名稱對了）。harness 現在有載入真正的 style.css
-    // （見 HARNESS_HTML 的變更），才量得到有意義的 backgroundColor。
-    const runningBg = await cdp.eval(
-      "getComputedStyle(document.querySelector('.task-node.task-status-running')).backgroundColor"
+    // （見 HARNESS_HTML 的變更），才量得到有意義的計算樣式。direction-01-visual task 3.2：節點
+    // 不再是狀態色實底（spec「節點以表面色為底、左緣一條狀態色條」；「未知 status……以次要
+    // 文字色與虛線外框顯示原字串」），原本讀兩個節點的 backgroundColor，改成讀左緣色條與
+    // status 文字色，未知 status 另外斷言虛線外框與外框色。
+    const runningColor = hexToRgb(EXPECTED_COLORS.running);
+    check(
+      known !== null && known.stripeColor === runningColor && known.labelColor === runningColor,
+      `對照組 running 節點的色條與 status 文字應該是 ${runningColor}（實際 ${known && known.stripeColor}／${known && known.labelColor}）`
+    );
+    const unknownColor = hexToRgb(EXPECTED_COLORS.unknown);
+    check(
+      unknown !== null && unknown.labelColor === unknownColor && unknown.stripeColor === unknownColor,
+      `未知 status 節點的 status 文字與色條應該是次要文字色 ${unknownColor}（style.css ${EXPECTED_COLORS.unknown}，實際 ${unknown && unknown.labelColor}／${unknown && unknown.stripeColor}）`
     );
     check(
-      runningBg === hexToRgb(EXPECTED_COLORS.running),
-      `對照組 running 節點的 background-color 應該是 ${hexToRgb(EXPECTED_COLORS.running)}（實際 ${runningBg}）`
+      unknown !== null && unknown.borderStyle === 'dashed' && unknown.borderTopColor === unknownColor,
+      `未知 status 節點應該有 ${unknownColor} 虛線外框（實際 ${unknown && unknown.borderStyle}／${unknown && unknown.borderTopColor}）`
     );
-    const unknownBg = await cdp.eval(
-      "getComputedStyle(document.querySelector('.task-node.task-status-unknown')).backgroundColor"
+    // task 3.2 fix round 1（Codex (1)）：只驗 borderStyle 與顏色時，四邊寬度被改成 0（虛線外框
+    // 完全看不見）仍會通過。補驗四邊寬度 > 0、左側狀態條 ≥ STRIPE_MIN_PX；否定對照：同一個節點
+    // 暫時設 border-width: 0，同一個判準必須回報失敗。
+    const STRIPE_MIN_PX = 3;
+    const frameVisible = (x) =>
+      x !== null && x.borderWidths.slice(0, 3).every((w) => w > 0) && x.borderWidths[3] >= STRIPE_MIN_PX;
+    check(
+      frameVisible(unknown),
+      `未知 status 節點的虛線外框四邊寬度應該 > 0、左側狀態條 ≥${STRIPE_MIN_PX}px（實際 ${unknown && JSON.stringify(unknown.borderWidths)}）`
+    );
+    const zeroWidth = await cdp.eval(`(() => {
+      const n = document.querySelector('.ff-cell[data-workstream="ws1"][data-stage="Stage1"] .task-node.task-status-unknown');
+      n.style.borderWidth = '0';
+      const r = (${NODE_INFO_JS})(n);
+      n.style.borderWidth = '';
+      return r;
+    })()`);
+    check(
+      zeroWidth !== null && zeroWidth.borderStyle === 'dashed' && !frameVisible(zeroWidth),
+      `否定對照：未知 status 節點 border-width 設成 0 時 style 仍是 dashed，寬度判準必須回報失敗（實際 ${JSON.stringify(zeroWidth && zeroWidth.borderWidths)}）`
     );
     check(
-      unknownBg === hexToRgb(EXPECTED_COLORS.unknown),
-      `未知 status 節點的 background-color 應該是 ${hexToRgb(EXPECTED_COLORS.unknown)}（style.css ${EXPECTED_COLORS.unknown}，實際 ${unknownBg}）`
+      unknown !== null && unknown.background === hexToRgb(SURFACE_COLOR) && known !== null && known.background === hexToRgb(SURFACE_COLOR),
+      `兩個節點的底色都應該是 --surface ${hexToRgb(SURFACE_COLOR)}（實際 ${known && known.background}／${unknown && unknown.background}）`
     );
   } finally {
     try {

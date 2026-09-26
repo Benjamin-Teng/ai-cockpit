@@ -8,14 +8,20 @@
 //    透過真正的 `/ws`＋channel.js 重畫，驗：
 //    - 按鈕顯示規則：逐一比對 /api/state 每個 task 的 mark／stage 與畫面上的按鈕集合；
 //      workstream 列首「改綁」一律有、「取消改綁」只在 source 為 override 時有。
+//      direction-01-visual task 3.1：Factory Floor 一次只畫選定的一個 Project（design D6），
+//      這裡逐 Project 點左欄切換後再比對，不是像過去那樣一次 dump 出全部 Project 的節點。
 //    - 情境「推進按鈕」：按 be-1 的「推進」→ 恰好收到一個 `POST /api/projects/cockpit/tasks/be-1/advance`。
 //    - 情境「改綁模式跨重畫保留」：按 be 的「改綁」→ 等 version 至少前進 2 且確認 DOM 真的被
 //      換掉 → 提示、「取消」、connected runtime 未 exited pane 的「綁定到這裡」都還在 → 按
 //      wJ:p3 那列 → 收到 `PUT .../workstreams/be/override`，本體 `{"runtime":"win","pane_id":"wJ:p3"}`
-//      → 離開改綁模式。另驗「取消」離開且不送請求、「取消改綁」送 `DELETE`。
-//    - 情境「頻繁重畫時按鈕仍有效」：連按 10 個不同 task 的「Completed」，每次按下與放開之間
-//      刻意間隔 150 ms（> 100 ms 推送週期，保證按下與放開落在不同 DOM 元素上——正是 design D9
-//      說 `click` 會遺失的情況）→ 恰好收到 10 個對應的 `POST .../complete`。
+//      → 離開改綁模式。另驗「取消」離開且不送請求（frontend 屬於 Project p，先切過去）、
+//      「取消改綁」送 `DELETE`（qa 屬於 Project cockpit，切回去）。
+//    - 情境「頻繁重畫時按鈕仍有效」：連按 10 個不同 task 的「Completed」——cockpit 專案畫面上
+//      全部 7 個，再點左欄切到 Project p 繼續按剩下 3 個（task 3.1 fix round 1／Codex
+//      finding：曾經被誤改成只按 7 個，判定為既有驗收覆蓋率被削弱，改回跨 Project 湊足 10 個）
+//      ，每次按下與放開之間刻意間隔 150 ms（> 100 ms 推送週期，保證按下與放開落在不同 DOM
+//      元素上——正是 design D9 說 `click` 會遺失的情況）→ 恰好收到 10 個對應的
+//      `POST .../complete`。
 //
 //    點擊一律用 CDP `Input.dispatchMouseEvent`（真的滑鼠事件，會產生 pointerdown／mouseup／
 //    click），不是在頁面裡呼叫 `element.click()`。
@@ -283,25 +289,47 @@ async function partPreview() {
     const url = `http://127.0.0.1:${port}/`;
     chrome = await startChrome(cdpPort, url, 'preview');
     const { cdp } = chrome;
-    await cdp.waitFor("document.querySelectorAll('.task-node').length >= 12", 5000, '畫出全部 task 節點');
+    // cockpit 是未選定過時的預設 Project（spec cockpit-dashboard「Project 切換」；design
+    // D6；direction-01-visual task 3.1：中上區域只顯示選定的一個 Project），fixture 的
+    // cockpit 專案有 9 個 task，這裡先等它畫出來再往下走；project p（Scenario D）的 3 個節點
+    // 要切過去才看得到，見下面「按鈕顯示規則」逐 Project 迴圈。
+    await cdp.waitFor("document.querySelectorAll('.task-node').length >= 9", 5000, '畫出 cockpit 專案全部 task 節點');
 
     // --- 按鈕顯示規則 ---
-    log('--- 按鈕顯示規則（對照 /api/state 逐 task 比對）---');
+    // direction-01-visual task 3.1：Factory Floor 一次只畫選定的一個 Project，原本「一次
+    // dump 出全部 12 個 task 節點、跨兩個 Project 一起核對」的做法不成立了——這裡改成逐
+    // Project 迴圈：每個 Project 各自點左欄切過去（design D6：data-action="select-project"）、
+    // 等它的 Factory Floor 真的畫出來，再讀當下 DOM 核對「只讀得到這個 Project 自己的按鈕」。
+    // cockpit 是預設選定，這裡仍明確點一次（select-project 冪等、不是「畫面操作」，不影響
+    // 後面任何情境的前置狀態，見 design D6）。
+    log('--- 按鈕顯示規則（對照 /api/state，逐 Project 切換後比對）---');
     const state = await (await fetch(`http://127.0.0.1:${port}/api/state`)).json();
-    const domActions = await cdp.eval(`(() => {
-      const out = {};
-      document.querySelectorAll('[data-action][data-task]').forEach((b) => {
-        const k = b.dataset.project + '/' + b.dataset.task;
-        (out[k] = out[k] || []).push(b.dataset.action);
-      });
-      const ws = {};
-      document.querySelectorAll('[data-action][data-workstream]').forEach((b) => {
-        const k = b.dataset.project + '/' + b.dataset.workstream;
-        (ws[k] = ws[k] || []).push(b.dataset.action);
-      });
-      return { tasks: out, ws };
-    })()`);
+    let cockpitLabels = null;
     for (const project of state.projects) {
+      await cdp.click(`[data-action="select-project"][data-project="${project.id}"]`);
+      await cdp.waitFor(
+        `!!document.querySelector('.project[data-project="${project.id}"]')`,
+        3000,
+        `切到 Project ${project.id}`
+      );
+      await cdp.waitFor(
+        `document.querySelectorAll('.task-node').length >= ${project.tasks.length}`,
+        3000,
+        `Project ${project.id} 的 task 節點全部畫出`
+      );
+      const domActions = await cdp.eval(`(() => {
+        const out = {};
+        document.querySelectorAll('[data-action][data-task]').forEach((b) => {
+          const k = b.dataset.project + '/' + b.dataset.task;
+          (out[k] = out[k] || []).push(b.dataset.action);
+        });
+        const ws = {};
+        document.querySelectorAll('[data-action][data-workstream]').forEach((b) => {
+          const k = b.dataset.project + '/' + b.dataset.workstream;
+          (ws[k] = ws[k] || []).push(b.dataset.action);
+        });
+        return { tasks: out, ws };
+      })()`);
       for (const task of project.tasks) {
         const key = `${project.id}/${task.id}`;
         const actual = (domActions.tasks[key] || []).slice().sort();
@@ -320,20 +348,24 @@ async function partPreview() {
           `workstream ${key}（binding ${w.binding.state}${w.binding.source ? '/' + w.binding.source : ''}）按鈕應該是 ${JSON.stringify(expected)}（實際 ${JSON.stringify(actual)}）`
         );
       }
+      if (project.id === 'cockpit') {
+        // 按鈕文字（spec）只需要驗一次，be-1／ops-1／be／qa 都是 cockpit 專案的節點，趁 cockpit
+        // 還選定著的這一輪順便讀（下面還有其他 Project 要切，讀完才切走）。
+        cockpitLabels = await cdp.eval(`(() => {
+          const t = (sel) => { const n = document.querySelector(sel); return n ? n.textContent : null; };
+          return {
+            advance: t('[data-action="advance"][data-task="be-1"]'),
+            complete: t('[data-action="complete"][data-task="be-1"]'),
+            fail: t('[data-action="fail"][data-task="be-1"]'),
+            clear: t('[data-action="clear"][data-task="ops-1"]'),
+            rebind: t('[data-action="rebind"][data-workstream="be"]'),
+            overrideClear: t('[data-action="override-clear"][data-workstream="qa"]'),
+          };
+        })()`);
+      }
     }
-    const labels = await cdp.eval(`(() => {
-      const t = (sel) => { const n = document.querySelector(sel); return n ? n.textContent : null; };
-      return {
-        advance: t('[data-action="advance"][data-task="be-1"]'),
-        complete: t('[data-action="complete"][data-task="be-1"]'),
-        fail: t('[data-action="fail"][data-task="be-1"]'),
-        clear: t('[data-action="clear"][data-task="ops-1"]'),
-        rebind: t('[data-action="rebind"][data-workstream="be"]'),
-        overrideClear: t('[data-action="override-clear"][data-workstream="qa"]'),
-      };
-    })()`);
     check(
-      JSON.stringify(labels) ===
+      JSON.stringify(cockpitLabels) ===
         JSON.stringify({
           advance: '推進',
           complete: 'Completed',
@@ -342,11 +374,21 @@ async function partPreview() {
           rebind: '改綁',
           overrideClear: '取消改綁',
         }),
-      `按鈕文字應該照 spec（實際 ${JSON.stringify(labels)}）`
+      `按鈕文字應該照 spec（實際 ${JSON.stringify(cockpitLabels)}）`
     );
     check(
       (await cdp.eval("document.querySelectorAll('[data-action=\"bind-here\"]').length")) === 0,
       '不在改綁模式時不應該出現「綁定到這裡」'
+    );
+
+    // 上面的逐 Project 迴圈以 state.projects 的順序（fixture：cockpit、p）跑完，最後一個是
+    // p——後面「推進按鈕」「改綁模式跨重畫保留」等情境都預期 cockpit 是目前選定的 Project，
+    // 這裡切回去（select-project 不是「畫面操作」，不影響任何進行中的狀態，見 design D6）。
+    await cdp.click('[data-action="select-project"][data-project="cockpit"]');
+    await cdp.waitFor(
+      "!!document.querySelector('.project[data-project=\"cockpit\"]')",
+      3000,
+      '切回 cockpit 供後續情境使用'
     );
 
     // --- 情境：推進按鈕 ---
@@ -423,6 +465,11 @@ async function partPreview() {
     );
 
     log('--- 改綁模式「取消」---');
+    // workstream frontend 屬於 Project p（direction-01-visual task 3.1：Factory Floor 一次
+    // 只畫選定的一個 Project），先切過去它的「改綁」按鈕才存在於畫面上（design D6：
+    // select-project 不是「畫面操作」，不影響即將進入的改綁模式）。
+    await cdp.click('[data-action="select-project"][data-project="p"]');
+    await cdp.waitFor("!!document.querySelector('.project[data-project=\"p\"]')", 3000, '切到 Project p');
     await cdp.click('[data-action="rebind"][data-project="p"][data-workstream="frontend"]');
     await cdp.waitFor("!!document.querySelector('.rebind-banner')", 2000, '再次進入改綁模式');
     await cdp.click('.rebind-banner [data-action="rebind-cancel"]');
@@ -431,6 +478,9 @@ async function partPreview() {
     check(requests.length === 0, `按「取消」不送任何請求（實際 ${JSON.stringify(requests)}）`);
 
     log('--- 「取消改綁」---');
+    // workstream qa 屬於 Project cockpit，切回去（同上，select-project 不影響進行中狀態）。
+    await cdp.click('[data-action="select-project"][data-project="cockpit"]');
+    await cdp.waitFor("!!document.querySelector('.project[data-project=\"cockpit\"]')", 3000, '切回 Project cockpit');
     await cdp.click('[data-action="override-clear"][data-project="cockpit"][data-workstream="qa"]');
     await sleep(500);
     check(
@@ -442,16 +492,42 @@ async function partPreview() {
     requests.length = 0;
 
     // --- 情境：頻繁重畫時按鈕仍有效 ---
-    log('--- 情境「頻繁重畫時按鈕仍有效」（10 個不同 task，按住 150 ms）---');
-    const targets = await cdp.eval(
+    // fix round 1／Codex finding（2）：direction-01-visual task 3.1 把「連按 10 個不同
+    // task」誤改成只按 cockpit 專案畫面上找得到的 7 個，被 Codex 判定為既有驗收覆蓋率被削弱
+    // ——原始 spec 要求的是「同一個 100 ms 推送週期內連續按壓 10 個不同按鈕，每次按下與放開
+    // 落在不同 DOM 元素時仍然送得出去」（design D9），10 這個數字本身雖然不是 spec 逐字規定，
+    // 但既有驗收一直用 10 顆按鈕的壓力測試涵蓋，7 顆會讓「第 8～10 次操作遺失」這種回歸在測試
+    // 裡量不到，即使那不是 spec 逐字要求也不該無聲少驗。改回 10：先操作 cockpit 專案畫面上
+    // 全部 7 個「Completed」，再點左欄切到 Project p（design D6：select-project 不影響任何
+    // 進行中狀態），操作 p 專案的 3 個「Completed」（backend-1／frontend-1／tests-1，p 的
+    // 全部 task 都是 mark === "none"），合計 10 個不同 task，跨兩個 Project 一起驗「按下與
+    // 放開落在不同 DOM 元素仍送得出去」在 Project 切換之後依然成立。
+    log('--- 情境「頻繁重畫時按鈕仍有效」（連按 10 個不同 task：cockpit 7 個＋切到 p 再按 3 個，按住 150 ms）---');
+    const cockpitTargets = await cdp.eval(
       "[...document.querySelectorAll('[data-action=\"complete\"]')].map((b) => [b.dataset.project, b.dataset.task])"
     );
-    check(targets.length >= 10, `畫面上至少有 10 個「Completed」（實際 ${targets.length}）`);
-    const chosen = targets.slice(0, 10);
+    check(
+      cockpitTargets.length === 7,
+      `cockpit 專案畫面上應該有 7 個「Completed」（實際 ${cockpitTargets.length}：${JSON.stringify(cockpitTargets)}）`
+    );
     const vBefore = await cdp.eval("Number(document.getElementById('version').textContent.slice(1))");
-    for (const [project, task] of chosen) {
+    for (const [project, task] of cockpitTargets) {
       await cdp.click(`[data-action="complete"][data-project="${project}"][data-task="${task}"]`, 150);
     }
+    await cdp.click('[data-action="select-project"][data-project="p"]');
+    await cdp.waitFor("!!document.querySelector('.project[data-project=\"p\"]')", 3000, '切到 Project p 繼續按');
+    const pTargets = await cdp.eval(
+      "[...document.querySelectorAll('[data-action=\"complete\"]')].map((b) => [b.dataset.project, b.dataset.task])"
+    );
+    check(
+      pTargets.length === 3,
+      `p 專案畫面上應該有 3 個「Completed」（實際 ${pTargets.length}：${JSON.stringify(pTargets)}）`
+    );
+    for (const [project, task] of pTargets) {
+      await cdp.click(`[data-action="complete"][data-project="${project}"][data-task="${task}"]`, 150);
+    }
+    const chosen = cockpitTargets.concat(pTargets);
+    check(chosen.length === 10, `合計應該連按 10 個不同 task（實際 ${chosen.length}）`);
     const vAfter = await cdp.eval("Number(document.getElementById('version').textContent.slice(1))");
     check(
       vAfter - vBefore >= 10,
@@ -467,6 +543,15 @@ async function partPreview() {
     check(
       (await cdp.eval("document.querySelectorAll('.error-banner').length")) === 0,
       '204 成功後不顯示錯誤訊息'
+    );
+
+    // 下面「fix round 1：過期的錯誤不得蓋掉較新的操作」情境用的是 cockpit 專案的 be-1／
+    // release-1，切回去（select-project 不是「畫面操作」，不影響任何進行中狀態，見 design D6）。
+    await cdp.click('[data-action="select-project"][data-project="cockpit"]');
+    await cdp.waitFor(
+      "!!document.querySelector('.project[data-project=\"cockpit\"]')",
+      3000,
+      '切回 cockpit 供後續情境使用'
     );
 
     // --- fix round 1：過期的錯誤不得蓋掉較新的操作 ---

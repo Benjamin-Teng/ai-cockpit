@@ -155,10 +155,11 @@ JSON 物件 → 400；狀態檔寫入失敗 → 500，本體同樣是 `{"error":
 ## 輸出讀取 API（change 3 `live-output`）
 
 `GET /api/runtimes/<runtime>/panes/<pane>/output` 對指定 pane 即時讀一次目前的畫面輸出（最多最近
-200 行），不快取、不在請求之間保留任何與選取有關的狀態。畫面上點 runtime 卡裡任一未 exited 的
-pane 列，或 Factory Floor 中已綁定 workstream 列首的「看輸出」，即會開啟 Live Output 面板並開始
-每秒輪詢一次；面板的「關閉」可取消選取。改綁模式期間 pane 列不可點選（不呈現可點選樣式），既有的
-選取與面板維持不變，離開改綁模式後才恢復可點選。
+200 行），不快取、不在請求之間保留任何與選取有關的狀態。Live Output 面板一開始就常駐（沒有選取
+時顯示空狀態文字）；畫面上點 runtime 卡裡任一未 exited 的 pane 列，或 Factory Floor 中已綁定
+workstream 列首的「看輸出」，即會選取該 pane 並開始每秒輪詢一次；面板的「取消選取」可退回空狀態。
+改綁模式期間 pane 列不可點選（不呈現可點選樣式），既有的選取與面板維持不變，離開改綁模式後才恢復
+可點選。
 
 成功回 200，本體為 JSON：`runtime`、`pane_id`（與路徑相同）、`format`（目前固定為 `"text"`）、
 `text`（純文字，不含終端機控制序列）、`truncated`（`true` 表示還有更早的輸出未回傳）。下面範例對

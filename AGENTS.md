@@ -32,11 +32,12 @@ cargo fmt --check
 
 ## 硬性約束
 
-- change 1 對 HERDR 完全唯讀：只用 `session.snapshot` 與 `events.subscribe`。
+- 對 HERDR 完全唯讀：只送唯讀 method，可送的 method 由 `herdr-client` 的 sealed `Request`
+  trait 在編譯期限定（清單見 `herdr-client/src/client/request.rs`）。
   測試鷹架對 WSL 端測試 server 的 tab create／report_agent 需以
   `HERDR_CLIENT_TEST_ALLOW_WSL_WRITES=1` 明確 opt-in，預設唯讀。
-- 不得用 `herdr server stop` 測試斷線，**限 Windows 端**，會殺掉使用者所有 pane；WSL 端
-  headless 測試 server 可以停（task 4.3 已這樣做），重啟指令見 `docs/handover.md` §1。
+- Windows 端不得用 `herdr server stop` 測試斷線，因為會殺掉使用者所有 pane。WSL 端 headless
+  測試 server 可以停，重啟指令見 `docs/research/2026-09-19/live-output-acceptance.md`。
 - `cockpit-core` 不得依賴 `herdr-client` 或任何 `cockpit-*`；`cockpit` 不直接依賴
   `herdr-client`（ADR-0003）。
 - HERDR 的 `done` 不是任務完成；沒有全域 agent 狀態訂閱，只能每 pane 各訂一筆。

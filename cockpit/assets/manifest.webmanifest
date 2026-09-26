@@ -3,8 +3,8 @@
   "short_name": "Cockpit",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0f1115",
-  "theme_color": "#161a21",
+  "background_color": "#091320",
+  "theme_color": "#101A2A",
   "scope": "/",
   "icons": [
     {

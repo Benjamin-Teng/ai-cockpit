@@ -65,8 +65,10 @@
 // 第四段（live-output task 5.5）：spec「失敗與消失的呈現」三個情境，外加一個補充的邊界情境。
 //   - J：COCKPIT_PREVIEW_VANISH_PANE=wJ:p1=3000（wJ:p1 先維持預設 ticker，選取後真的讀到內容
 //     才讓它從投影消失）＋COCKPIT_PREVIEW_PUSH_MS=200（縮短推送間隔，消失儘快反映到
-//     setKnownPanes）。驗「pane 被關掉」：面板顯示「pane 已不存在」、內容（getComputedStyle
-//     opacity）標為過期但保留、頁面不再請求輸出（5 秒內 output-request 不再增加）。
+//     setKnownPanes）。驗「pane 被關掉」：面板顯示「pane 已不存在」、內容保留但標為過期
+//     （direction-01-visual task 4.2／design D7：內容文字 --text-dim、面板左緣 --warn 色條、
+//     標題列「過期」文字，見 readStaleSignals()／checkMarkedStale()）、頁面不再請求輸出
+//     （5 秒內 output-request 不再增加）。
 //   - K：COCKPIT_PREVIEW_OUTPUT_MODES=wJ:p1=notfound（仍在投影中、可點選，但讀取一律
 //     404）＋額外疊上 COCKPIT_PREVIEW_VANISH_PANE=wJ:p1=4000（晚到的第二個「pane 已不存在」
 //     觸發）。驗「端點回 404」，並用晚到的 VANISH 驗兩條「pane 已不存在」路徑的競態：先到的
@@ -95,7 +97,17 @@
 //     發），用請求出現的時間間隔就足以佐證，不需要額外掛 Network domain。
 //   - 「內容不被當成 HTML」：pane 設 html，斷言兩段字樣原樣出現在面板文字中、window.pwned
 //     為 undefined、面板內沒有 b 元素。
-//   - 「截斷提示」：pane 設 long（wJ:p3 預設），面板頂端出現「更早的輸出未顯示」。
+//   - 「截斷提示」：pane 設 long（wJ:p3 預設），面板頂端出現「更早的輸出未顯示」。task 4.2 fix
+//     round 1（Codex medium (1)／設計審核 I1／Ruling R40）在 A 段加驗：截斷提示改用 --text-dim
+//     （不再是 --warn）、面板 gap 8px（M2），並疊一次假 503 驗過期原因排在截斷提示之前、兩者顏色
+//     分得開。
+//
+// 第五段（task 4.2 fix round 1；Codex medium (2)／設計審核 M1；控制端 Ruling R41）：
+//   - W：`partHelperSelfTest()`——純邏輯自我測試（不需要瀏覽器），證明收緊後的
+//     `assessMarkedStale()`／`assessNotStale()` 對錯誤值有辨識力，不是「只要不是某個特定字串就
+//     一律算過」的鬆散負向判斷；每個收緊過的判斷都附一個否定對照。
+//   - X：`partLongTitleCloseButtonSingleLine()`——長標題（疊上「過期」標籤）時「取消選取」不應該
+//     被壓縮成兩行（設計審核 M1）。
 //
 // 用法（repo 根，需先 `cargo build -p cockpit --example ui_preview`）：
 //   node docs/research/2026-09-19/live-output-check.js
@@ -125,6 +137,37 @@ function check(cond, label) {
 }
 const log = (s) => console.log(`[${new Date().toISOString()}] ${s}`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// direction-01-visual task 4.1（design D7；live-output delta spec「沒有選取時顯示空狀態」「取消
+// 選取」）：面板改為常駐，`getComputedStyle(#output).display` 不再區分「有選取／沒選取」
+// ——原本的 `display !== 'none'`（面板打開）在新版恆真、`display === 'none'`（面板收起）恆假，
+// 直接留著會讓前者失去辨識力。改用兩個判準，都量「實際有沒有畫出來」（getClientRects 非空，
+// 祖先 display:none 時也是空），不是只看 class：
+//   - PANEL_OPEN_JS：面板畫出來、帶 `.is-open`（D7：保留為「有選取」的意義）、內容框
+//     `.output-text` 與「取消選取」按鈕畫出來、空狀態沒畫出來。
+//   - PANEL_EMPTY_JS：面板畫出來、沒有 `.is-open`、空狀態逐字文案畫出來、「取消選取」／標題／
+//     內容框都沒畫出來。
+// 兩者互斥，腳本裡原本「面板打開」的斷言換成前者、「面板收起」換成後者。
+const EMPTY_STATE_TEXT = '還沒選 pane。點 runtime 清單裡的任一列，或按 Factory Floor 列首的「看輸出」。';
+const PANEL_SHOWN_FN = `function (n) { return !!n && n.getClientRects().length > 0 && getComputedStyle(n).visibility !== 'hidden'; }`;
+const PANEL_OPEN_JS = `(() => {
+  var shown = ${PANEL_SHOWN_FN};
+  var out = document.getElementById('output');
+  return shown(out) && out.classList.contains('is-open') &&
+    shown(document.querySelector('#output .output-text')) &&
+    shown(document.querySelector('#output .output-close')) &&
+    !shown(document.querySelector('#output .output-empty'));
+})()`;
+const PANEL_EMPTY_JS = `(() => {
+  var shown = ${PANEL_SHOWN_FN};
+  var out = document.getElementById('output');
+  var empty = document.querySelector('#output .output-empty');
+  return shown(out) && !out.classList.contains('is-open') &&
+    shown(empty) && empty.textContent === ${JSON.stringify(EMPTY_STATE_TEXT)} &&
+    !shown(document.querySelector('#output .output-close')) &&
+    !shown(document.querySelector('#output .output-title')) &&
+    !shown(document.querySelector('#output .output-text'));
+})()`;
 
 function pidStillRunning(pid) {
   const r = spawnSync('tasklist', ['/FI', `PID eq ${pid}`, '/NH'], { encoding: 'utf8' });
@@ -445,9 +488,11 @@ async function partDefaultModes() {
 
     // --- 情境：沒有選取就不請求 ---
     log('--- 情境「沒有選取就不請求」（觀察 10 秒）---');
+    // direction-01-visual task 4.1：「沒有選取時面板收起」改為常駐空狀態（design D7；spec
+    // live-output「沒有選取時顯示空狀態」）。
     check(
-      (await cdp.eval("getComputedStyle(document.getElementById('output')).display")) === 'none',
-      '沒有選取時面板收起（display: none，不佔版面）'
+      await cdp.eval(PANEL_EMPTY_JS),
+      '沒有選取時面板常駐並顯示空狀態（逐字文案、沒有「取消選取」、沒有標題與內容框）'
     );
     await sleep(10000);
     check(
@@ -458,10 +503,7 @@ async function partDefaultModes() {
     // --- 情境：截斷提示 ---
     log('--- 情境「截斷提示」（select wJ:p3，long 模式）---');
     await cdp.eval("window.liveOutput.select('win', 'wJ:p3'); true");
-    check(
-      (await cdp.eval("getComputedStyle(document.getElementById('output')).display")) !== 'none',
-      '選取後面板顯示出來'
-    );
+    check(await cdp.eval(PANEL_OPEN_JS), '選取後面板由空狀態改為顯示標題、內容框與「取消選取」');
     await cdp.waitFor(
       "(() => { const n = document.querySelector('.output-truncated-notice'); return !!n && !n.hidden; })()",
       5000,
@@ -486,6 +528,70 @@ async function partDefaultModes() {
       typeof preText === 'string' && preText.length > 0,
       `long 模式應該已經寫入內容（實際長度 ${preText ? preText.length : 'n/a'}）`
     );
+
+    // task 4.2 fix round 1（Codex medium (1)／設計審核 I1／控制端 Ruling R40）：截斷提示是常駐
+    // 資訊（真機 `read_output` 固定用 `ReadSource::Recent`，`truncated` 幾乎恆為 true），改用
+    // --text-dim，不再跟過期色條／標籤／原因訊息一樣用 --warn。
+    const truncatedColorNormal = await cdp.eval(
+      "getComputedStyle(document.querySelector('.output-truncated-notice')).color"
+    );
+    check(
+      truncatedColorNormal === TEXT_DIM_RGB,
+      `截斷提示應該是 --text-dim（常駐資訊，不是警示；design 審核 I1／Ruling R40；實際 ${truncatedColorNormal}）`
+    );
+
+    // 設計審核 M2／Ruling R41：面板 gap 6px → 8px，貼底捲動時被捲掉一半的行不再看起來緊貼提示。
+    const panelGap = await cdp.eval("getComputedStyle(document.getElementById('output')).rowGap");
+    check(panelGap === '8px', `面板內距 gap 應該是 8px（設計審核 M2／Ruling R41；實際 ${panelGap}）`);
+
+    // 設計審核 I1／Ruling R40：截斷提示常駐時疊加一次假的 503，驗過期原因排在截斷提示之前、
+    // 兩者顏色分得開（原因 --warn、截斷 --text-dim）。截斷提示這時仍應該可見（不是被過期蓋掉），
+    // 也順便讓既有的 checkMarkedStale() 驗到「is-stale 期間、截斷提示與過期原因同時存在」這個
+    // 組合沒有互相干擾。
+    log('--- 截斷提示常駐期間疊加一次假的 503，驗過期原因排在截斷提示之前（設計審核 I1）---');
+    await cdp.eval(`(() => {
+      window.__origFetchA = window.fetch;
+      var used = false;
+      window.fetch = function (input, init) {
+        if (!used) {
+          used = true;
+          return Promise.resolve({
+            ok: false,
+            status: 503,
+            text: () => Promise.resolve(JSON.stringify({ error: 'fix round 1 假 503：驗原因排在截斷提示之前' })),
+          });
+        }
+        return window.__origFetchA(input, init);
+      };
+      true;
+    })()`);
+    await cdp.waitFor(
+      "(() => { const n = document.querySelector('.output-error-reason'); return !!n && !n.hidden; })()",
+      5000,
+      '假 503 之後顯示過期原因'
+    );
+    const orderSignals = await readStaleSignals(cdp);
+    checkMarkedStale(orderSignals, '截斷提示常駐期間疊加 503');
+    check(
+      !(await cdp.eval("document.querySelector('.output-truncated-notice').hidden")),
+      '截斷提示應該仍然可見（過期不應該蓋掉常駐的截斷提示）'
+    );
+    const order = await cdp.eval(`(() => {
+      const reason = document.querySelector('.output-error-reason');
+      const notice = document.querySelector('.output-truncated-notice');
+      if (!reason || !notice) return null;
+      return {
+        reasonBeforeNoticeInDom: !!(reason.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING),
+        reasonTop: reason.getBoundingClientRect().top,
+        noticeTop: notice.getBoundingClientRect().top,
+      };
+    })()`);
+    check(
+      !!order && order.reasonBeforeNoticeInDom && order.reasonTop < order.noticeTop,
+      `過期原因應該排在截斷提示之前、視覺位置在它上方（設計審核 I1／Ruling R40；實際 ${JSON.stringify(order)}）`
+    );
+    await cdp.eval('window.fetch = window.__origFetchA; true');
+
     await cdp.eval('window.liveOutput.clear(); true');
   } finally {
     await stopChrome(chrome, 'chrome-A');
@@ -647,10 +753,7 @@ async function partSelectionBasics() {
     );
     const title1 = await cdp.eval("document.querySelector('.output-title').textContent");
     check(title1 === 'win / wJ:p1', `面板標題應該顯示 win / wJ:p1（實際 ${JSON.stringify(title1)}）`);
-    check(
-      (await cdp.eval("getComputedStyle(document.getElementById('output')).display")) !== 'none',
-      '面板顯示出來'
-    );
+    check(await cdp.eval(PANEL_OPEN_JS), '面板由空狀態改為有選取（標題、內容框、「取消選取」）');
     await cdp.waitFor(
       "(() => { const t = document.querySelector('.output-text'); return !!t && t.textContent.length > 0; })()",
       5000,
@@ -716,7 +819,7 @@ async function partSelectionBasics() {
       title: document.querySelector('.output-title').textContent,
       p1Selected: document.querySelector('.pane-row[data-pane="wJ:p1"]').classList.contains('selected'),
       p3Selected: document.querySelector('.pane-row[data-pane="wJ:p3"]').classList.contains('selected'),
-      panelOpen: getComputedStyle(document.getElementById('output')).display !== 'none',
+      panelOpen: ${PANEL_OPEN_JS},
     }))()`);
     check(
       afterNonButtonClick.title === 'win / wJ:p1' &&
@@ -740,7 +843,7 @@ async function partSelectionBasics() {
       title: document.querySelector('.output-title').textContent,
       p1Selected: document.querySelector('.pane-row[data-pane="wJ:p1"]').classList.contains('selected'),
       p3Selected: document.querySelector('.pane-row[data-pane="wJ:p3"]').classList.contains('selected'),
-      panelOpen: getComputedStyle(document.getElementById('output')).display !== 'none',
+      panelOpen: ${PANEL_OPEN_JS},
     }))()`);
     check(
       afterBindHere.title === 'win / wJ:p1' &&
@@ -795,10 +898,7 @@ async function partSelectionBasics() {
       2000,
       'Enter 選定 wJ:p1，面板標題更新'
     );
-    check(
-      (await cdp.eval("getComputedStyle(document.getElementById('output')).display")) !== 'none',
-      'Enter 選定後面板打開'
-    );
+    check(await cdp.eval(PANEL_OPEN_JS), 'Enter 選定後面板顯示有選取的內容（不是空狀態）');
     check(
       await cdp.eval(
         "document.querySelector('.pane-row[data-pane=\"wJ:p1\"]').classList.contains('selected')"
@@ -826,27 +926,28 @@ async function partSelectionBasics() {
     // 沒有 data-action／selectable／tabIndex===0，這裡不重複）。
 
     // --- 情境：取消選取 ---
-    log('--- 情境「取消選取」（按面板「關閉」）---');
-    await cdp.eval("document.querySelector('.output-close').click(); true");
-    await cdp.waitFor(
-      "getComputedStyle(document.getElementById('output')).display === 'none'",
-      2000,
-      '面板收起'
+    // direction-01-visual task 4.1：按鈕改名「取消選取」（live-output delta spec），按下後回到
+    // 常駐空狀態，不再是「面板收起」（design D7）。
+    log('--- 情境「取消選取」（按面板「取消選取」）---');
+    check(
+      (await cdp.eval("document.querySelector('.output-close').textContent")) === '取消選取',
+      '面板上的按鈕文字是「取消選取」'
     );
+    await cdp.eval("document.querySelector('.output-close').click(); true");
+    await cdp.waitFor(PANEL_EMPTY_JS, 2000, '面板回到空狀態');
     check(
       (await cdp.eval("document.querySelectorAll('.pane-row.selected').length")) === 0,
       '取消選取後沒有任何 pane 列有選定標示'
     );
-    // 「關閉」不會中止已經在飛的請求（output.js 沒有用 AbortController，task 5.2 report 記錄過
-    // 的既有行為）：按「關閉」前一刻剛好有一個輪詢請求已經送出、還沒到達伺服器，屬於正常現象，
-    // 不代表「關閉」之後又發了新請求。先等超過一個輪詢間隔（1 秒）讓這種已飛出的請求落地、清空
-    // 記錄，再開一段乾淨的觀察視窗才是「關閉之後有沒有『新』請求」的正確驗法。
+    // 按「取消選取」前一刻剛好有一個輪詢請求已經送出、還沒到達伺服器，屬於正常現象，不代表
+    // 取消之後又發了新請求。先等超過一個輪詢間隔（1 秒）讓這種已飛出的請求落地、清空記錄，再開
+    // 一段乾淨的觀察視窗才是「取消之後有沒有『新』請求」的正確驗法。
     await sleep(1500);
     preview.requests.length = 0;
     await sleep(2500);
     check(
       preview.requests.length === 0,
-      `取消選取後（排除關閉當下已在飛的請求）不應該再有新的輸出請求（實際 ${JSON.stringify(preview.requests)}）`
+      `取消選取後（排除取消當下已在飛的請求）不應該再有新的輸出請求（實際 ${JSON.stringify(preview.requests)}）`
     );
   } finally {
     await stopChrome(chrome, 'chrome-C');
@@ -981,13 +1082,16 @@ async function partFrequentRepaint() {
 // 「推進」，preview stdout 應該收到對應的 `write-request POST /api/projects/cockpit/tasks/
 // be-1/advance`（task id `be-1` 沿用 docs/research/2026-09-16/actions-check.js 既有 fixture）。
 async function partPanelOverlap() {
-  log('=== E. 面板打開時仍可操作頁面下方的內容（較矮視窗，強迫捲動）===');
+  log('=== E. 面板打開時仍可操作頁面下方的內容（命中測試；direction-01-visual task 2.1 改寫）===');
   let preview = null;
   let chrome = null;
   try {
     preview = await startPreview({}, 'preview-E');
     const url = `http://127.0.0.1:${preview.port}/`;
-    chrome = await startChrome(pickPort(18940, [preview.port]), url, 'chrome-E', '1400,800');
+    // direction-01-visual task 2.1 fix round 1／Codex C2：spec live-output「面板打開時仍可
+    // 操作頁面下方的內容」GIVEN 明定「視窗 1536×1024」，不是原本的 1400,800——用回 spec 的
+    // 精確視窗尺寸，也是桌面固定一屏（design D3）跟 V1 用的同一個尺寸。
+    chrome = await startChrome(pickPort(18940, [preview.port]), url, 'chrome-E', '1536,1024');
     const { cdp } = chrome;
     await cdp.waitFor(
       "typeof window.liveOutput === 'object' && typeof window.liveOutput.select === 'function'",
@@ -1004,64 +1108,103 @@ async function partPanelOverlap() {
       '選定 wJ:p1，面板打開'
     );
     check(
-      (await cdp.eval("getComputedStyle(document.getElementById('output')).display")) !== 'none',
-      '面板應該是打開的'
+      await cdp.eval(PANEL_OPEN_JS),
+      '面板應該是有選取的狀態（標題、內容框、「取消選取」，不是空狀態）'
     );
 
-    // --- GIVEN（R16 收緊）：先把 wJ:p3 列捲到「位於視窗內、但與面板 rect 重疊」的位置，直接
-    // 斷言 overlapsPanel 為真，並用 elementFromPoint 在目標中心點確認最上層元素是面板本身。
-    const givenState = await cdp.eval(`(() => {
-      const target = document.querySelector('.pane-row[data-runtime="win"][data-pane="wJ:p3"]');
-      const output = document.getElementById('output');
-
-      // 先捲到把目標帶進視窗、且中心點落在面板 rect 中間的位置：目標在文件裡的絕對位置固定
-      // （docTop），面板是 position: sticky; bottom: 0，視窗內的 rect 不因捲動而變（只要頁面
-      // 還沒捲到底）。desiredViewportTop 是希望目標捲動後落在視窗座標系的位置，兩者換算出
-      // 需要的 scrollY。
-      const beforeScroll = target.getBoundingClientRect();
-      const docTop = beforeScroll.top + window.scrollY;
-      const outputBeforeScroll = output.getBoundingClientRect();
-      const desiredViewportTop =
-        (outputBeforeScroll.top + outputBeforeScroll.bottom) / 2 - beforeScroll.height / 2;
-      window.scrollTo(0, docTop - desiredViewportTop);
-
-      const tRect = target.getBoundingClientRect();
-      const oRect = output.getBoundingClientRect();
-      const cx = tRect.left + tRect.width / 2;
-      const cy = tRect.top + tRect.height / 2;
-      const elAtCenter = document.elementFromPoint(cx, cy);
-      const stack = document
-        .elementsFromPoint(cx, cy)
-        .slice(0, 4)
-        .map((el) => el.tagName + (el.id ? '#' + el.id : '') + (el.className ? '.' + String(el.className).trim().split(/\s+/).join('.') : ''));
+    // --- GIVEN／WHEN（direction-01-visual task 2.1 fix round 1／Codex C2）：spec 原文逐字是
+    // 「對每個可選的 pane 列、每個『畫面操作』按鈕與每個 Project 項目，取其可見範圍中心點做
+    // 命中測試」——不是只驗一筆事件列。改成真的列舉當下所有可見的目標，對每一個都先斷言「有
+    // 非零的可見交集」（precondition，避免「反正本來就看不到」的假通過），再在可見範圍中心
+    // `elementFromPoint`，斷言命中的是自己或子孫，不是 `#output` 面板。命中斷言前完全不呼叫
+    // `cdp.click`（它內建 `scrollIntoView`，Codex 的原始 finding 正是點出這一點：click helper
+    // 會把元素捲到看得到的地方，可能剛好把「命中測試當下沒被面板蓋住」這件事變得恆真，掩蓋
+    // 「本來可見範圍中心其實被蓋住」的真違規）。「可見範圍」跟 visual-check.js 的
+    // `hitCenter()`（fix round 1／規格對照 S3）用同一套邏輯：從元素本身的 rect 開始，往上走
+    // 訪每一層祖先，只要祖先的 `overflow-x`／`overflow-y` 不是 `visible` 就用它的 rect 跟目前
+    // 的交集框再取一次交集（不只是跟視窗取交集）——Factory Floor／runtime 清單／最近事件現在
+    // 各自有自己的內層捲動容器（design 審核 I2），沒被選到的內容會被自己的捲動容器裁掉，不能
+    // 只跟整個視窗比。
+    const hitTest = await cdp.eval(`(() => {
+      function visibleBox(n) {
+        var r = n.getBoundingClientRect();
+        var left = r.left, top = r.top, right = r.right, bottom = r.bottom;
+        var node = n.parentElement;
+        while (node) {
+          var cs = getComputedStyle(node);
+          if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') {
+            var cr = node.getBoundingClientRect();
+            left = Math.max(left, cr.left);
+            top = Math.max(top, cr.top);
+            right = Math.min(right, cr.right);
+            bottom = Math.min(bottom, cr.bottom);
+          }
+          node = node.parentElement;
+        }
+        left = Math.max(left, 0);
+        top = Math.max(top, 0);
+        right = Math.min(right, window.innerWidth);
+        bottom = Math.min(bottom, window.innerHeight);
+        return { left: left, top: top, right: right, bottom: bottom };
+      }
+      function describe(el) {
+        if (!el) return null;
+        return el.tagName + (el.id ? '#' + el.id : '') + (el.className ? '.' + String(el.className).trim().split(/\\s+/).join('.') : '');
+      }
+      var targets = [];
+      document.querySelectorAll('.pane-row[data-action="select-pane"]').forEach(function (n, i) {
+        targets.push({ kind: 'pane-row#' + i + ' (' + n.dataset.runtime + '/' + n.dataset.pane + ')', el: n });
+      });
+      document.querySelectorAll('.action-button').forEach(function (n, i) {
+        targets.push({ kind: 'action-button#' + i + ' (' + (n.dataset.action || '') + ')', el: n });
+      });
+      document.querySelectorAll('[data-action="select-project"]').forEach(function (n, i) {
+        targets.push({ kind: 'project-item#' + i, el: n });
+      });
+      var results = targets.map(function (t) {
+        var box = visibleBox(t.el);
+        var visible = box.right > box.left && box.bottom > box.top;
+        if (!visible) {
+          return { kind: t.kind, visible: false, selfHit: null, box: box };
+        }
+        var cx = (box.left + box.right) / 2;
+        var cy = (box.top + box.bottom) / 2;
+        var hit = document.elementFromPoint(cx, cy);
+        return {
+          kind: t.kind,
+          visible: true,
+          box: box,
+          selfHit: !!hit && (hit === t.el || t.el.contains(hit)),
+          hitIsPanel: !!hit && !!hit.closest('#output'),
+          hitDesc: describe(hit),
+        };
+      });
       return {
-        innerHeight: window.innerHeight,
-        scrollY: window.scrollY,
-        targetRect: { top: tRect.top, bottom: tRect.bottom },
-        outputRect: { top: oRect.top, bottom: oRect.bottom },
-        overlapsPanel: tRect.bottom > oRect.top && tRect.top < oRect.bottom,
-        topmostIsPanel: !!elAtCenter && !!elAtCenter.closest('#output'),
-        stack,
+        total: results.length,
+        visibleCount: results.filter(function (r) { return r.visible; }).length,
+        blocked: results.filter(function (r) { return r.visible && r.selfHit === false; }),
+        blockedByPanel: results.filter(function (r) { return r.visible && r.selfHit === false && r.hitIsPanel; }),
+        results: results,
       };
     })()`);
-    log(`GIVEN（R16 收緊）：wJ:p3 列 rect＝${JSON.stringify(givenState.targetRect)}，面板 rect＝${JSON.stringify(givenState.outputRect)}，中心點疊層（由上而下）＝${JSON.stringify(givenState.stack)}`);
+    log(`GIVEN／WHEN（命中測試，逐一列舉；direction-01-visual task 2.1 fix round 1）：共 ${hitTest.total} 個目標，${hitTest.visibleCount} 個有非零可見交集；${JSON.stringify(hitTest.results)}`);
     check(
-      givenState.overlapsPanel === true,
-      `捲動後 wJ:p3 列應該與面板 rect 重疊（overlapsPanel，實際 ${JSON.stringify(givenState)}）`
+      hitTest.total > 0 && hitTest.visibleCount > 0,
+      `應該至少找得到一個可選 pane 列／畫面操作按鈕（precondition，不然下面的命中測試沒有對象；實際 total=${hitTest.total} visible=${hitTest.visibleCount}）`
     );
     check(
-      givenState.topmostIsPanel === true,
-      `目標中心點最上層應該是面板本身，不是目標（elementFromPoint，實際疊層 ${JSON.stringify(givenState.stack)}）`
+      hitTest.blocked.length === 0,
+      `每個可選 pane 列／畫面操作按鈕／Project 項目的可見範圍中心點都應該命中自己（不是別的元素，尤其不是 Live Output 面板）；被蓋住的（共 ${hitTest.blocked.length} 個）：${JSON.stringify(hitTest.blocked)}`
     );
 
-    // --- WHEN：把它捲到面板上方後點它（CDP.click 內建 scrollIntoView({block: 'start'})）---
+    // --- THEN：點另一個 pane 列即改為選取該 pane（spec 原文；用右欄 wJ:p3，上面的命中測試已經
+    // 證明它在命中斷言階段沒有被蓋住，這裡才用 cdp.click——click 內建的 scrollIntoView 不影響
+    // 已經做完的命中測試）---
     await cdp.click('.pane-row[data-runtime="win"][data-pane="wJ:p3"]');
-
-    // --- THEN：選取改為 wJ:p3 ---
     await cdp.waitFor(
       "document.querySelector('.output-title').textContent === 'win / wJ:p3'",
       2000,
-      '捲動後點擊 wJ:p3，選取改變、面板標題更新'
+      '點擊 wJ:p3，選取改變、面板標題更新'
     );
     check(
       (await cdp.eval(
@@ -1070,8 +1213,8 @@ async function partPanelOverlap() {
       'wJ:p3 列出現選定標示'
     );
     check(
-      (await cdp.eval("getComputedStyle(document.getElementById('output')).display")) !== 'none',
-      '面板仍然是打開的'
+      await cdp.eval(PANEL_OPEN_JS),
+      '面板仍然是有選取的狀態（不是空狀態）'
     );
 
     // --- [Ruling R16] 面板打開時，頁面上其餘「畫面操作」的按鈕仍可操作（按 be-1 的「推進」）---
@@ -1453,6 +1596,184 @@ async function assertPollingStopped(preview, pane, label) {
   return after;
 }
 
+// 過期標示的計算值（direction-01-visual task 4.2；design D7）：J／K／L／M 四段原本各自比對
+// `.output-text` 的 opacity（現行 `.is-stale` 做法），D7 拿掉 opacity（會把文字對比拉到 4.5:1
+// 以下），改成幾個獨立的計算值——內容文字色（正常 `--text`／過期 `--text-dim`）、面板左緣
+// `--warn` 色條（inset box-shadow，正常是 `none`）、標題列「過期」文字（`.output-stale-label`
+// 的 `hidden`／文字）、`is-stale` class 本身、可見的原因訊息或「pane 已不存在」提示的顏色。
+// 這裡一次讀完，取代原本單一的 opacity 讀取，J／K／L／M 每一處原本「有 opacity 差異」
+// 「opacity 變回正常值」的比對都各自拆成獨立斷言，不放寬——見下面各段落。
+//
+// task 4.2 fix round 1（Codex medium (2)；控制端 Ruling R41）：round 0 的 `checkNotStale()` 只驗
+// `textColor !== TEXT_DIM_RGB`——任何錯誤色甚至 `null` 都會判定「不是過期」而通過，也完全沒用到
+// `readStaleSignals()` 已經讀出來的 `isStale` 欄位；`checkMarkedStale()` 也沒有驗過可見原因訊息
+// 或「pane 已不存在」提示本身的顏色。改成 `assessNotStale()`／`assessMarkedStale()`：回傳「哪裡
+// 不對」的問題清單（純函式，不呼叫 `check()`），`checkNotStale()`／`checkMarkedStale()` 只是薄
+// 包裝；純邏輯、不需要瀏覽器的自我測試見下方 `partHelperSelfTest()`（W 段）。
+const TEXT_RGB = 'rgb(229, 237, 243)'; // --text: #e5edf3（正常內容文字色）
+const TEXT_DIM_RGB = 'rgb(163, 183, 201)'; // --text-dim: #a3b7c9（過期內容文字色；fix round 1 起也是截斷提示的顏色）
+const WARN_RGB = 'rgb(233, 188, 115)'; // --warn: #e9bc73（面板左緣色條／可見的原因訊息）
+const BAD_RGB = 'rgb(244, 114, 121)'; // --bad: #f47279（「pane 已不存在」提示，fix round 1 未變）
+
+async function readStaleSignals(cdp) {
+  return cdp.eval(`(() => {
+    var out = document.getElementById('output');
+    var text = document.querySelector('.output-text');
+    var label = document.querySelector('.output-stale-label');
+    var reason = document.querySelector('.output-error-reason');
+    var gone = document.querySelector('.output-gone-notice');
+    return {
+      isStale: !!out && out.classList.contains('is-stale'),
+      textColor: text ? getComputedStyle(text).color : null,
+      panelBoxShadow: out ? getComputedStyle(out).boxShadow : null,
+      labelHidden: label ? label.hidden : null,
+      labelText: label ? label.textContent : null,
+      reasonHidden: reason ? reason.hidden : null,
+      reasonColor: reason ? getComputedStyle(reason).color : null,
+      goneHidden: gone ? gone.hidden : null,
+      goneColor: gone ? getComputedStyle(gone).color : null,
+    };
+  })()`);
+}
+
+// 過期態應該成立的一切（fix round 1 收緊）：`is-stale` class 本身存在；內容文字精確等於
+// `--text-dim`；面板左緣精確有 `--warn` 的 inset box-shadow；標題列「過期」標籤可見且文字正確；
+// 「可見的原因訊息或『pane 已不存在』提示，其中之一必須可見，且顏色精確等於該狀態的 token」
+// （Codex medium (2)：「過期態……讀可見原因訊息的 computed color 驗證為 --warn（gone 情境則驗
+// gone 提示）」）——兩者都隱藏（過期卻沒有任何說明）或顏色錯誤都算問題。
+function assessMarkedStale(signals) {
+  const problems = [];
+  if (signals.isStale !== true) problems.push(`isStale 應該是 true，實際 ${signals.isStale}`);
+  if (signals.textColor !== TEXT_DIM_RGB) problems.push(`textColor 應該是 --text-dim（${TEXT_DIM_RGB}），實際 ${signals.textColor}`);
+  if (
+    !(
+      signals.panelBoxShadow &&
+      signals.panelBoxShadow !== 'none' &&
+      signals.panelBoxShadow.indexOf(WARN_RGB) !== -1 &&
+      signals.panelBoxShadow.indexOf('inset') !== -1
+    )
+  ) {
+    problems.push(`panelBoxShadow 應該含 --warn 的 inset 色條，實際 ${signals.panelBoxShadow}`);
+  }
+  if (!(signals.labelHidden === false && signals.labelText === '過期')) {
+    problems.push(`標題列「過期」標籤應該可見，實際 hidden=${signals.labelHidden} text=${JSON.stringify(signals.labelText)}`);
+  }
+  if (signals.reasonHidden === false) {
+    if (signals.reasonColor !== WARN_RGB) {
+      problems.push(`可見的原因訊息應該是 --warn（${WARN_RGB}），實際 ${signals.reasonColor}`);
+    }
+  } else if (signals.goneHidden === false) {
+    if (signals.goneColor !== BAD_RGB) {
+      problems.push(`「pane 已不存在」提示應該是 --bad（${BAD_RGB}），實際 ${signals.goneColor}`);
+    }
+  } else {
+    problems.push('過期時原因訊息與「pane 已不存在」提示應該至少有一個可見，實際兩者都隱藏');
+  }
+  return problems;
+}
+
+// 正常／恢復態應該成立的一切（fix round 1 收緊）：`is-stale` class 不存在；內容文字精確等於
+// `--text`（不是「不等於 --text-dim」這種任何值都能通過的負向判斷——Codex medium (2) 抓到的
+// 缺口本身）；面板左緣沒有色條；標題列「過期」標籤隱藏。
+function assessNotStale(signals) {
+  const problems = [];
+  if (signals.isStale !== false) problems.push(`isStale 應該是 false，實際 ${signals.isStale}`);
+  if (signals.textColor !== TEXT_RGB) problems.push(`textColor 應該是 --text（${TEXT_RGB}），實際 ${signals.textColor}`);
+  if (signals.panelBoxShadow !== 'none') problems.push(`panelBoxShadow 應該是 none，實際 ${signals.panelBoxShadow}`);
+  if (signals.labelHidden !== true) problems.push(`標題列「過期」標籤應該隱藏，實際 hidden=${signals.labelHidden}`);
+  return problems;
+}
+
+function checkMarkedStale(signals, label) {
+  const problems = assessMarkedStale(signals);
+  check(problems.length === 0, `${label}：應該標為過期（${problems.length === 0 ? '通過' : problems.join('；')}）`);
+}
+
+function checkNotStale(signals, label) {
+  const problems = assessNotStale(signals);
+  check(problems.length === 0, `${label}：不應該標為過期（${problems.length === 0 ? '通過' : problems.join('；')}）`);
+}
+
+// W（fix round 1；Codex medium (2)）：純邏輯自我測試，不需要瀏覽器——證明 assessMarkedStale／
+// assessNotStale 對錯誤值有辨識力，不是「只要不是某個特定字串就一律算過」的鬆散負向判斷。round 0
+// 的 checkNotStale() 只驗 `textColor !== TEXT_DIM_RGB`：任何錯誤色、甚至 null，都會被誤判成
+// 「不是過期」而通過；checkMarkedStale() 完全沒有讀 isStale、也沒有驗過可見原因訊息／gone 提示
+// 的顏色。這裡對每個收緊過的判斷各給一個否定對照，逐一證明新版能抓到 round 0 版本會放過的錯誤。
+function partHelperSelfTest() {
+  log('=== W. 自我測試：assessNotStale／assessMarkedStale 對錯誤值有辨識力 ===');
+
+  const goodNormal = { isStale: false, textColor: TEXT_RGB, panelBoxShadow: 'none', labelHidden: true, labelText: '' };
+  check(assessNotStale(goodNormal).length === 0, '合法的正常 signals 應該通過 assessNotStale（0 個問題）');
+
+  const wrongColorNormal = { ...goodNormal, textColor: 'rgb(1, 2, 3)' };
+  check(
+    assessNotStale(wrongColorNormal).some((p) => p.indexOf('textColor') !== -1),
+    '否定對照：內容文字色跑掉、但不是 --text-dim（例如 rgb(1,2,3)）時，assessNotStale 應該抓到——round 0 的 `!== TEXT_DIM_RGB` 對這個值會誤判成正常'
+  );
+
+  const nullColorNormal = { ...goodNormal, textColor: null };
+  check(
+    assessNotStale(nullColorNormal).some((p) => p.indexOf('textColor') !== -1),
+    '否定對照：textColor 為 null 時 assessNotStale 應該抓到——round 0 的 `!== TEXT_DIM_RGB` 對 null 一樣會誤判成正常'
+  );
+
+  const staleClassNotCleared = { ...goodNormal, isStale: true };
+  check(
+    assessNotStale(staleClassNotCleared).some((p) => p.indexOf('isStale') !== -1),
+    '否定對照：is-stale class 沒有拿掉時 assessNotStale 應該抓到——round 0 完全沒有用到 isStale 欄位'
+  );
+
+  const goodStaleWithReason = {
+    isStale: true,
+    textColor: TEXT_DIM_RGB,
+    panelBoxShadow: `${WARN_RGB} 2px 0px 0px 0px inset`,
+    labelHidden: false,
+    labelText: '過期',
+    reasonHidden: false,
+    reasonColor: WARN_RGB,
+    goneHidden: true,
+    goneColor: null,
+  };
+  check(assessMarkedStale(goodStaleWithReason).length === 0, '合法的過期（503，顯示原因）signals 應該通過 assessMarkedStale（0 個問題）');
+
+  const wrongReasonColor = { ...goodStaleWithReason, reasonColor: 'rgb(9, 9, 9)' };
+  check(
+    assessMarkedStale(wrongReasonColor).some((p) => p.indexOf('原因訊息') !== -1),
+    '否定對照：可見原因訊息顏色不是 --warn 時 assessMarkedStale 應該抓到——round 0 完全不讀這個欄位'
+  );
+
+  const isStaleFalseButRestLooksStale = { ...goodStaleWithReason, isStale: false };
+  check(
+    assessMarkedStale(isStaleFalseButRestLooksStale).some((p) => p.indexOf('isStale') !== -1),
+    '否定對照：is-stale class 沒有加上時 assessMarkedStale 應該抓到——round 0 完全沒有用到 isStale 欄位'
+  );
+
+  const goodStaleGone = {
+    isStale: true,
+    textColor: TEXT_DIM_RGB,
+    panelBoxShadow: `${WARN_RGB} 2px 0px 0px 0px inset`,
+    labelHidden: false,
+    labelText: '過期',
+    reasonHidden: true,
+    reasonColor: null,
+    goneHidden: false,
+    goneColor: BAD_RGB,
+  };
+  check(assessMarkedStale(goodStaleGone).length === 0, '合法的過期（gone）signals 應該通過 assessMarkedStale（0 個問題）');
+
+  const wrongGoneColor = { ...goodStaleGone, goneColor: WARN_RGB };
+  check(
+    assessMarkedStale(wrongGoneColor).some((p) => p.indexOf('pane 已不存在') !== -1),
+    '否定對照：「pane 已不存在」提示顏色不是 --bad 時 assessMarkedStale 應該抓到'
+  );
+
+  const neitherVisible = { ...goodStaleWithReason, reasonHidden: true, goneHidden: true };
+  check(
+    assessMarkedStale(neitherVisible).some((p) => p.indexOf('兩者都隱藏') !== -1),
+    '否定對照：原因訊息與 gone 提示都隱藏時（過期卻沒有任何說明）assessMarkedStale 應該抓到'
+  );
+}
+
 // J：wJ:p1 維持預設 ticker（先讀得到內容），3 秒後從推送投影中消失（COCKPIT_PREVIEW_PUSH_MS
 // 縮到 200 ms，讓消失儘快反映）。驗 spec 情境「pane 被關掉」。
 async function partPaneVanishes() {
@@ -1479,9 +1800,8 @@ async function partPaneVanishes() {
       5000,
       'GIVEN：選取後面板已有內容（消失之前）'
     );
-    const beforeOpacity = await cdp.eval(
-      "getComputedStyle(document.querySelector('.output-text')).opacity"
-    );
+    const beforeSignals = await readStaleSignals(cdp);
+    checkNotStale(beforeSignals, 'GIVEN：選取後、消失之前');
 
     log('--- 等待 wJ:p1 從投影中消失（3 秒後，推送間隔 200 ms）---');
     await cdp.waitFor(
@@ -1495,13 +1815,8 @@ async function partPaneVanishes() {
       `「pane 已不存在」文字應該逐字一致（實際 ${JSON.stringify(goneText)}）`
     );
 
-    const afterOpacity = await cdp.eval(
-      "getComputedStyle(document.querySelector('.output-text')).opacity"
-    );
-    check(
-      afterOpacity !== beforeOpacity,
-      `內容應該標為過期（getComputedStyle opacity 應該改變，實際 before=${beforeOpacity} after=${afterOpacity}）`
-    );
+    const afterSignals = await readStaleSignals(cdp);
+    checkMarkedStale(afterSignals, 'pane 被關掉之後');
 
     // 「保留最後一份文字」不是跟消失之前很早的一個快照逐字相同（ticker 在真正消失之前仍然
     // 健康、內容持續在長大，兩個時間點的內容本來就會不一樣，不是缺陷）；驗的是「gone 之後
@@ -1568,13 +1883,8 @@ async function partOutputEndpoint404() {
       titleAfterGone === 'win / wJ:p1',
       `面板標題應該仍顯示 win / wJ:p1（實際 ${JSON.stringify(titleAfterGone)}）`
     );
-    const opacityAfterGone = await cdp.eval(
-      "getComputedStyle(document.querySelector('.output-text')).opacity"
-    );
-    check(
-      Number(opacityAfterGone) < 1,
-      `端點回 404 之後內容也應該標為過期（opacity < 1，實際 ${opacityAfterGone}）`
-    );
+    const signalsAfterGone = await readStaleSignals(cdp);
+    checkMarkedStale(signalsAfterGone, '端點回 404 之後');
 
     // 這個 5 秒觀察視窗會涵蓋 VANISH_PANE 的 4 秒門檻（見上方檔頭「第四段」說明），順便驗證
     // 「投影消失」這個晚到的觸發沒有讓輪詢重新啟動。
@@ -1637,10 +1947,8 @@ async function partRuntimeRecovers() {
       /^ui_preview 模擬斷線/.test(reasonText),
       `原因文字應該取自回應本體的 error 欄位（實際 ${JSON.stringify(reasonText)}）`
     );
-    const staleOpacity = await cdp.eval(
-      "getComputedStyle(document.querySelector('.output-text')).opacity"
-    );
-    check(Number(staleOpacity) < 1, `503 期間內容應該標為過期（opacity < 1，實際 ${staleOpacity}）`);
+    const staleSignals = await readStaleSignals(cdp);
+    checkMarkedStale(staleSignals, '503 期間');
     check(
       await cdp.eval("document.querySelector('.output-gone-notice').hidden"),
       '503 不是「pane 已不存在」，不應該顯示 gone 提示'
@@ -1660,13 +1968,8 @@ async function partRuntimeRecovers() {
       8000,
       '恢復後過期原因消失'
     );
-    const recoveredOpacity = await cdp.eval(
-      "getComputedStyle(document.querySelector('.output-text')).opacity"
-    );
-    check(
-      recoveredOpacity !== staleOpacity,
-      `恢復後過期標示應該消失（opacity 應該變回正常值，實際 stale=${staleOpacity} recovered=${recoveredOpacity}）`
-    );
+    const recoveredSignals = await readStaleSignals(cdp);
+    checkNotStale(recoveredSignals, '恢復後（L 段）');
     const recoveredText = await cdp.eval("document.querySelector('.output-text').textContent");
     check(
       /line \d+/.test(recoveredText),
@@ -1733,9 +2036,8 @@ async function partSameContentClearsStale() {
       3000,
       '第一次成功後內容顯示「stable content」'
     );
-    const normalOpacity = await cdp.eval(
-      "getComputedStyle(document.querySelector('.output-text')).opacity"
-    );
+    const normalSignals = await readStaleSignals(cdp);
+    checkNotStale(normalSignals, '第一次成功後（M 段，正常）');
 
     await cdp.waitFor('window.__fetchCalls >= 2', 3000, '第二次請求（503）已送出');
     await cdp.waitFor(
@@ -1743,10 +2045,8 @@ async function partSameContentClearsStale() {
       3000,
       '503 後顯示過期原因'
     );
-    const staleOpacity = await cdp.eval(
-      "getComputedStyle(document.querySelector('.output-text')).opacity"
-    );
-    check(staleOpacity !== normalOpacity, `503 後應該標為過期（正常 ${normalOpacity} → 過期 ${staleOpacity}）`);
+    const staleSignals = await readStaleSignals(cdp);
+    checkMarkedStale(staleSignals, '503 後（M 段）');
     const contentDuringStale = await cdp.eval("document.querySelector('.output-text').textContent");
     check(
       contentDuringStale === 'stable content',
@@ -1760,13 +2060,8 @@ async function partSameContentClearsStale() {
       8000,
       '恢復後過期原因消失（即使內容跟之前一樣）'
     );
-    const recoveredOpacity = await cdp.eval(
-      "getComputedStyle(document.querySelector('.output-text')).opacity"
-    );
-    check(
-      recoveredOpacity === normalOpacity,
-      `恢復後過期標示應該消失、opacity 應該變回正常值（正常 ${normalOpacity}，恢復後 ${recoveredOpacity}）`
-    );
+    const recoveredSignals = await readStaleSignals(cdp);
+    checkNotStale(recoveredSignals, '恢復後（M 段，即使內容跟之前一樣）');
     const finalText = await cdp.eval("document.querySelector('.output-text').textContent");
     check(
       finalText === 'stable content',
@@ -2229,7 +2524,11 @@ async function partSelectionDoesNotSwallowWriteError() {
     const url = `http://127.0.0.1:${preview.port}/`;
     chrome = await startChrome(pickPort(19080, [preview.port]), url, 'chrome-P');
     const { cdp } = chrome;
-    await cdp.waitFor("document.querySelectorAll('.task-node').length >= 12", 5000, '畫出全部 task 節點');
+    // direction-01-visual task 3.1：Factory Floor 一次只畫選定的一個 Project（design D6），
+    // cockpit 是未選定過時的預設 Project（fixture 順序 cockpit、p），這個情境全程只用到
+    // cockpit 的 task／pane，改成等 cockpit 專案的 9 個 task 節點全部畫出（不再假設 12 個，
+    // 那是舊行為「兩個 Project 疊在一起畫」才有的總數）。
+    await cdp.waitFor("document.querySelectorAll('.task-node').length >= 9", 5000, '畫出 cockpit 專案全部 task 節點');
     await cdp.waitFor(
       "typeof window.liveOutput === 'object' && typeof window.liveOutput.select === 'function'",
       5000,
@@ -2312,9 +2611,9 @@ async function partSelectionDoesNotSwallowWriteError() {
 //          'cockpit', task: 'be-1' } → 送 Enter → preview stdout 應該恰好收到一筆對應的
 //          write-request。
 //       3. 焦點在面板內不被搶：上一步送出 Enter 之前，wJ:p3 仍是選取、面板打開（情境 1 的
-//          Space 留下的狀態）；focus 面板的「關閉」按鈕（#output 不在 #app 底下，理論上完全不
+//          Space 留下的狀態）；focus 面板的「取消選取」按鈕（#output 不在 #app 底下，理論上完全不
 //          受重畫影響，design D8）→ 等數次重畫（version 前進 ≥5）→ activeElement 仍是同一個
-//          「關閉」節點（用 === 比對節點參照，不只是選擇器命中，才能證明節點真的沒被換掉）。
+//          「取消選取」節點（用 === 比對節點參照，不只是選擇器命中，才能證明節點真的沒被換掉）。
 //       4. 不捲動頁面：把頁面捲到非零位置 → focus wJ:p1 的 pane 列（測試腳本自己這次
 //          `.focus()` 呼叫沒有帶 `preventScroll`，瀏覽器可能把它捲進視窗，這是測試腳本本身的
 //          一次性行為，不是要驗的事——所以基準值改在這次 focus **之後**才拍）→ 等數次重畫
@@ -2332,7 +2631,13 @@ async function partFocusPreservedAcrossRepaint() {
   try {
     preview = await startPreview({ COCKPIT_PREVIEW_PUSH_MS: '100' }, 'preview-R');
     const url = `http://127.0.0.1:${preview.port}/`;
-    chrome = await startChrome(pickPort(19110, [preview.port]), url, 'chrome-R', '1400,800');
+    // direction-01-visual task 2.1：1400,900（不是原本的 1400,800）——headless Chrome 的
+    // window.innerHeight 比 --window-size 要求的高度少约 99px（headless 視窗外框的模擬），
+    // 1400,800 量出來的 innerHeight 只有約 701px，落在 design D3「≥1200px 但 <720px 高」那個
+    // 仍會整頁捲動的情形，跟這裡「不捲動頁面」情境要驗的固定一屏（≥1200 且 ≥720 高，
+    // `.shell` overflow: hidden，頁面本身不能捲動）對不上。1400,900 量出來約 801px，穩穩落在
+    // 固定一屏區間。
+    chrome = await startChrome(pickPort(19110, [preview.port]), url, 'chrome-R', '1400,900');
     const { cdp } = chrome;
     await cdp.waitFor(
       "typeof window.liveOutput === 'object' && typeof window.liveOutput.select === 'function'",
@@ -2388,8 +2693,8 @@ async function partFocusPreservedAcrossRepaint() {
       '按 Enter 應該選定 wJ:p1，面板標題更新'
     );
     check(
-      (await cdp.eval("getComputedStyle(document.getElementById('output')).display")) !== 'none',
-      'Enter 選定後面板打開'
+      await cdp.eval(PANEL_OPEN_JS),
+      'Enter 選定後面板顯示有選取的內容（不是空狀態）'
     );
 
     // --- 再對另一個 pane（wJ:p3）用 Space 驗一次，同樣先驗過重畫、節點已換過 ---
@@ -2472,41 +2777,64 @@ async function partFocusPreservedAcrossRepaint() {
       `送出 Enter 後應該恰好收到一筆 POST /api/projects/cockpit/tasks/be-1/advance（實際 ${JSON.stringify(preview.writeRequests)}）`
     );
 
-    // --- 情境「焦點在面板內不被搶」（面板「關閉」按鈕；wJ:p3 仍是選取、面板仍打開）---
-    log('--- 情境「焦點在面板內不被搶」（面板「關閉」按鈕）---');
+    // --- 情境「焦點在面板內不被搶」（面板「取消選取」按鈕；wJ:p3 仍是選取、面板仍打開）---
+    log('--- 情境「焦點在面板內不被搶」（面板「取消選取」按鈕）---');
     check(
-      (await cdp.eval("getComputedStyle(document.getElementById('output')).display")) !== 'none',
+      await cdp.eval(PANEL_OPEN_JS),
       'GIVEN：面板仍是打開的（wJ:p3 仍是選取）'
     );
     await cdp.eval("window.__closeButtonRef = document.querySelector('.output-close'); window.__closeButtonRef.focus(); true");
     check(
       await cdp.eval("document.activeElement === window.__closeButtonRef"),
-      '面板「關閉」按鈕可以取得焦點'
+      '面板「取消選取」按鈕可以取得焦點'
     );
     const baselineVersion3 = await cdp.eval("Number(document.getElementById('version').textContent.slice(1))");
     await cdp.waitFor(
       `Number(document.getElementById('version').textContent.slice(1)) - ${baselineVersion3} >= 5`,
       5000,
-      '面板「關閉」按鈕聚焦後應該經過至少 5 次重畫（version 前進 ≥5）'
+      '面板「取消選取」按鈕聚焦後應該經過至少 5 次重畫（version 前進 ≥5）'
     );
     check(
       await cdp.eval("document.activeElement === window.__closeButtonRef"),
-      '重畫後鍵盤焦點仍在面板「關閉」按鈕上（#output 不在 #app 底下，不受重畫影響；用 === 比對同一個節點）'
+      '重畫後鍵盤焦點仍在面板「取消選取」按鈕上（#output 不在 #app 底下，不受重畫影響；用 === 比對同一個節點）'
     );
 
     await cdp.eval("document.querySelector('.output-close').click(); true");
 
-    // --- 情境「不捲動頁面」（fix round 1 Finding 3 重寫；原本的寫法沒有辨識力：先捲到「中段」
-    // 才 focus，若目標在那個中段位置本來就已經在視窗內，接下來不管 focus() 有沒有帶
-    // preventScroll，瀏覽器都不需要再捲動——兩種寫法測出來的 scrollY 會一樣，測不出
-    // preventScroll 有沒有真的生效，見下方 GREEN 之前先用「拿掉 preventScroll 也要 FAIL」
-    // 驗過舊寫法確實沒有辨識力）。修法（Codex 建議）：先 focus 目標 → 用 window.scrollTo 把
-    // 「仍保持焦點」的目標整個捲出視窗外（不是隨便捲到某個位置，是明確捲到目標的
-    // getBoundingClientRect 完全落在 [0, innerHeight] 之外）→ 這時才拍捲動基準值 → 等到確認
-    // 舊節點 isConnected === false 的重畫 → 斷言焦點落在新節點上，且 window.scrollY 沒有變。
-    // 若拿掉 preventScroll，重畫時的 focus() 會把這個「已經在視窗外」的新節點捲回視窗內，
-    // scrollY 一定會變，這樣才是真的測到 preventScroll 的效果。
-    log('--- 情境「不捲動頁面」（focus 目標、把它捲出視窗外才拍基準，等數次重畫，捲動位置不變）---');
+    // --- 情境「不捲動頁面」（fix round 1 Finding 3：先驗過「拿掉 preventScroll 也要 FAIL」，
+    // 證明舊寫法有辨識力；direction-01-visual task 2.1／design D9 改寫：桌面寬度（≥1200 且
+    // ≥720 高）下 `.shell` 現在是 `height: 100dvh; overflow: hidden`（design D3「固定一屏」），
+    // 整頁（`window.scrollTo` 作用的 document）本身不再捲動，原本「把目標捲出視窗外」的手法
+    // 對 document 已經沒有效果；pane 列所在的右欄改成捲動它。
+    // fix round 1（task 2.1 fix round 1／design 審核 I2）：真正捲動的容器換成 `.runtime-cards`
+    // ——`[data-region="runtimes"]` 現在是不捲動的框（`overflow: hidden`），`.runtime-cards`
+    // 才是內層唯一的捲動容器（跟 D8 的切角／3.2 的 sticky 掛在「框」這一層是同一個改動）。
+    // 手法不變：先 focus 目標 → 把「仍保持焦點」的目標捲出**容器**的可視範圍外（不是隨便捲到
+    // 某個位置，是明確捲到目標的 getBoundingClientRect 完全落在容器可視範圍之外，precondition
+    // 必須先成立，見 brief）→ 這時才拍容器捲動基準值 → 等到確認舊節點 isConnected === false
+    // 的重畫 → 斷言焦點落在新節點上，且容器的 scrollTop 沒有變。若拿掉 preventScroll，重畫時
+    // 的 focus() 會把這個「已經在容器可視範圍外」的新節點捲回可視範圍內（`Element.focus()`
+    // 的 preventScroll 涵蓋所有會被捲動的捲動容器祖先，不只 document——MDN／規格：預設會捲動
+    // 「捲進可視範圍」，preventScroll 就是關掉這個行為），容器的 scrollTop 一定會變，這樣才是
+    // 真的測到 preventScroll 的效果。
+    log('--- 情境「不捲動頁面」（focus 目標、捲動 .runtime-cards 的內部容器把它推出可視範圍才拍基準，等數次重畫，內部捲動位置不變）---');
+    // fixture 只有 3 個 pane，容器（右欄，min-height 240px 起跳）內容通常撐不滿自己的
+    // grid-area，天生沒什麼可捲的空間（maxScroll 太小，不夠把 wJ:p1 這種偏上方的列推出可視
+    // 範圍）。注入一條「選擇器規則」（不是 inline style）暫時把這個區塊夾窄，強迫它出現真的
+    // 捲得動的 overflow——這裡故意不用 `container.style.maxHeight = ...` 這種 inline style：
+    // repaint 會 `replaceChildren` 整個換掉 `.runtime-cards` 這個節點本身，inline
+    // style 掛在舊節點上，換掉之後新節點不會帶著它，maxScroll 又縮回天生的小範圍，後面「重畫後
+    // scrollTop 有沒有變」會變成拿一個已經被重置的容器比較、失去辨識力（實測驗證過：這樣寫
+    // 即使拿掉 render.js 的 `preventScroll: true`，這裡照樣印 PASS）。改用 `<style>` 規則掛在
+    // `document.head`（不在 `#app` 底下，不受 `replaceChildren` 影響）：規則跟著 CSS 選擇器走，
+    // 每次重畫換上的新節點只要還是 `.runtime-cards` 就會自動套用，maxScroll 才能在
+    // 整個情境（focus → 捲動 → 等重畫 → 比對）裡維持一致。
+    await cdp.eval(`(() => {
+      const style = document.createElement('style');
+      style.textContent = '[data-region="runtimes"] > .runtime-cards { max-height: 120px !important; }';
+      document.head.appendChild(style);
+      return true;
+    })()`);
     await cdp.eval(
       "window.__oldNodeF3 = document.querySelector('.pane-row[data-runtime=\"win\"][data-pane=\"wJ:p1\"]'); window.__oldNodeF3.focus(); true"
     );
@@ -2516,45 +2844,53 @@ async function partFocusPreservedAcrossRepaint() {
     );
     const scrollSetup = await cdp.eval(`(() => {
       const row = window.__oldNodeF3;
+      const container = document.querySelector('[data-region="runtimes"] > .runtime-cards');
       const rect = row.getBoundingClientRect();
-      const docTop = rect.top + window.scrollY;
-      const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-      // 目標在文件裡的絕對位置固定（docTop）：docTop 已經超過一個視窗高度時，捲回最上面
-      // （scrollY=0）就會把它推到視窗下方看不到；否則（目標本來就靠近頁首）捲到最下面
-      // （scrollY=maxScroll）把它推到視窗上方看不到。
-      const newScrollY = docTop > window.innerHeight ? 0 : maxScroll;
-      window.scrollTo(0, newScrollY);
+      const cRect = container.getBoundingClientRect();
+      const rowTopInContainer = rect.top - cRect.top + container.scrollTop;
+      const maxScroll = Math.max(0, container.scrollHeight - container.clientHeight);
+      // 一律捲到底（scrollTop = maxScroll，不是「挑一個方向」）：wJ:p1 天生就在內容偏上方
+      // （rowTopInContainer 遠小於捲到底之後的可視範圍起點），捲到底一定會把它推到可視範圍
+      // 上方看不到；同時這樣 scrollTop 一定會從 0 變成一個非 0 的值，後面「重畫後 scrollTop
+      // 沒有變」才是在比對一個真的移動過的位置，不是「本來就是 0、現在還是 0」這種沒有辨識力
+      // 的巧合（fix round 1 Finding 3 的教訓——見上方大註解——同一個陷阱換了捲動對象要重新
+      // 檢查一次：先前用「maxScroll 太小，scrollTop 停在 0」的寫法量出來 scrollTopApplied 是
+      // 0，preventScroll 拿掉也測不出差異，已經現場驗證過、改掉）。
+      const newScrollTop = maxScroll;
+      container.scrollTop = newScrollTop;
       const rectAfter = row.getBoundingClientRect();
+      const cRectAfter = container.getBoundingClientRect();
       return {
-        docTop,
+        rowTopInContainer,
         maxScroll,
-        newScrollY,
-        scrollYApplied: window.scrollY,
-        offscreen: rectAfter.bottom < 0 || rectAfter.top > window.innerHeight,
+        newScrollTop,
+        scrollTopApplied: container.scrollTop,
+        offscreen: rectAfter.bottom < cRectAfter.top || rectAfter.top > cRectAfter.bottom,
         stillFocused: document.activeElement === row,
       };
     })()`);
-    check(scrollSetup.stillFocused === true, '把目標捲出視窗外的過程中，焦點應該仍在目標上（尚未重畫）');
+    check(scrollSetup.stillFocused === true, '把目標捲出容器可視範圍的過程中，焦點應該仍在目標上（尚未重畫）');
     check(
       scrollSetup.offscreen === true,
-      `目標應該已經整個捲出視窗外（getBoundingClientRect 落在 [0, innerHeight] 之外，實際 ${JSON.stringify(scrollSetup)}）`
+      `目標應該已經整個捲出 .runtime-cards 容器的可視範圍外（實際 ${JSON.stringify(scrollSetup)}）`
     );
 
     const baselineVersionF3 = await cdp.eval("Number(document.getElementById('version').textContent.slice(1))");
     await cdp.waitFor(
       `Number(document.getElementById('version').textContent.slice(1)) - ${baselineVersionF3} >= 5`,
       5000,
-      '目標捲出視窗外後應該再經過至少 5 次重畫（version 前進 ≥5）'
+      '目標捲出容器可視範圍後應該再經過至少 5 次重畫（version 前進 ≥5）'
     );
 
     const afterF3 = await cdp.eval(`(() => {
       const active = document.activeElement;
+      const container = document.querySelector('[data-region="runtimes"] > .runtime-cards');
       return {
         oldConnected: window.__oldNodeF3.isConnected,
         sameNode: active === window.__oldNodeF3,
         activeRuntime: active && active.dataset ? active.dataset.runtime : null,
         activePane: active && active.dataset ? active.dataset.pane : null,
-        scrollY: window.scrollY,
+        containerScrollTop: container ? container.scrollTop : null,
       };
     })()`);
     check(
@@ -2565,9 +2901,17 @@ async function partFocusPreservedAcrossRepaint() {
       afterF3.sameNode === false && afterF3.activeRuntime === 'win' && afterF3.activePane === 'wJ:p1',
       `重畫後鍵盤焦點應該落在代表同一個 pane（wJ:p1）的新節點上（實際 ${JSON.stringify(afterF3)}）`
     );
+    // direction-01-visual task 2.1 fix round 4：比對基準改回 scrollSetup.scrollTopApplied。
+    // round 1 的前提是「.runtime-cards 在 #app 底下、每次 replaceChildren 都換成新節點，新節點的
+    // scrollTop 一定是 0」，所以把預期值訂為 0；fix round 4 發現這個前提本身就是 2.1 的產品迴歸
+    // ——內層捲動容器每次推送都被拉回頂端（actions-check.js「頻繁重畫時按鈕仍有效」因此間歇漏送
+    // POST），render.js 的 paint() 改成重畫前記下、重畫後寫回內層捲動位置。前提被推翻後，這裡
+    // 回到本段標題原本要驗的事：等數次重畫之後，容器的 scrollTop 仍是捲出目標時設的值（目標仍在
+    // 可視範圍外）。辨識力：拿掉 render.js restoreFocus() 的 preventScroll 時，重畫後的 focus()
+    // 會把容器捲回去顯示目標，scrollTop 必然改變（fix round 4 現場驗證過，數字見 task 2.1 report）。
     check(
-      afterF3.scrollY === scrollSetup.scrollYApplied,
-      `即使目標原本在視窗外，重畫時的焦點還原（focus({ preventScroll: true })）也不得把頁面捲回去、不得改變捲動位置（捲出視窗外時 ${scrollSetup.scrollYApplied} → 數次重畫後 ${afterF3.scrollY}）`
+      afterF3.containerScrollTop === scrollSetup.scrollTopApplied && scrollSetup.scrollTopApplied > 0,
+      `數次重畫之後 .runtime-cards 的捲動位置應該不變（捲出目標時設為 ${scrollSetup.scrollTopApplied}）——內層捲動位置跨重畫保留，且 focus({ preventScroll: true }) 不得把容器捲去顯示目標（實際 ${afterF3.containerScrollTop}）`
     );
   } finally {
     await stopChrome(chrome, 'chrome-R');
@@ -2993,6 +3337,104 @@ async function partPendingFocusTargetClearedOnPerformError() {
   }
 }
 
+// X（fix round 1；設計審核 M1／控制端 Ruling R41）：長標題（runtime／pane id 都很長）疊上
+// 「過期」標籤（同時觸發 is-stale，重現設計審核 `700x900-7-long-title-stale-panel.png` 的最壞
+// 情況——過期標籤跟截斷提示一起佔用標題列的可縮空間）時，「取消選取」不應該被壓縮成兩行。
+// 700 寬窄視窗（同設計審核用的寬度）。用不存在的 runtime／pane 直接 select()：真的請求會 404，
+// 走 markGone() 進入 is-stale（不需要真的建立那麼長 id 的 pane）。
+async function partLongTitleCloseButtonSingleLine() {
+  log('=== X. fix round 1（設計審核 M1）：長標題時「取消選取」不應該被擠成兩行 ===');
+  let preview = null;
+  let chrome = null;
+  try {
+    preview = await startPreview({}, 'preview-X');
+    const url = `http://127.0.0.1:${preview.port}/`;
+    chrome = await startChrome(pickPort(19160, [preview.port]), url, 'chrome-X', '700,900');
+    const { cdp } = chrome;
+    await cdp.waitFor(
+      "typeof window.liveOutput === 'object' && typeof window.liveOutput.select === 'function'",
+      5000,
+      'output.js 載入完成，window.liveOutput 就緒'
+    );
+
+    // 基準：短標題（真的存在的 pane）時「取消選取」的高度與 client rect 數（單行）。
+    await cdp.eval("window.liveOutput.select('win', 'wJ:p1'); true");
+    await cdp.waitFor(PANEL_OPEN_JS, 3000, '短標題選取後面板顯示');
+    const baseline = await cdp.eval(`(() => {
+      const btn = document.querySelector('.output-close');
+      const r = btn.getBoundingClientRect();
+      return { height: r.height, rects: btn.getClientRects().length };
+    })()`);
+    check(baseline.rects === 1, `基準（短標題）「取消選取」本來就應該是單行（實際 ${baseline.rects}）`);
+
+    // 長標題＋不存在的 pane：404 → markGone() → is-stale，標題列同時多一個「過期」標籤（M1 的
+    // 重現條件：截斷提示與過期標籤一起擠壓可縮空間，這裡疊過期標籤已經是比只有長標題更嚴苛的
+    // 情況）。
+    const longRuntime = 'a-very-long-runtime-name-that-keeps-going-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
+    const longPane = 'w1:p-a-very-long-pane-id-that-also-keeps-going-yyyyyyyyyyyyyyyyyyyyyyyyyyyy';
+    await cdp.eval(`window.liveOutput.select(${JSON.stringify(longRuntime)}, ${JSON.stringify(longPane)}); true`);
+    await cdp.waitFor(
+      "(() => { const n = document.querySelector('.output-gone-notice'); return !!n && !n.hidden; })()",
+      5000,
+      '不存在的 pane 應該 404 → 顯示「pane 已不存在」（同時進入 is-stale，標題列多一個「過期」標籤）'
+    );
+    const longTitleSignals = await readStaleSignals(cdp);
+    checkMarkedStale(longTitleSignals, '長標題＋不存在的 pane（M1 重現條件）');
+
+    const closeStyle = await cdp.eval(`(() => {
+      const btn = document.querySelector('.output-close');
+      const cs = getComputedStyle(btn);
+      const r = btn.getBoundingClientRect();
+      return {
+        flexShrink: cs.flexShrink,
+        whiteSpace: cs.whiteSpace,
+        text: btn.textContent,
+        height: r.height,
+        rects: btn.getClientRects().length,
+      };
+    })()`);
+    check(
+      closeStyle.flexShrink === '0',
+      `「取消選取」不應該被壓縮（flex-shrink 應該是 0；設計審核 M1；實際 ${closeStyle.flexShrink}）`
+    );
+    check(
+      closeStyle.whiteSpace === 'nowrap',
+      `「取消選取」不應該換行（white-space 應該是 nowrap；設計審核 M1；實際 ${closeStyle.whiteSpace}）`
+    );
+    check(
+      closeStyle.text === '取消選取',
+      `按鈕文字仍應該是完整的「取消選取」（實際 ${JSON.stringify(closeStyle.text)}）`
+    );
+    check(
+      closeStyle.rects === 1,
+      `長標題下「取消選取」的文字仍應該落在單一個 client rect 裡（沒有折成兩行；設計審核 M1；實際 ${closeStyle.rects}）`
+    );
+    check(
+      Math.abs(closeStyle.height - baseline.height) < 0.5,
+      `長標題下「取消選取」的高度應該跟短標題時相同（沒有變成兩行高；設計審核 M1；短標題 ${baseline.height}，長標題 ${closeStyle.height}）`
+    );
+
+    // 折行的可縮空間讓給標題（ellipsis），不是按鈕。
+    const titleOverflow = await cdp.eval(`(() => {
+      const t = document.querySelector('.output-title');
+      return { scrollWidth: t.scrollWidth, clientWidth: t.clientWidth, textOverflow: getComputedStyle(t).textOverflow };
+    })()`);
+    check(
+      titleOverflow.textOverflow === 'ellipsis' && titleOverflow.scrollWidth > titleOverflow.clientWidth,
+      `長標題應該用 ellipsis 截斷（折行的可縮空間讓給標題，不是按鈕；實際 ${JSON.stringify(titleOverflow)}）`
+    );
+
+    await cdp.eval('window.liveOutput.clear(); true');
+  } finally {
+    await stopChrome(chrome, 'chrome-X');
+    if (preview) {
+      killTree(preview.server, 'preview-X');
+      await sleep(300);
+      check(!isPortListening(preview.port), `port ${preview.port}（preview-X）應該不再有 LISTENING 的行程`);
+    }
+  }
+}
+
 // letter → 段落函式；task 5.4 加 ONLY 篩選（見檔頭「用法」），逐一 try/catch 維持跟之前一樣
 // 「一段中止不影響其他段落繼續跑」的行為，只是把原本重複的六段 try/catch 收成一個迴圈。
 const PARTS = [
@@ -3018,6 +3460,8 @@ const PARTS = [
   ['T', partWorkstreamFocusIdentityUnique],
   ['U', partPointerdownFocusesRealTarget],
   ['V', partPendingFocusTargetClearedOnPerformError],
+  ['W', partHelperSelfTest],
+  ['X', partLongTitleCloseButtonSingleLine],
 ];
 
 async function main() {

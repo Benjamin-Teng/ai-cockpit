@@ -34,6 +34,17 @@
 // 「頁面顯示錯誤訊息……直到下一次操作或使用者關閉」。`clearSelected()`（面板「關閉」與「pane
 // 已不存在」的回呼）同理，本來就沒有動 `latestOp`／`ui.error`，不需要另外處理。
 //
+// Project 選取（spec cockpit-dashboard「Project 切換」；design D6；direction-01-visual
+// task 3.1）：`ui.selectedProject` 跟 `rebind`／`error`／`selected` 並列存在 `ui` 裡、一併交給
+// `uiSnapshot()`。理由跟上一段的 pane 選取完全對應（design D6 明文「選定 Project 不是『畫面
+// 操作』」）：`perform()` 對 `select-project` 也在最前面獨立處理、直接 `return`，不遞增
+// `latestOp`、不清 `ui.error`，也完全不碰 `ui.rebind`（不會離開改綁模式）。左欄項目是
+// `<button data-action="select-project" data-project="...">`，鍵盤可及性靠瀏覽器原生的
+// Enter／Space → click（detail 0）即可，不需要像 pane 列那樣另外補 `tabIndex`／`role`／
+// keydown（design D6：「左欄項目是 button」）。render.js 的 `renderState()` 用
+// `ui.selectedProject` 決定 Factory Floor 畫哪個 Project，找不到（尚未選定過，或選定的
+// Project 已不在最新投影中）就用 `state.projects` 的第一個。
+//
 // 載入順序：index.html 依序載 output.js → render.js → actions.js → channel.js。#app 在
 // <body> 內、script 在它之後，這裡執行時一定已存在；`window.liveOutput` 也已經就緒。
 //
@@ -53,6 +64,7 @@
     rebind: null, // null | { project, workstream }
     error: null, // null | string
     selected: null, // null | { runtime, paneId }（design D8）
+    selectedProject: null, // null | string（design D6；direction-01-visual task 3.1）
   };
 
   function uiSnapshot() {
@@ -60,6 +72,7 @@
       rebind: ui.rebind === null ? null : { project: ui.rebind.project, workstream: ui.rebind.workstream },
       error: ui.error,
       selected: ui.selected === null ? null : { runtime: ui.selected.runtime, paneId: ui.selected.paneId },
+      selectedProject: ui.selectedProject,
     };
   }
 
@@ -81,7 +94,26 @@
     repaint();
   }
 
-  window.cockpitActions = { uiSnapshot: uiSnapshot, clearSelected: clearSelected };
+  // 選定的 Project 已不在最新投影中時，正式改成第一個（spec cockpit-dashboard「Project
+  // 切換」：「選定的 Project 已不在最新投影中時改為選定第一個」；design D6；
+  // direction-01-visual task 3.1 fix round 1／Codex finding：`render.js` 原本只在
+  // `renderState()` 內部 fallback 到第一個 Project 讓畫面正確，卻沒有把這裡的
+  // `ui.selectedProject` 一併改掉——若使用者選了 p2、下一份投影暫時沒有 p2（畫面正確
+  // fallback 顯示第一個），p2 之後又出現在投影裡時，這裡殘留的舊 ID 會讓畫面在使用者沒有
+  // 任何操作的情況下自己跳回 p2，不符合 spec「改為選定第一個」是正式狀態改變、不是暫時顯示
+  // fallback 的原意。`render.js` 的 `paint()` 發現目前記錄的選取 ID 不在投影裡時呼叫這裡；
+  // 呼叫端已經知道有這件事發生、正在處理當下這次重畫，這裡只改狀態、不额外 `repaint()`
+  // （避免同一次重畫觸發第二次重畫；render.js 內部的 fallback 邏輯已經讓這次畫面正確）。
+  // 跟 `clearSelected()` 一樣，外部只應該由那個唯一的呼叫端（render.js paint()）呼叫。
+  function setSelectedProject(id) {
+    ui.selectedProject = id;
+  }
+
+  window.cockpitActions = {
+    uiSnapshot: uiSnapshot,
+    clearSelected: clearSelected,
+    setSelectedProject: setSelectedProject,
+  };
 
   function seg(value) {
     return encodeURIComponent(value);
@@ -151,6 +183,22 @@
   function perform(el) {
     var data = el.dataset;
     var action = data.action;
+
+    if (action === "select-project") {
+      // Project 選取不是「畫面操作」（design D6，比照 select-pane／select-bound-pane 的
+      // 理由——R19／G4 fix wave Finding 2；direction-01-visual task 3.1）：不遞增
+      // latestOp、不清 ui.error、不影響改綁模式（perform() 完全不碰 ui.rebind）。它只切換
+      // 左欄哪個 Project 被標示為選定、render.js 的 renderState() 依此決定 Factory Floor
+      // 畫哪個 Project——跟「畫面操作」定義的那組寫入按鈕（task/workstream 的 fetch）無關，
+      // 若也遞增 latestOp，使用者切換 Project 後若剛好有一筆寫入請求稍後才失敗，
+      // showError() 會因為 op 已被這次切換推走而忽略，寫入失敗被悄悄吞掉；若也清
+      // ui.error，已顯示的錯誤訊息會被切換 Project 清掉，兩者都違反 spec「畫面操作」
+      // 「頁面顯示錯誤訊息……直到下一次操作或使用者關閉」與「Project 切換」「選定 Project
+      // 不是『畫面操作』：不得清除最近一次操作的錯誤訊息……不得離開改綁模式」。
+      ui.selectedProject = data.project;
+      repaint();
+      return;
+    }
 
     if (action === "select-pane" || action === "select-bound-pane") {
       // 選取不是「畫面操作」（spec cockpit-dashboard「畫面操作」只列 task／workstream 的寫入

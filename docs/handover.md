@@ -1,182 +1,157 @@
 # 交接：下一段任務
 
-> **建立日期**：2026-09-23　|　**上一段做完的事**：change 3 `live-output` 已 squash 併回 `main`（`1c6f4bf`）並 archive
-> （`78bcef4`，主規格同步為 16 份）。Cockpit 現在能顯示選定 pane 的即時輸出；MVP §20 的 13 個項目全數完成。
-> 下一段是 Direction 01 視覺改版（第 3 節）。
+> **建立日期**：2026-09-25　|　**上一段做完的事**：change 4 `direction-01-visual` 以 SDD 執行到 task 3.4。完成 8/16：1.1、1.2、2.1–2.3、3.1–3.3。
+> 3.4 停在 fix round 1 之後，還剩一條測試 finding。使用者要求在這裡收尾、換 session。
 > **性質**：接手用文件，會過期，每段重寫。
-> 為什麼做看 `docs/cockpit-spec.md` 與設計文件 `docs/superpowers/specs/2026-09-13-cockpit-mvp-design.md`、
-> 怎麼做看 `~/.claude/CLAUDE.md`（本 repo 精簡版在 `AGENTS.md`）、規格看 `openspec/specs/`（16 份主規格）。
+> 為什麼做看 `openspec/changes/direction-01-visual/proposal.md` 與 `docs/direction-01-visual-design.md`；
+> 怎麼做看 `~/.claude/CLAUDE.md`（本 repo 精簡版在 `AGENTS.md`）；規格看 `openspec/specs/` 與本 change 的 delta。
 
 ## 0. 三十秒版本
 
-1. **沒有時效性任務。** 沒有 active change（`openspec list` 應為空）；`main` 是唯一分支，工作樹乾淨。
-2. 下一段：Direction 01 視覺改版。**還沒 propose**，先走 brainstorming 再 `/opsx:propose`；使用者 2026-09-21 的裁決
-   （設計完全參照文件、概念圖只標功能區）見第 3 節第一段，propose 時原樣寫進 proposal。
-3. 環境是乾淨的（2026-09-21 核對）：WSL 測試 server 已停、沒有殘留 `cockpit.exe`／`ui_preview.exe`／headless Chrome、
-   7770／779x 沒有 LISTEN、本機 `cockpit.toml`（gitignored）沒被動過、沒有狀態檔、`/tmp/cockpit-accept-*` 無殘留。
-4. 沒有 remote。**`main` 上既有檔案含真實主機名／使用者名稱**（第 5 節），推上遠端前要先清。
+1. **沒有時效性任務。** 分支 `feat/direction-01-visual`，領先 `main`（`f6e0892`）71 個 commit；沒有 remote。
+2. **接手第一步**：先讀 SDD ledger `.superpowers/sdd/tasks/progress.md`（本機檔案、不在版控）。裡面有第 1–36 條裁決、
+   每個 task 的審查紀錄、所有延後項目，以及最後一行的 `PAUSE` 說明。**ledger 與 `git log` 優先於你的記憶。**
+3. **下一步**：使用者下 `/opsx:apply` 之後，用 Skill 工具載入 `superpowers:subagent-driven-development`（它會認得既有 ledger，
+   從 3.4 繼續），接著做 **3.4 fix round 2**（見第 2 節），然後是 4.1 → 4.2 → 5.1 → 5.2（截圖給使用者目視）→ 5.3 → 5.4 → 5.5。
+4. 使用者嫌實作太久，所以才換 session。延續這個節奏：**只剩 Minor 就不再開修正輪**（裁決 R25），改記進 ledger，交給 5.1 清理。
 
 ## 1. 現在的狀態
 
-- 已上線（`main`）：change 1a／1b／2／3——`herdr-client/`、`cockpit-core/`、`cockpit-herdr/`、`cockpit/`，各模組職責見
-  `cockpit/README.md`、`herdr-client/README.md`（另兩個 crate 沒有 README）；依賴方向見 ADR-0003。change 3 加的：
-  - `cockpit-core/src/runtime.rs`：`AgentRuntime::read_output(&PaneId, max_lines)`、`PaneOutput { format, text, truncated }`
-    （刻意不含 `revision`）、`RuntimeError::PaneNotFound`。
-  - `cockpit-herdr/src/runtime.rs`：以 `pane.read`（`recent`／`text`／`lines`＝上限）實作；`pane_not_found`→`PaneNotFound`，其餘→`Failed`；
-    同一個 runtime 的輸出讀取以一把 `tokio::sync::Mutex` 排隊（不與 snapshot／subscribe 互斥）。
-  - `cockpit/src/http.rs`：`GET /api/runtimes/{runtime}/panes/{pane}/output`，掛 `source_check`；狀態碼與標頭見
-    `openspec/specs/live-output/spec.md`；`AppState.runtimes` 是 runtime id → `Arc<dyn AgentRuntime>` 的對照表。
-  - `cockpit/assets/app/output.js`（面板＋輪詢）、`actions.js`（`ui.selected`、選取不參與 `latestOp`、`pointerdown` 上
-    `preventDefault` 並登記待還原焦點）、`render.js`（pane 列可選、「看輸出」、重畫後依 `data-*` 身分還原鍵盤焦點）；
-    面板 `#output` 是 `#app` 的兄弟節點，不在整頁重畫範圍內。
-  - `cockpit/examples/ui_preview.rs`：腳本化假 runtime（`COCKPIT_PREVIEW_OUTPUT_MODES`、`COCKPIT_PREVIEW_VANISH_PANE`，語法見檔頭）。
-  - `herdr-client/examples/probe_pane_read.rs`：`pane.read` 真機探測工具（HERDR 升版時重跑）。
-- 可用指令（repo 根）：
+- **已上線（`main`）**：change 1a／1b／2／3。各模組職責見 `cockpit/README.md`、`herdr-client/README.md`；依賴方向見 ADR-0003。
+- **本分支已完成的畫面**（前端在 `cockpit/assets/`，以 `include_str!` 編進執行檔）：
+  - 2.1 外框：`.shell` grid。`#app` 設 `display: contents`，各區塊帶 `data-region`（topbar／projects／banner／floor／runtimes／events／statusbar／output）。
+    每個區塊都是「不捲的框＋內層捲動容器」。三個斷點＋高度門檻（寬 ≥1200 且高 ≥720 才固定一屏）。
+    `paint()` 會記下並寫回內層捲動位置（`render.js` 的 `SCROLL_KEEP_SELECTORS`）。
+  - 2.2 token：只准 10 個色彩 token 與 `--fs-*` 四階字級（20／14／13／12）。`visual-check.js` 的 TK1 靜態段會擋寫死的色值與字級。
+  - 2.3 頂列與底列：
+    - 每個 runtime 有連線燈號，三態三種形狀（實心圓／空心圓／叉）。
+    - 通道斷線時，燈號標「最後已知」並改用 `--text-dim`。
+    - 頂列高度由字級推導（`@property` 註冊的 `--shell-topbar-h`）。
+    - 可整頁捲動的版面裡，底列是 sticky。
+  - 3.1 左欄 Project 切換：計數 chip、`select-project`（不遞增 `latestOp`、不清錯誤）。選取的 Project 消失時，正式改選第一個。
+  - 3.2 Factory Floor：
+    - 節點是表面色底加狀態色條，再配「符號＋文字」。
+    - running 用 2px 冰青外框加柔光；failed、blocked 用 1px 狀態色框。
+    - 刻度畫在 stage 欄首上緣；列首與欄首 sticky。
+  - 3.3 右欄：
+    - 整區一層框，runtime 之間用分隔線。
+    - pane 列排成兩行；cwd 省略前段、保留尾段。
+    - HERDR 目前聚焦的 pane 標「作用中」。
+  - 3.4（未勾）：錯誤與改綁提示同屬一套「左緣條」外觀；錯誤提示加 ✕；按鈕不換行。
+- **尚未做的畫面**：Live Output 面板常駐與空狀態（4.1）。目前沒選 pane 時，中下區是空的，這是刻意保留，見裁決 R16。過期標示也還沒改版（4.2）。
+- **可用指令**（repo 根目錄）：
   - 全 gate：`cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test --workspace && cargo test -p cockpit --example ui_preview && markdownlint-cli2 "**/*.md" && openspec validate --all`
-    （`cargo test --workspace` **不含** example 內的單元測試，所以 `ui_preview` 要另外跑）
-  - 啟動：`cargo run -p cockpit -- --config cockpit.toml`；畫面預覽（不需 HERDR）：`cargo run -p cockpit --example ui_preview`
-  - 輸出端點：`curl -H "Host: 127.0.0.1:7770" "http://127.0.0.1:7770/api/runtimes/<runtime>/panes/<pane>/output"`（要帶合法 `Host`；說明見 `cockpit/README.md`）
-  - 前端驗收（headless Chrome，對 `ui_preview`）：`node docs/research/2026-09-19/live-output-check.js`（整支約 2.5 分鐘，A–V 段；只跑某幾段就加段落代號，例 `… Q V`）；
-    既有的 `node docs/research/2026-09-16/actions-check.js`、`factory-floor-check.js`
-  - 真機驗收（WSL）：`HERDR_CLIENT_TEST_ALLOW_WSL_WRITES=1 COCKPIT_ACCEPT_WSL_DISTRO=Ubuntu-24.04 node docs/research/2026-09-19/live-output-real-check.js`
-    （每次執行用自己專屬的 socket 路徑，開著預設路徑的 WSL server 也不衝突；細節見 `docs/research/2026-09-19/live-output-acceptance.md`「重跑」）
-  - `pane.read` 探測：`cargo run -p herdr-client --example probe_pane_read -- --list`／`-- --pane <id> --count 20 --interval-ms 500 --metadata-only`
-  - WSL 測試 server（預設路徑）：啟動 `wsl.exe -d Ubuntu-24.04 -e bash -lc "setsid -f ~/.local/bin/herdr server >/tmp/herdr-server.log 2>&1 </dev/null"`；
-    停 `wsl.exe -d Ubuntu-24.04 -e bash -lc "~/.local/bin/herdr server stop"`（**只能停 WSL 端**）
-  - Codex review：`node ~/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs adversarial-review --wait --base <ref> "<focus>"`
-    （`*` 取最新版號；裝了多個版本時先 `ls ~/.claude/plugins/cache/openai-codex/codex/` 挑最新的那個寫死）
-- 測試與 gate：以當場輸出為準。2026-09-21 於併回前的 `96e574f`（樹內容＝`1c6f4bf`）：`cargo test --workspace` 531 passed／0 failed／10 ignored
-  （ignored 需真機 HERDR）、`ui_preview` example 13 passed、fmt／clippy 0、markdownlint 0 issues、`openspec validate --all` 16 passed。
-- 規格：16 份主規格（change 3 新增 `live-output`）。change 3 的歷史決策在 `openspec/changes/archive/2026-09-21-live-output/`
-  （`sdd-ledger.md` 有 Rulings R1–R32 與所有 Codex 處理紀錄）。
-- 版控：`main` 在 `78bcef4`；沒有其他分支。
+  - 預覽（不需要 HERDR）：`cargo run -p cockpit --example ui_preview`（預設 `127.0.0.1:7770`）
+  - 新驗收腳本：`node docs/research/2026-09-23/visual-check.js <段代號,...>`。段代號與用法見檔頭，常用的有
+    TK1、S1–S5、V1–V4、G1、G2、P1、R1、CH1、D1、U1、CT1、RM1、FN1、LO1。
+  - 既有六支腳本：`docs/research/2026-09-15/reconnect-check.js`、`whatever-check.js`、`docs/research/2026-09-16/actions-check.js`、
+    `channel-backoff-check.js`、`factory-floor-check.js`、`docs/research/2026-09-19/live-output-check.js`
+  - Codex 審查：`node ~/.claude/plugins/cache/openai-codex/codex/1.0.6/scripts/codex-companion.mjs adversarial-review --wait --scope branch --base <BASE> "<focus>"`
+- **測試數字**：以當場輸出為準。最後紀錄（2026-09-25，`883c1f6`）：`cargo test -p cockpit` 156 passed／0 failed／1 ignored；
+  六支腳本全 PASS；visual-check 除 LO1 以外全綠，另有一條 PEND(4.1)；markdownlint 80 檔 0 issues；`openspec validate --all` 17 passed。
+  task 1.1 的 workspace 基線是 531／0／10。
+- **環境**：乾淨，沒有殘留的 `ui_preview` 或 headless Chrome。port 7680（svchost）與 7778（ArmouryCrate）是系統服務，不是殘留，不要碰。
 
-## 2. 立刻要做：開始 Direction 01 視覺改版
+## 2. 立刻要做：task 3.4 fix round 2
 
-沒有殘留的收尾工作。第一步是 brainstorming（superpowers:brainstorming）→ `/opsx:propose <slug>`，propose 時依
-`~/.claude/guides/openspec-workflow.md`「執行路徑分流」在 `tasks.md` 開頭寫明走 SDD 還是直接 apply。判斷材料：改版跨
-`style.css`／`render.js`／`output.js` 與三支驗收腳本，且 SGR 轉換器可獨立驗收——多半是 SDD。
+- **唯一開著的 finding**（Codex，原文在 `.superpowers/sdd/tasks/codex-3.4-r1.log`）：
+  - `visual-check.js` 的 banner-wrap 子段沒有證明「文字真的折行而且完整可見」：它只量按鈕，也只測 error 的「關閉」，沒測 rebind 的「取消」。
+  - 負對照同時改了按鈕的 `white-space` 和 `flex-shrink`，所以兩項保護各自有沒有辨識力，證明不出來。
+- **做法**：派一個新的 sonnet 實作者（原實作者的 context 不會跨 session）。給它下列檔案：
+  - brief：`.superpowers/sdd/tasks/task-3.4-brief.md`
+  - 報告：`.superpowers/sdd/tasks/task-3.4-report.md`，已有 fix round 1 章節
+  - 上面那份 Codex log
 
-## 3. 接著要做：Direction 01 視覺改版
+  要它做到：
+  - 斷言長文字節點存在，並以行高或元素高度證明至少兩行。
+  - 斷言文字沒被裁切、沒有水平溢位。
+  - error 與 rebind 兩個按鈕都要量。
+  - 補「文字 nowrap」的負對照，並把按鈕的 `white-space` 與 `flex-shrink` 拆成兩個獨立負對照。
 
-**依據的分工（使用者 2026-09-21 裁決）：視覺設計完全參照 `docs/direction-01-visual-design.md`**（配色表、字體、關鍵語彙、元件語彙都以這份文件為準）；
-概念圖 `docs/cockpit-dashboard-direction-01-concept.png` **只用來標示功能區的位置與排列**，不是配色、字體、間距或元件外觀的依據——
-兩者有出入時以文件為準，不要從點陣圖取色或臨摹像素。概念圖上有、但產品還沒有的功能區（Add Agent、篩選、Flow／Details、底部輸入區等）
-只是排列示意，不代表要在改版時實作。十種方向比較稿在 `docs/cockpit-art-directions.html`（僅供回顧選型過程）。現在的 `style.css` 仍是 1b 的樣式語彙，Live Output 面板也是沿用它做的。改版時一併處理：
+  可以順手做 ledger 裡兩條 3.4 Minor：✕ 對齊第一行；✕ 與文字的間距／兩則提示文字起點對齊。
+- **審查**：
+  - Codex scoped re-review，`--base 883c1f6`。
+  - 設計審核：派新的 opus，先用 Skill 載入 `frontend-design:frontend-design`。
+  - 通過就勾 3.4；只剩 Minor 就記進 ledger，不再開輪。
+- 通則照舊：每個產品 task 都要讓六支既有腳本全綠。跑過 `factory-floor-check.js` 之後一律執行
+  `git checkout -- docs/research/2026-09-16/task-5.2-scenario-d.png`。
 
-- **Live Output 上色**：change 3 刻意只做純文字（使用者 2026-09-19 決定），端點回應已帶 `format` 欄位預留。`pane.read` 的 `ansi` 格式
-  實測只有 SGR 序列（`docs/research/2026-09-19/pane-read-probe.md` 第 4 節；真彩色、背景色、全螢幕 TUI 的 `ansi` 輸出**未驗**），
-  前端寫一個 SGR→樣式的小轉換器即可，不需要完整終端機模擬。256 色對應到畫面配色要在這裡一次定案。
-- 斷線期間畫面沒有「取消改綁」按鈕（M2）。M3（整頁重畫使鍵盤焦點消失）**已在 change 3 修掉**，不用再處理。
-- `pointerdown` 上的 `preventDefault` 會抑制瀏覽器預設的 `:active`／焦點行為，改版設計按下態的視覺回饋時要知道這件事（change 3 未驗其影響）。
-- 前端改動的驗收一律用 headless Chrome 腳本；既有腳本依賴目前的 DOM 結構與 `data-action` 名稱，改版時要一起改。
+## 3. 接著要做：4.1 → 5.5
+
+- **4.1 Live Output 常駐**：沒選取時顯示空狀態；按鈕已改名「取消選取」，見 live-output spec。
+  - 空狀態文案見 design D7。
+  - `live-output-check.js` 中「沒選取時面板不存在／收起」的斷言要改寫成空狀態。
+  - visual-check 裡 R2 的 `PENDING(4.1)` 與 LO1 在這個 task 轉綠。
+  - 帶給 4.1 的事項：Live Output 的輸出窗要撐滿區塊（2.1 設計 M6）。
+- **4.2 過期標示**：拿掉 opacity，改用 `--text-dim` 文字＋`--warn` 左緣條＋「過期」字樣（design D7）。
+  WSL 真機腳本 `live-output-real-check.js` 的兩處 opacity 斷言也一起改，只改不跑。
+- **5.1 清理**：刪掉沒被用到的舊 CSS，確認沒有 `@keyframes`。同時處理 ledger 裡所有交給 5.1 的延後項目（grep `5.1`）：
+  - **R28**：寬 ≥1200 但高 <720 時，頂列可能多行，而高度上限只算單行。最小修法：寬 ≥1200 時頂列一律固定高度＋橫向捲動。
+  - 底列 32px 寫死。
+  - 連線符號 8px 應改 em。
+  - 內層捲動容器要明設 `scrollbar-width: thin`。
+  - 3.3 的兩條：連線明細值欄中文尾字掉行（`text-wrap: pretty`）；cwd 沒有前段時基線偏移。
+  - 3.4 的兩條 ✕ 對齊（如果 3.4 沒順手做）。
+  - 頂列上下框線不對稱（2.3 設計 M2，裁決 R23 當時決定不修；5.1 再看要不要順手處理）。
+- **5.2**：visual-check 全跑。在 1536×1024、1100、700 三種寬度各截一張圖**給使用者目視**，等使用者點頭。
+- **5.3**：`.gitignore` 加 `.superpowers/`；更新 `docs/direction-01-visual-design.md` 的狀態；新增 `docs/research/2026-09-23/visual-check.md`。
+- **5.4**：全 gate，加上 `adversarial-review --base main` 的整支分支審查（也就是 SDD 的 final review）。
+  - final review 要逐條處理 ledger 裡所有 `minor (deferred)` 與 `parked`。
+  - 錯誤文案目前以 HTTP 碼和 API 路徑開頭（3.4 設計 M1），要決定是否留給後續 change。
+- **5.5**：使用者點頭後重寫本檔。archive 時比照 change 3，把 ledger 複製成 `sdd-ledger.md` 放進 archive 目錄。
 
 ## 4. 這一段踩過的坑（不要再推導一次）
 
-（**不會報錯的錯誤**加粗。change 3 新增的在前，較早仍有效的在後。）
+（**不會報錯的錯誤**加粗。）
 
-HERDR 行為：
+流程與工具：
 
-- **`pane.read` 回應的 `revision` 在 WSL 0.8.2 與 Windows 0.9.0 都恆為 0**，內容怎麼變都不動 → 不能拿來去重或判新舊；
-  靠它的話畫面讀到第一次就永遠凍結、沒有錯誤。見 memory `herdr-schema-fields-may-be-inert`。HERDR 升版後重跑探測筆記第 2 節。
-- **`pane.read` 的 `lines` 從畫面格底端往上數、空白列也算**：給太小（例如 5）在畫面下半空白時回 0 bytes。要大於實際畫面高度（現用 200）。
-  `recent` 的 server 端上限是 1000 行；全螢幕 TUI 沒有 scrollback（`recent`≈`visible`）。
-- 單次 `pane.read`：WSL 約 42 ms、Windows 約 1.2 ms，與大小無關——文件原本估的「數百 ms」高估，每秒一次不需要 ADR-0002 方案 B。
-- WSL 測試 server 停掉再重啟後，**pane id 保留但 pane 內原本在跑的 shell 被殺掉、內容重置成新 prompt**——驗收腳本不能假設迴圈還在跑。
-- `herdr server` 讀 `HERDR_SOCKET_PATH`（0.8.2 實測）：綁專屬路徑的 server 與預設路徑的 server 可並存、互不可見。**要在有人開著 server 的
-  機器上跑會啟停 server 的腳本，用專屬路徑，不要跟預設路徑搶**——共用路徑上的「有沒有別人」判定補了四輪 Codex finding 還在冒新的競態。
-- SIGTERM 讓 HERDR 0.8.2 在 140–250 ms 內結束，沒有 graceful 儲存；socket 檔會不會自己清掉兩次觀察不一致，腳本不能依賴任一種。
-- 不存在的 pane 兩個版本都回錯誤碼 `pane_not_found`。
+- **Codex log 只有最後的「# Codex Adversarial Review」結論段才算數**：開頭的 `verdict: approve` 可能只是占位；
+  斷線（`connection closed`）時程序仍然 exit 0。讀結果一律用 `sed -n '/^# Codex/,$p'`，取不到就重跑。見 memory `codex-review-verdict-only-valid-in-final-section`。
+- Codex 在唯讀沙箱只能靜態推導，**findings 一律先重現才採信**。它也曾被證實判斷錯誤，例如 3.2「網格比面板寬」實測不成立。
+- 規格對照（sonnet）與 Codex 意見相反時，**查 spec 原文**再裁決。例：3.1 的 actions-check「10 次改 7 次」，spec 原文寫 10 次。
+- session 與 Codex 額度會中斷 subagent，本段中斷過 4 次。遇到時用 SendMessage 續派同一個 agent，告訴它目前未提交的狀態，讓它從中斷處接著做。
+- 開發者腳本的同類 finding 連續三輪還在冒，就換設計，不要再補洞。例：visual-check 的 finalSweep 改以 ChildProcess 判斷所有權；
+  長名稱檢查改成「捲動歸零、只比水平」；頂列溢出放棄 +N 徽章，改純 CSS。
+- `task-brief` 腳本讀不懂 OpenSpec 的 checkbox 格式。brief 用 `.superpowers/sdd/tasks/mkbrief.sh <task> "<ruling ids>"` 產生，
+  再手寫「前面 task 帶來的事項」一節。**不要用 grep 自動抽取**，抽出來的東西太雜。
 
-axum／HTTP：
+前端（本段新發現）：
 
-- **`get(handler)` 會同時服務 `HEAD`**，`HEAD` 會真的進 handler（觸發一次讀取）；要擋就明確註冊 `.head(...)`。
-- **`route_layer` 只包它被呼叫當下已註冊的方法插槽**，不包 fallback，也不包之後才註冊的方法：想讓某個 method 不經 middleware，
-  就在 `.route_layer(...)` 之後才註冊它。
-- **`Path` extractor 的 rejection（例如路徑片段 `%FF` 不是合法 UTF-8）會在 handler 之前回純文字 400**，不經自己的錯誤出口、沒有自訂標頭
-  → handler 收 `Result<Path<..>, PathRejection>` 自己處理。
-- matchit 把空字串當合法路徑片段：`/panes//output` 會命中 `{pane}` 路由。
-- `error_response` 一律帶 `Cache-Control: no-store` 與 `X-Content-Type-Options: nosniff`（寫入端點的錯誤回應也跟著有，無害）。
+- **整頁 `replaceChildren` 重畫會丟掉只存在 DOM 上的狀態**：內層捲動會歸零；旁路更新（例如 `onChannel` 直接改的文字）會被蓋回預設值。
+  見 memory `full-repaint-discards-state-held-only-in-dom`。
+- **首頁靜態占位內容帶有等待條件用的 class，等待條件就會在首份投影前提早成立**：這是 visual-check 偶發失敗的根因。
+  現在一律用 `waitForFirstProjection()`（頂列要有 `[data-runtime]`，而且 `#version` 等於 `/api/state`）。
+- **`factory-floor-check.js` 每跑一次都會覆寫已進版控的 `docs/research/2026-09-16/task-5.2-scenario-d.png`**，跑完要 `git checkout --` 還原。
+- **flex `justify-content: flex-end` 往起始方向（向左）溢出時，`scrollWidth` 量不到**：要比 `getBoundingClientRect().left`。
+- **CSS 多段註解中間斷開，會讓整條規則被瀏覽器吞掉，而且沒有任何錯誤**：改完 CSS 要到 CSSOM 確認規則還在。
+- **`width: max-content` 計算 flex-wrap 容器時會當成 nowrap**，面板會被撐得太寬。
+- **sticky 元素會蓋住被 `scrollIntoView` 捲到邊緣的目標**：用 `scroll-padding` 修（3.2）。
+- 截圖**不可以隱藏捲軸**，否則設計審核會誤判。
+- `pointerdown` 加 `preventDefault` 之後，按下態不要依賴 `:active`。
 
-前端與驗收腳本：
-
-- **前端資源是 `include_str!` 編進執行檔的**：改了 `cockpit/assets/` 不重新 `cargo build -p cockpit --example ui_preview`，腳本跑的是舊前端，
-  RED／GREEN 都是假的。
-- **用固定 sleep 決定兩件事先後的測試沒有辨識力**（拿掉被測的防線照樣綠）：要驗「舊回應晚到被丟棄」，讓測試端持有假 `fetch` 的 resolver，
-  等新內容顯示後才 resolve，再等一個可觀察的「已處理」標記。時間先後用同一個行程內的 `performance.now()`，**不要跨行程比時間戳**。
-- **等高內容替換時瀏覽器不會動 `scrollTop`**：`ui_preview` 的 `long` 模式截斷後 `scrollHeight` 不再變，拿它驗「貼底跟著走」永遠綠；用 `ticker`＋矮視窗。
-  「捲動位置不變」的基準值要用非零中段值（用 0 分不出「沒變」與「被重設」）。
-- **同步重畫發生在 `pointerdown` 與 `click` 之間時，瀏覽器的 compat mouse 事件會重新 hit-test 到新節點**：焦點還原若只在 `click` 才做就會失效，
-  所以 `actions.js` 在 `pointerdown` 上 `preventDefault` 並先登記「待還原目標」，`render.js` 重畫後優先還原它、其次還原 `document.activeElement`。
-  登記要用 try/finally 清掉，否則 `perform()` 拋錯會讓殘留目標在下一次重畫搶走焦點。
-- CDP：`scrollIntoView` 之後要 settle（現用 100 ms）再送合成滑鼠事件，否則偶發沒命中；點擊前要等元素出現（頁面剛載入、首份投影還沒畫）。
-  `factory-floor-check.js` 的 `--dump-dom` 對殘留程序／CPU 敏感，會環境性假 FAIL——跑前清掉殘留的 preview／Chrome。
-- **Claude-in-Chrome 的座標框不是 CSS 像素**（當時比例 1538／`window.innerWidth`≈0.6）：直接用 `getBoundingClientRect` 的值點會點到別處、
-  看起來像「點了沒反應」。先換算再點。
-- `output.js` 換選取時會 abort 舊請求；「至多一個進行中請求」以原生 `fetch` 遵守 AbortSignal 為前提，腳本裡「忽略 abort 的假 `fetch`」只是
-  模擬請求卡住的手法。abort 不算失敗（不標過期、不顯示原因）；世代序號仍保留（abort 不保證回應不會到）。
-- **選取不是「畫面操作」**：`select-pane`／`select-bound-pane` 不遞增 `latestOp`、不清 `ui.error`，否則會讓進行中的寫入變 stale、其後的失敗被靜默吞掉。
-
-環境與流程：
-
-- **Git Bash 會吃掉未加引號的反斜線**：`> C:\Users\x\out.txt` 會在目前目錄建立名為 `C:Usersxout.txt` 的檔（曾在 repo 根留下垃圾檔）。
-  路徑用正斜線或加雙引號。
-- **Git Bash 的 MSYS 路徑轉換會把傳給 `wsl.exe` 的 `/home/...` 改寫成 `C:/Program Files/Git/home/...`**，錯誤訊息裡看到這個前綴就是它；
-  給原生 Windows 程式的 `/` 開頭引數前加 `MSYS_NO_PATHCONV=1`（`taskkill /PID` 同理）。見 memory `git-bash-msys-path-conversion-eats-slash-flags`。
-- **`wsl.exe … bash -lc "setsid -f bash -c '…; exec <程式>'"` 若內層沒有自己重導向三個標準串流，約 1/4 機率整個行程憑空消失、exit 0 無錯誤**
-  → 內層那條指令收尾加 `</dev/null >/dev/null 2>&1`。見 memory `wsl-nested-setsid-detach-races-with-caller-exit`。
-- 多個 agent 同時工作時共用同一個 git index：控制端與文件實作者 commit 要用指定路徑（`git commit -m … -- <path>`），commit 後 `git show --stat` 核對。
-- Claude 的 session 用量上限（HTTP 429）會讓 subagent 中途終止：要求實作者「每完成一項就 commit 並寫進 report」，回來用 SendMessage 續派同一個
-  agent（context 還在）；context 已用到數十萬 token 的 agent 改派 fresh 的，brief 寫完整。
-- **Codex 撞額度時仍會印出 `Verdict: approve`／`No material findings`**：看 log 有沒有 `usage limit`／`Turn failed`、以及 `[codex]` 行數
-  （真的有跑會有數十行）。focus 字串不要放反引號。
-- Codex 在唯讀沙箱只能跑 `cargo fmt --check`；findings 要先以 RED 測試重現才採信（這一段的產品碼 findings 全數重現成立）。
-  Codex 對「只供開發者手動跑的腳本」也會逐輪挖競態——同一類 finding 補到第三輪還在冒，就該換設計而不是再補一輪。
-- `cargo test --workspace` 不跑 example 內的 `#[cfg(test)]`。
-- 驗收門檻別自訂得比 spec 嚴。
-
-（change 2 以前仍有效的坑，保留摘要）
-
-- **HERDR 0.8.2 對每條新 `events.subscribe` 重播 server 啟動以來的整段事件歷史**，部分晚於 snapshot 到達、不觸發 Drift、投影靜默倒退
-  → 已由「連線後沉降重拿」修正，WSL 端啟動／重啟後仍有最多約 5 秒不準。見 memory `herdr-subscribe-replays-event-history`。
-- `tokio::test` 的 `start_paused` 與 `multi_thread` 互斥；走真實 named pipe／socket 的測試用真實時間。
-- 寫入交易整段放進服務自己 `tokio::spawn` 的 task（呼叫端 future 被 drop 時鎖會提前釋放）；`try_send` 失敗不可忽略；狀態檔欄位必填、用 BTreeMap。
-- `HeaderMap::get` 只取第一個值，來源檢查用 `get_all` 要求恰好一個；瀏覽器與 curl 會省略 80 埠；listen 不可用 80。
-- 前端並發請求要配遞增序號；`new_with_domain` 要在 runtime 登記之後建；bind 失敗的所有 return 路徑走 `shutdown_all`。
-- Drift 重拿的 snapshot 可能比進行中的事件舊；HERDR 關 tab 後會重建 Sidebar pane（換 id），pane id 不重用。
-- 殘留 `cockpit.exe` 佔 7770：`netstat -ano | grep 7770`。
-- Windows 主控台 cp950：Python `encoding="utf-8"`＋`PYTHONUTF8=1`；headless Chrome 依 PID 收尾。
-- named pipe 3 條並發會 `ERROR_PIPE_BUSY`；每條 API 連線只服務一個 method；HERDR 沒有全域 agent 狀態訂閱。
-- `done` 是「idle 且未被看過」，不是 Completed；**不得對 Windows 端 `herdr server stop`**。
-- markdownlint-cli2 在 repo 根跑並核對 `Linting: N files` 不為 0。
+change 3 以前仍然有效的坑（HERDR 行為、axum、WSL、Git Bash），見 `git show e6163f6:docs/handover.md` 第 4 節。
 
 ## 5. 已定但未執行的決策
 
 | 決策 | 狀態 |
 |---|---|
-| `main` 上既有檔案含真實主機名／使用者名稱／路徑（`docs/research/2026-09-13/change-1a-spikes.md`、`herdr-client/tests/real_herdr.rs`、`herdr-client/README.md`、`cockpit/tests/config.rs` 等；change 3 新增的檔案已匿名化） | **未處理**：沒有 remote 前風險低；要推上遠端前另開一個小 change 清 |
-| Codex stop review gate（per-repo 開關）本 repo 未啟用 | **未處理**：目前靠流程內手動跑 `adversarial-review`。要開就 `codex-companion.mjs setup` |
-| Live Output 上色（`format=ansi`） | **已決留給 Direction 01**（第 3 節） |
-| 輪詢間隔 1 秒、行數 200、服務端逾時 5 秒、前端逾時 6 秒 | **寫死**；有需求再開設定 |
-| WSL 端每秒多次 `pane.read` 是否改 ADR-0002 方案 B | **已結案：不需要**（實測 42 ms）。更高頻率或多 pane 同看時再評估 |
-| `/ws` 可被任意網站以 WebSocket 讀取投影 | **已知不修**；輸出不走 `/ws`，風險沒有因 change 3 變大 |
-| 輸出端點不檢查 `Sec-Fetch-Site`：無 `Origin` 的跨站 GET 會進到 handler 觸發一次讀取，但讀不到回應 | **已決接受**（design D7） |
-| 空 pane 路徑段（`/panes//output`）會把空 pane id 送到 runtime，最後回 404 | **不修**（Codex 判定可保留；日後可收緊成 400） |
-| `ui_preview` 先 bind 再驗證環境變數的 pane id；CDP 腳本複製了產品的貼底門檻 6px；`.selected` 與 `.bind-target` 疊加的視覺無斷言 | **不修**（Codex 判定可保留） |
-| `select-pane` 的 `perform()` 中途拋錯時 `ui.selected` 已先設定、不回滾（畫面不受影響） | **不修**（deferred minor） |
-| 真機腳本 `live-output-real-check.js`：`/tmp` symlink、同使用者刻意搶占專屬 socket 路徑 | **接受**（Codex 判為理論風險，單人開發機） |
-| 斷線期間畫面沒有「取消改綁」按鈕（M2） | **留待視覺改版** |
-| change 2 的 Codex 補審 | **已決不做**（2026-09-19 使用者接受 opus 替代審查） |
-| Claude 在 feature 分支 commit、收尾 squash 併回 main | **已授權**（change 3 照此執行） |
-| `[state] path` 父目錄不存在→每次寫入 500；大寫 `LOCALHOST` 的 Host 被 403；`with_write_hook` 可注入會 panic 的 callback；同 tick 就緒時 Drift 多拿一次 snapshot；真實時間測試不改 paused time；tokio-tungstenite 兩版並存 | **不修／不處理**（理由見 `git show 58f0e16:docs/handover.md` 第 5 節） |
-| per-pane S 訂閱重開是否也重播歷史；Windows 0.9.0 是否會重播歷史；`ansi` 格式的真彩色／背景色／全螢幕 TUI 輸出 | **未驗**；升版或做上色時重跑 `capture_events`／`probe_pane_read --format ansi` |
-| Tauri 桌面殼 | MVP 完成後再評估（ADR-0005） |
+| 路線：change 4 視覺改版 → change 5 .md 瀏覽 → change 6 Live Output 上色＋M2 | **已定**（使用者 2026-09-23） |
+| 外觀改動要多一道 frontend-design 設計審核（設計文件與 spec 優先，skill 只管剩下的自由度） | **已定**（使用者 2026-09-24），見 memory |
+| 本 change 的使用者裁決：　主標題＝Project 名；　高度門檻 720；　切角只在兩個面板，刻度在 stage 欄首上緣；　面板按鈕「取消選取」；　Factory Floor 在寬矮版面有高度上限；　通道斷線時燈號標「最後已知」；　三種連線形狀；　右欄整區一層框、卡片之間用分隔線；　TK1 同類繞過只記 Minor | **已定且已寫入** artifacts，見 ledger USER DECISION |
+| 窄視窗往下捲時 stage 欄首會捲走（裁決 R32，維持 D3） | **使用者可推翻** |
+| 兩則提示並存時，改綁提示的冰青比錯誤的紅字亮（D4 定案造成） | **只記錄**；要調整就得改 D4 |
+| 前端要不要上 TypeScript | 使用者 2026-09-24 問過。建議：change 4 不做；之後可以另開小 change，用 JSDoc＋`@ts-check` 檢查 Rust 投影與前端之間的型別一致 |
+| .md 瀏覽要用哪個 Markdown 渲染套件 | **未選**：change 5 brainstorming 時先問使用者 |
+| M2 斷線期間無法取消改綁（`ProjectedBinding::RuntimeDisconnected` 不帶 `source`） | **排 change 6** |
+| `main` 上既有檔案含真實主機名／使用者名稱 | **未處理**：推上遠端之前另開一個小 change 清掉 |
+| Codex stop review gate（per-repo）本 repo 未啟用 | 靠流程內手動跑 `adversarial-review` |
+| Claude 在 feature 分支 commit，收尾時 squash 併回 main | **已授權** |
 
 ## 6. 之後的路
 
-Direction 01 視覺改版（含 Live Output 上色）→ MVP 完成後評估 Tauri 桌面殼（ADR-0005）。北極星與整體範圍見
-`docs/cockpit-spec.md`；每個 change 的歷史決策見 `openspec/changes/archive/*/`（含各自的 `sdd-ledger.md`，裡面有所有
-Ruling 與 parked findings）。
+change 4 收尾（併回 main 並 archive）→ change 5 .md 瀏覽 → change 6 上色＋M2 → 推 remote 前的去識別化小 change → 評估 Tauri 桌面殼（ADR-0005）。
+北極星見 `docs/cockpit-spec.md`。
 
 ## 版本紀錄
 
@@ -184,5 +159,6 @@ Ruling 與 parked findings）。
 |---|---|---|
 | 1–10 | 2026-09-13～15 | change 1a／1b（詳見 git log 與 archive 目錄） |
 | 11–14 | 2026-09-15～19 | change 2 propose／apply／驗收／併回 `main` 並 archive |
-| 15–16 | 2026-09-21 | change 3 `live-output`：探測推翻 `revision` 前提 → propose → SDD apply → 6.2 Windows 端驗收 |
-| 17 | 2026-09-23 | change 3 收尾：鍵盤焦點還原修掉 M3、真機腳本換專屬 socket 路徑、8.2 Codex approve、squash 併回 `main` 並 archive；下一段改為 Direction 01 |
+| 15–17 | 2026-09-21～23 | change 3 `live-output`：探測 → propose → SDD apply → 驗收 → 併回 `main` 並 archive |
+| 18 | 2026-09-23 | change 4 `direction-01-visual`：brainstorming → propose（SDD、16 task） |
+| 19 | 2026-09-25 | change 4 SDD 執行至 3.4（8/16 完成）：前置設計審核與多項使用者裁決、36 條控制端裁決；使用者要求暫停換 session |

@@ -1,8 +1,10 @@
 // render.js：收到整張投影圖就整頁重畫（spec cockpit-dashboard「畫面整頁重畫」「Factory
-// Floor」；設計文件 §8.3；change pipeline-projection design D9）。renderState(state, ui) 是
-// 純函數：只讀 state／ui、回傳一棵新建的 DOM 子樹、不讀寫任何全域變數或既有 DOM。
-// 會碰全域（document、window）的只有檔尾的 paint／window.onState／window.repaint／
-// window.onChannel。
+// Floor」；設計文件 §8.3；change pipeline-projection design D9；外框改版見 direction-01-visual
+// design D2、task 2.1）。renderState(state, ui) 是純函數：只讀 state／ui、回傳一份新建的
+// DocumentFragment（各區塊平鋪、根節點帶 data-region；design D2）、不讀寫任何全域變數或既有
+// DOM。會碰全域（document、window）的只有檔尾的 paint／window.onState／window.repaint／
+// window.onChannel、#app 上唯一一個 focusin listener（鍵盤焦點進 Factory Floor 時補捲，見檔尾），以及 el() 內建立節點用的 document.createElement()／
+// document.createDocumentFragment()（節點工廠呼叫，不是讀寫既有 DOM）。
 //
 // ui 是選填的第二參數，缺省＝無改綁模式、無錯誤訊息、無選取（形狀見 actions.js 的
 // uiSnapshot：`{ rebind: null | { project, workstream }, error: null | string,
@@ -20,9 +22,9 @@
 // 不受改綁模式影響。`render.js` 每次重畫（`paint()`）後都會呼叫
 // `window.liveOutput.setKnownPanes(...)`，交出目前投影裡還存在的 pane 集合。
 //
-// 狀態色塊只有 working／blocked／done／idle／unknown 五種 class；任何其他字串（例如未來
-// 協定加的新值）一律落在 unknown 的暗灰色塊，並把原字串保留在文字與 title 裡，不會讓整頁
-// 壞掉。Factory Floor 的 task 節點另有自己的六種狀態色（running／blocked／ready／pending／
+// agent 狀態只有 working／blocked／done／idle／unknown 五種 class（符號＋文字＋色彩，見
+// agentState()）；任何其他字串（例如未來協定加的新值）一律落在 unknown 的次要文字色與虛線環，
+// 並把原字串保留在文字與 title 裡，不會讓整頁壞掉。Factory Floor 的 task 節點另有自己的六種狀態色（running／blocked／ready／pending／
 // failed／completed），未知字串同樣落在暗灰、不會壞掉整頁。所有文字一律用 textContent 寫入，
 // 不用 innerHTML，避免把資料當成標記解析。
 //
@@ -65,48 +67,166 @@
     return badge;
   }
 
+  // agent 狀態＝符號＋文字＋色彩（design D4 agent 對照表；direction-01-visual task 3.3）：
+  // 外層 .agent-state 把符號與文字排成一組；符號是 CSS 畫的 8px 圓（.agent-dot，aria-hidden、
+  // 沒有文字——不用 ●／○ 字元，避免和 task pending 的 ○ 混淆），形狀與顏色由
+  // .agent-dot-<狀態> 決定（見 style.css）；文字仍是原本的 .status 節點（class、文字、未知字串
+  // 的 title 都不變，whatever-check.js 與 reconnect-check.js 讀的就是它）。符號是 .status 的
+  // 手足、不是子節點，.status 的 textContent 維持精確等於 agent_status 字串。
+  function agentState(status) {
+    var cls = statusClass(status);
+    var wrap = el("span", "agent-state");
+    var dot = el("span", "agent-dot agent-dot-" + cls.slice("status-".length));
+    dot.setAttribute("aria-hidden", "true");
+    wrap.appendChild(dot);
+    wrap.appendChild(statusBadge(status));
+    return wrap;
+  }
+
+  // 連線三色（design D4「連線」對照表：connected→--ok、connecting→--warn、
+  // disconnected→--bad）共用於頂列 runtime 燈號與底列通道狀態（design D4「連線配色也適用
+  // 底列通道狀態」；direction-01-visual task 2.3）。未知字串（理論上不會發生——連線狀態與
+  // channel.js 的通道狀態都是受控的固定枚舉，不是外部自由輸入）落在 --text-dim，跟專案其餘
+  // 「未知不破壞畫面」的慣例一致。
+  var KNOWN_CONN_STATES = ["connected", "connecting", "disconnected"];
+
+  function connStateClass(prefix, state) {
+    return KNOWN_CONN_STATES.indexOf(state) !== -1 ? prefix + state : prefix + "unknown";
+  }
+
+  // 最新通道（瀏覽器→cockpit）狀態（Codex C1，direction-01-visual task 2.3 fix round 1）：
+  // 過去 renderChannelIndicator() 每次整頁重畫都寫死 "connected"，若通道已經斷線、之後又有
+  // 任何非 WS 觸發的 repaint()（例如使用者操作、鍵盤 Enter 觸發的 UI-only 重畫，經
+  // window.repaint() 呼叫 paint()），底列會被錯誤畫回綠色——這不是同步競態，是「整頁重畫的
+  // 資料來源只看 latestState（task 的投影），完全不知道通道當下的真實狀態」這個結構性缺陷。
+  // 修法：模組層級保存 latestChannelState，只由 window.onChannel 寫入；renderChannelIndicator()
+  // 與 renderTopbar()（design I2，見下方 renderRuntimeLamp）改讀這個值，不再寫死。初值採
+  // "connecting"，跟 index.html 的靜態占位一致——這個初值實務上不會被讀到：paint() 只會在
+  // window.onState 被呼叫後才執行，而 onState 只可能在 /ws 的第一則訊息抵達後才被 channel.js
+  // 呼叫，那之前 socket.onopen 一定已經呼叫過 onChannel("connected")（見 channel.js），所以
+  // 第一次 paint() 讀到 latestChannelState 時，它已經被 onChannel 正確設成 "connected"。
+  var latestChannelState = "connecting";
+
+  // M4／N5（設計審核，task 2.3 fix round 1／fix round 2）：頂列燈號 title 講清楚是哪一段連線
+  // （跟底列「瀏覽器→cockpit 服務」的通道區分開），通道非 connected 時額外標「（最後已知）」
+  // ——斷線期間畫面已經寫「最後已知 connected」，滑鼠停留卻只看到舊的說明文字會誤導使用者以為
+  // 這是即時資料。renderRuntimeLamp() 與 window.onChannel 都呼叫這個函式產生同一份文字，兩條
+  // 路徑不會對不齊（沿用 I2 的「模組層級狀態＋兩處讀同一份」設計）。
+  function lampTitle(runtimeId, connState, channelState) {
+    var base = "cockpit → HERDR runtime " + runtimeId + "：" + connState;
+    return channelState === "connected" ? base : base + "（最後已知）";
+  }
+
+  // I2（使用者決定，direction-01-visual task 2.3 fix round 1；顏色依 Codex fix round 1
+  // review／N3 改為 fix round 2 的 --text-dim，見下方）：頂列 runtime 燈號的符號＋id＋狀態
+  // 文字，跟這個 runtime「自己」的連線狀態（win／wsl 對 HERDR）有關；但當瀏覽器與 cockpit
+  // 服務之間的通道（latestChannelState）不是 connected 時，這份投影可能已經是舊資料，所以
+  // 整顆燈號（含符號、id、「最後已知」、狀態文字全部四個子節點）改用 --text-dim（見
+  // style.css `[data-region="topbar"]:not([data-channel-state="connected"]) .runtime-lamp`
+  // 與 `.runtime-lamp-stale { color: inherit; }`），並在狀態文字前面插入「最後已知」。這段
+  // 文字一律輸出到 DOM（design 慣例：狀態相關文字放 DOM，不用 CSS content），用 CSS 依
+  // topbar 的 data-channel-state 屬性切換顯示／隱藏——`window.onChannel` 只要更新那個屬性
+  // （不重畫）就能立刻套用，下一次整頁重畫時 renderTopbar() 也會用同一份 latestChannelState
+  // 產生同樣的屬性，兩條路徑不會對不齊。「最後已知」刻意是 .runtime-lamp-state 的**手足**
+  // 節點、不是它的子節點或文字內容——data-conn-state 節點的 textContent 必須維持精確等於
+  // 連線狀態字串本身（R1 的斷言用 .trim() 精確比對，不能被這段前綴污染）。
+  function renderRuntimeLamp(runtime) {
+    var connState = runtime.connection.state;
+    var lamp = el("span", "runtime-lamp " + connStateClass("runtime-lamp-", connState));
+    lamp.setAttribute("data-runtime", runtime.id);
+    lamp.title = lampTitle(runtime.id, connState, latestChannelState);
+
+    // 符號用 CSS 畫的 8px 圖形（.conn-symbol，aria-hidden；M3 使用者決定：connected 實心圓、
+    // connecting 空心圓、disconnected 叉，全部 CSS 畫、不用字元，跟底列 .channel-status-dot
+    // 共用同一組形狀規則，見 style.css）。
+    var dot = el("span", "runtime-lamp-dot conn-symbol");
+    dot.setAttribute("aria-hidden", "true");
+    lamp.appendChild(dot);
+
+    // id 是等寬字四類之一（design D11：時間、id、數值、Live Output）。fix round 3／
+    // Ruling R26（換設計，拿掉 JS 量測與「+N」徽章）：id 一律留在 DOM 裡、不整顆移除——
+    // 固定一屏空間不夠時交給 style.css 的 flex＋ellipsis 先縮 id，再不夠就讓
+    // .topbar-runtimes 橫向捲動（overflow-x: auto），完整 id 一律留在 title。
+    lamp.appendChild(el("span", "runtime-lamp-id", runtime.id));
+
+    // I2：「最後已知」一律輸出，預設由 CSS 隱藏（topbar 的 data-channel-state="connected"
+    // 時），通道非 connected 時才顯示——見上方函式註解。
+    lamp.appendChild(el("span", "runtime-lamp-stale", "最後已知"));
+
+    var stateEl = el("span", "runtime-lamp-state", connState);
+    // design D11：狀態文字一律用無襯線，不套等寬——跟 .runtime-lamp-id 刻意不同字體。
+    stateEl.setAttribute("data-conn-state", "");
+    lamp.appendChild(stateEl);
+
+    return lamp;
+  }
+
+  // 頂列（design D2；direction-01-visual task 2.3）：產品名稱降為面板標題級字級
+  // （design D10；task 2.2 已把 .app-name 的 font-size 收斂成 --fs-panel，這裡不重複改）＋
+  // 每個 runtime 一個連線燈號。通道狀態與 version 搬到底列（design D4「連線配色也適用底列
+  // 通道狀態」；下方 renderStatusbarRegion()）。data-channel-state 屬性（I2，fix round 1）
+  // 掛在這個節點上，供 CSS 判斷要不要把燈號調暗＋顯示「最後已知」；window.onChannel 不重畫時
+  // 直接改這個屬性，這裡則是每次整頁重畫時用 latestChannelState 重新產生同樣的值，兩者一致。
   function renderTopbar(state) {
     var topbar = el("div", "topbar");
     topbar.id = "topbar";
+    // design D2 的外框定位依據（direction-01-visual task 2.1）：`.shell` 用
+    // `[data-region="X"]` 選出每個區塊、以 grid-area 就位。
+    topbar.setAttribute("data-region", "topbar");
+    topbar.setAttribute("data-channel-state", latestChannelState);
 
     var name = el("span", "app-name", "AI Agent Cockpit");
     name.id = "app-name";
     topbar.appendChild(name);
 
-    // 通道狀態其實是 channel.js 的事，這裡只是給它一個初始外觀：既然收到了一份投影，
-    // 代表 WebSocket 當下是通的。之後真的斷線／重連，一律由 window.onChannel 直接找
-    // #channel-status 更新，不會再經過這個函數。
-    var channelStatus = el("span", "channel-status channel-connected", "connected");
-    channelStatus.id = "channel-status";
-    topbar.appendChild(channelStatus);
-
-    var version = el("span", "version", "v" + state.version);
-    version.id = "version";
-    topbar.appendChild(version);
+    var lamps = el("div", "topbar-runtimes");
+    for (var i = 0; i < state.runtimes.length; i += 1) {
+      lamps.appendChild(renderRuntimeLamp(state.runtimes[i]));
+    }
+    topbar.appendChild(lamps);
 
     return topbar;
   }
 
-  function renderConnection(connection) {
+  // runtime 卡標題列右側的連線狀態：符號（跟頂列燈號、底列通道共用 .conn-symbol 的三種形狀，
+  // design D4「連線」列）＋狀態文字，顏色依狀態（style.css .runtime-conn-*）。
+  function renderConnectionState(state) {
+    var wrap = el("span", "runtime-conn " + connStateClass("runtime-conn-", state));
+    var dot = el("span", "conn-symbol");
+    dot.setAttribute("aria-hidden", "true");
+    wrap.appendChild(dot);
+    wrap.appendChild(el("span", "connection-state", state));
+    return wrap;
+  }
+
+  // 連線明細（design D11；direction-01-visual task 3.3）：兩欄定義列表，左欄 --text-dim 標籤、
+  // 右欄等寬值，一行一項，不用中點串接。狀態本身在卡片標題列（renderConnectionState），這裡
+  // 只放明細；protocol 警告放在列表下方（警示色）。
+  function renderConnection(runtime) {
+    var connection = runtime.connection;
     var box = el("div", "connection conn-" + connection.state);
-    box.appendChild(el("span", "connection-state", connection.state));
-
-    if (connection.state === "connected") {
-      box.appendChild(el("span", "connection-detail", "server " + connection.server_version));
-      box.appendChild(el("span", "connection-detail", "protocol " + connection.protocol));
-      box.appendChild(
-        el("span", "connection-detail", "last snapshot " + connection.last_snapshot_at)
-      );
-      if (connection.protocol_warning !== null && connection.protocol_warning !== undefined) {
-        box.appendChild(el("span", "protocol-warning", connection.protocol_warning));
-      }
-    } else if (connection.state === "disconnected") {
-      box.appendChild(el("span", "connection-detail", "reason: " + connection.reason));
-      box.appendChild(
-        el("span", "connection-detail", "retry in " + connection.retry_in_secs + "s")
-      );
+    var list = el("dl", "connection-details");
+    function item(label, value) {
+      list.appendChild(el("dt", null, label));
+      list.appendChild(el("dd", null, orDash(value)));
     }
-
+    item("endpoint", runtime.endpoint);
+    if (connection.state === "connected") {
+      item("server", connection.server_version);
+      item("protocol", String(connection.protocol));
+      item("last snapshot", connection.last_snapshot_at);
+    } else if (connection.state === "disconnected") {
+      item("reason", connection.reason);
+      item("retry in", connection.retry_in_secs + "s");
+    }
+    box.appendChild(list);
+    if (
+      connection.state === "connected" &&
+      connection.protocol_warning !== null &&
+      connection.protocol_warning !== undefined
+    ) {
+      box.appendChild(el("div", "protocol-warning", connection.protocol_warning));
+    }
     return box;
   }
 
@@ -157,11 +277,50 @@
       row.setAttribute("role", "button");
     }
 
-    row.appendChild(el("span", "pane-id", pane.id));
-    row.appendChild(el("span", "pane-agent", pane.agent === null || pane.agent === undefined ? "shell" : pane.agent));
-    row.appendChild(statusBadge(pane.agent_status));
-    row.appendChild(el("span", "pane-title", orDash(pane.title)));
-    row.appendChild(el("span", "pane-cwd", orDash(pane.cwd)));
+    // DOM 順序維持 id、agent、狀態、標題、cwd（design D11「CSS grid 定位、不改 DOM 順序」；
+    // direction-01-visual task 3.3）：畫面上的兩行排列（第一行 狀態→agent→id 靠右，第二行
+    // 標題→cwd）全部由 style.css 的 grid-template-areas 決定。標題與 cwd 單行省略，完整內容
+    // 放在 title；id、agent 也可能很長，同樣帶 title。
+    var idEl = el("span", "pane-id", pane.id);
+    idEl.title = pane.id;
+    row.appendChild(idEl);
+    var agentName = pane.agent === null || pane.agent === undefined ? "shell" : pane.agent;
+    var agentEl = el("span", "pane-agent", agentName);
+    agentEl.title = agentName;
+    row.appendChild(agentEl);
+    row.appendChild(agentState(pane.agent_status));
+    var titleEl = el("span", "pane-title", orDash(pane.title));
+    if (pane.title !== null && pane.title !== undefined && pane.title !== "") {
+      titleEl.title = pane.title;
+    }
+    row.appendChild(titleEl);
+    // cwd 保留尾段（direction-01-visual task 3.3 fix round 1，設計審核 I1）：同一台機器上的路徑
+    // 前綴幾乎都一樣，能區分 pane 的是最後一段。拆成前段（.pane-cwd-head，空間不夠時先省略）與
+    // 尾段（.pane-cwd-tail，最後一段路徑，含前面的分隔符，完整可見）；兩段串起來仍是完整路徑，
+    // 完整內容也放在 title。沒有前段（路徑裡沒有分隔符）時不產生空的前段 span——空 span 會讓
+    // 第二行基線偏移、整列變高（direction-01-visual task 5.1，3.3 設計 N2）。
+    var cwdEl;
+    if (pane.cwd !== null && pane.cwd !== undefined && pane.cwd !== "") {
+      var cwdParts = splitPathTail(pane.cwd);
+      cwdEl = el("span", "pane-cwd");
+      if (cwdParts[0] !== "") {
+        cwdEl.appendChild(el("span", "pane-cwd-head", cwdParts[0]));
+      }
+      cwdEl.appendChild(el("span", "pane-cwd-tail", cwdParts[1]));
+      cwdEl.title = pane.cwd;
+    } else {
+      cwdEl = el("span", "pane-cwd", orDash(pane.cwd));
+    }
+    row.appendChild(cwdEl);
+
+    // HERDR 目前聚焦的 pane（task 3.3 fix round 1，設計審核 M3）：不用底色（跟滑過、改綁目標
+    // 幾乎同色，也沒有說明），改用一個文字標記，放在 DOM 文字裡、不用 CSS content。`.focused`
+    // class 照舊保留。
+    if (pane.focused) {
+      var focusMark = el("span", "pane-herdr-focus", "作用中");
+      focusMark.title = "HERDR 目前聚焦的 pane";
+      row.appendChild(focusMark);
+    }
 
     // 改綁模式：connected runtime 中未 exited 的 pane 列才出現「綁定到這裡」（spec「畫面操作」）。
     if (rebinding && runtime.connection.state === "connected" && !pane.exited) {
@@ -182,7 +341,7 @@
 
     var header = el("div", "tab-header");
     header.appendChild(el("span", "tab-number", "tab " + tab.number));
-    header.appendChild(statusBadge(tab.agent_status));
+    header.appendChild(agentState(tab.agent_status));
     box.appendChild(header);
 
     for (var i = 0; i < tab.panes.length; i += 1) {
@@ -198,12 +357,14 @@
       box.classList.add("focused");
     }
 
+    // 一行標題列（design D11）：label（過長時單行省略，完整在 title）、#number、彙總狀態。
     var header = el("div", "workspace-header");
-    header.appendChild(
-      el("span", "workspace-label", workspace.label === null || workspace.label === undefined ? workspace.id : workspace.label)
-    );
+    var labelText = workspace.label === null || workspace.label === undefined ? workspace.id : workspace.label;
+    var labelEl = el("span", "workspace-label", labelText);
+    labelEl.title = labelText;
+    header.appendChild(labelEl);
     header.appendChild(el("span", "workspace-number", "#" + workspace.number));
-    header.appendChild(statusBadge(workspace.agent_status));
+    header.appendChild(agentState(workspace.agent_status));
     box.appendChild(header);
 
     for (var i = 0; i < workspace.tabs.length; i += 1) {
@@ -224,13 +385,120 @@
       : "task-status-unknown";
   }
 
+  // 左欄計數 chip（spec cockpit-dashboard「Project 切換」；design D11「左欄計數 chip」；
+  // direction-01-visual task 3.1）：固定依「需要注意」的程度排序，數量為 0 的不顯示。這裡跟
+  // `KNOWN_TASK_STATUSES`（Factory Floor 節點用，running 優先）故意分開放一份獨立順序——
+  // 兩者服務不同的排序語意（節點的「已知狀態集合」vs 計數的「注意力排序」），共用一份會讓其中
+  // 一邊的順序變動意外影響另一邊。
+  var TASK_STATUS_COUNT_ORDER = [
+    "failed",
+    "blocked",
+    "running",
+    "ready",
+    "pending",
+    "completed",
+  ];
+
+  // design D4「對象／狀態→顏色與符號」task 列：pending ○、ready ♢（U+2662；direction-01-visual
+  // task 3.2 由 ◇ 換掉——◇ 在 Segoe UI 12px 下墨跡只有約 7×6px，其他符號約 10×9px，看起來
+  // 小一半，見 design D4「狀態符號」）、running ▶︎（U+25B6 接
+  // U+FE0E 文字呈現選擇字元，避免被部分字型畫成彩色 emoji）、blocked ‖、failed ✕、
+  // completed ✓。左欄計數 chip（task 3.1）與 Factory Floor 節點（direction-01-visual task
+  // 3.2）共用這一份對照，兩處的符號因此不會各自漂移。
+  var TASK_STATUS_SYMBOLS = {
+    pending: "○",
+    ready: "♢",
+    running: "▶︎",
+    blocked: "‖",
+    failed: "✕",
+    completed: "✓",
+  };
+  var UNKNOWN_STATUS_SYMBOL = "?";
+
+  function taskStatusSymbol(status) {
+    return Object.prototype.hasOwnProperty.call(TASK_STATUS_SYMBOLS, status)
+      ? TASK_STATUS_SYMBOLS[status]
+      : UNKNOWN_STATUS_SYMBOL;
+  }
+
+  function taskStatusCountClass(status) {
+    return TASK_STATUS_COUNT_ORDER.indexOf(status) !== -1
+      ? "project-count-" + status
+      : "project-count-unknown";
+  }
+
+  // 依 project.tasks 逐一累計每個 status 的數量，回傳「依 D11 排序、數量 > 0」的清單
+  // （[{status, count}, ...]）。已知的六種 status 固定在前、依 TASK_STATUS_COUNT_ORDER 排序；
+  // 任何不在這六種之內的字串（未來協定加的新值——StageStatus 目前是封閉 enum，正常情況不會
+  // 發生，這裡沿用整份檔案「未知不破壞畫面」的慣例）各自成一個 chip，接在已知六種之後、依第一次
+  // 出現的順序排列，是 D11「未知」這個順位的具體實作（同一批未知字串裡有兩種以上時全部列出、
+  // 不合併成一個模糊的「未知」，跟 Factory Floor 節點「未知狀態顯示原字串」的原則一致）。
+  function computeTaskStatusCounts(project) {
+    var counts = {};
+    var unknownOrder = [];
+    for (var i = 0; i < project.tasks.length; i += 1) {
+      var status = project.tasks[i].status;
+      if (counts[status] === undefined) {
+        counts[status] = 0;
+        if (TASK_STATUS_COUNT_ORDER.indexOf(status) === -1) {
+          unknownOrder.push(status);
+        }
+      }
+      counts[status] += 1;
+    }
+    var order = TASK_STATUS_COUNT_ORDER.concat(unknownOrder);
+    var result = [];
+    for (var j = 0; j < order.length; j += 1) {
+      var s = order[j];
+      if (counts[s] > 0) {
+        result.push({ status: s, count: counts[s] });
+      }
+    }
+    return result;
+  }
+
+  // 一個計數 chip＝符號（aria-hidden）＋status 文字＋數字，三者是各自獨立的 span（design D11
+  // 「不用中點串接」——串接會變成單一字串，這裡刻意留三個子節點，CSS 用 gap 分隔，跟「數量為 0
+  // 的不顯示」一起讓「有 failed／blocked 時第一格就看得到暖色」在 DOM 結構上就成立：chip 本身
+  // 的顏色（見 style.css .project-count-*）由 D4 對照表決定，不用冰青搶份量）。
+  function renderStatusCountChip(entry) {
+    var cls = taskStatusCountClass(entry.status);
+    var chip = el("span", "project-count " + cls);
+    var symbol = el("span", "project-count-symbol", taskStatusSymbol(entry.status));
+    symbol.setAttribute("aria-hidden", "true");
+    chip.appendChild(symbol);
+    chip.appendChild(el("span", "project-count-status", entry.status));
+    chip.appendChild(el("span", "project-count-number", String(entry.count)));
+    if (cls === "project-count-unknown") {
+      chip.title = entry.status;
+    }
+    return chip;
+  }
+
+  // warnings 數量（design D11「warnings 用 --warn，放在名稱同一行右側」）：文字含「警告」二字
+  // （不是符號單獨表達），滿足「凡是以顏色表達的狀態都必須同時以文字呈現」的一般原則，也讓
+  // 「有 N 則 warning」這件事本身可以只讀文字判斷、不必只靠顏色。
+  function renderWarningCount(count) {
+    return el("span", "project-item-warnings", "警告 " + count);
+  }
+
   function renderBindingSummary(binding) {
     var wrap = el("span", "ff-binding ff-binding-" + binding.state);
     switch (binding.state) {
       case "bound":
-        wrap.appendChild(
-          el("span", "ff-binding-text", binding.runtime + " / " + binding.pane_id)
-        );
+        // fix round 4／N3（direction-01-visual task 2.1）：runtime／pane ID 可能很長、沒有斷行點，
+        // 全文放在外層 .ff-binding 的 title（滑鼠停在文字上一樣看得到）。
+        // direction-01-visual task 3.2（2.1 設計審核 r4 Minor）：原本整串「runtime / pane」是
+        // 同一個單行省略的 span，runtime 名稱一長，省略號就把 pane id 吃掉。拆成 runtime、分隔、
+        // pane 三個 span：只有 runtime 單行省略；pane id 不省略，放不下時整段換到下一行、太長才
+        // 在任意字元斷行，永遠看得到（style.css .ff-binding-*）。.ff-binding-text 的
+        // textContent 仍然是「runtime / pane」全文，腳本以 textContent 比對。
+        wrap.title = binding.runtime + " / " + binding.pane_id;
+        var boundText = el("span", "ff-binding-text");
+        boundText.appendChild(el("span", "ff-binding-runtime", binding.runtime));
+        boundText.appendChild(el("span", "ff-binding-sep", " / "));
+        boundText.appendChild(el("span", "ff-binding-pane", binding.pane_id));
+        wrap.appendChild(boundText);
         if (binding.source === "override") {
           wrap.appendChild(el("span", "ff-binding-badge", "改綁"));
         }
@@ -278,14 +546,28 @@
     return actions;
   }
 
+  // Task 節點（spec「Factory Floor」；design D4；direction-01-visual task 3.2）：由上往下固定
+  // 是「標題 → 符號＋status 文字 → 按鈕」三段。符號是 aria-hidden 的 span（design D4「符號
+  // 放在 DOM 文字裡，不用 CSS content」），跟左欄計數 chip 共用 taskStatusSymbol()；status
+  // 文字沿用投影的英文原字串（不翻成中文，http.rs 的禁字測試守著）。色條、外框、柔光全部由 style.css 依
+  // .task-status-* 決定，這裡只負責結構。
   function renderTaskNode(project, task) {
     var cls = taskStatusClass(task.status);
     var node = el("div", "task-node " + cls);
     if (cls === "task-status-unknown") {
       node.title = task.status;
     }
-    node.appendChild(el("span", "task-title", task.title));
-    node.appendChild(el("span", "task-status-label", task.status));
+    var titleEl = el("span", "task-title", task.title);
+    titleEl.title = task.title; // 最多兩行、超過省略，完整標題放 title（design D3）
+    node.appendChild(titleEl);
+
+    var state = el("span", "task-state");
+    var symbol = el("span", "task-status-symbol", taskStatusSymbol(task.status));
+    symbol.setAttribute("aria-hidden", "true");
+    state.appendChild(symbol);
+    state.appendChild(el("span", "task-status-label", task.status));
+    node.appendChild(state);
+
     node.appendChild(renderTaskActions(project, task));
     return node;
   }
@@ -295,7 +577,9 @@
     // 跟 ff-cell 一樣的 data-workstream 只是結構標記（供測試腳本按 id 定位這一列，兩個不同
     // Project 可能有同名 workstream.name，光用文字找不準），不是互動屬性。
     header.setAttribute("data-workstream", workstream.id);
-    header.appendChild(el("span", "ff-ws-name", workstream.name));
+    var wsNameEl = el("span", "ff-ws-name", workstream.name);
+    wsNameEl.title = workstream.name; // 長字串換行顯示（design D3；direction-01-visual task 2.1）
+    header.appendChild(wsNameEl);
     header.appendChild(renderBindingSummary(workstream.binding));
 
     // 列首操作：「改綁」一律有；binding.source 為 override 時另有「取消改綁」（spec「畫面操作」）。
@@ -361,15 +645,63 @@
     return cell;
   }
 
+  // 網格軌道下限（px）：renderFactoryFloor() 的 gridTemplateColumns 與 renderProject() 的面板
+  // min-width 共用這兩個數字，改一處就兩處一起變（fix round 4／N3 的算術下限，見
+  // renderProject()）。direction-01-visual task 3.2：網格改成 gap: 0（見 style.css
+  // .factory-floor——sticky 列首／欄首之間不能留縫，否則捲過去的節點會從縫裡透出來），間距改由
+  // 格子自己的 padding 負責，算式因此不再加 gap。
+  // task 3.2 fix round 1（設計審核 M1）：首欄上限 240 → 200。grid 會先把有固定上限的軌道撐到
+  // 上限、剩下的才分給 1fr，1100–1280 寬時列首內容只有約 170px 卻吃滿 240，stage 欄只剩約
+  // 140px，節點三顆按鈕疊成三列；降到 200 後 1280×650（含內層捲軸）stage 欄約 154px，搭配
+  // style.css 格子與節點左右內距 8 → 6px，按鈕變兩列。上限同時是
+  // .projects 的 scroll-padding-left（renderState()），兩處共用這個常數。面板 min-width 的算術
+  // 只用下限（renderProject()），不受上限影響。
+  var FF_ROW_HEADER_MIN_PX = 160;
+  var FF_ROW_HEADER_MAX_PX = 200;
+  var FF_STAGE_MIN_PX = 140;
+  // 替鍵盤焦點框留的捲動餘裕：外推 4px（style.css :focus-visible 的 outline-offset 2px＋
+  // outline 寬 2px）＋2px 取整餘裕（捲動位置是整數像素、容器邊可能落在小數位置，實測差 0.5px）。
+  var FOCUS_RING_ROOM_PX = 6;
+
+  function stageHasRunningTask(project, stageName) {
+    for (var i = 0; i < project.tasks.length; i += 1) {
+      if (project.tasks[i].stage === stageName && project.tasks[i].status === "running") {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // stage 欄首（design D3／D8；direction-01-visual task 3.2）：上緣一格刻度（DOM 元素，不是偽
+  // 元素），跟著欄一起橫向捲動、永遠跟下方欄位對齊；這個 stage 有 running task 時加
+  // .ff-stage-running，style.css 把該格刻度畫得較長、改用 --text（不用冰青，D4「冰青的形狀
+  // 分工」）。data-stage 只是結構標記（供腳本把刻度對回欄位），不是互動屬性。
+  function renderStageHeader(project, stageName) {
+    var running = stageHasRunningTask(project, stageName);
+    var header = el("div", "ff-stage-header" + (running ? " ff-stage-running" : ""));
+    header.setAttribute("data-stage", stageName);
+    var tick = el("span", "ff-stage-tick");
+    tick.setAttribute("aria-hidden", "true");
+    header.appendChild(tick);
+    var name = el("span", "ff-stage-name", stageName);
+    name.title = stageName;
+    header.appendChild(name);
+    return header;
+  }
+
   function renderFactoryFloor(project) {
     var grid = el("div", "factory-floor");
     // 欄數隨這個 Project 的 stages 數量而定，交由 JS 算出（style.css 只定義固定樣式）。
+    // fix round 4／N3（Codex r3）：首欄（workstream 列首）有上限（task 3.2 fix round 1 起 200px，見 FF_ROW_HEADER_MAX_PX）——原本是 minmax(160px, auto)，
+    // auto 上限會被列首內容（長 runtime／pane ID）撐寬，吃掉 stage 欄的空間；現在列首內容
+    // 自己換行（名稱）或單行省略（binding 文字），首欄寬度落在 [下限, 上限]。
     grid.style.gridTemplateColumns =
-      "minmax(160px, auto) repeat(" + project.stages.length + ", minmax(140px, 1fr))";
+      "minmax(" + FF_ROW_HEADER_MIN_PX + "px, " + FF_ROW_HEADER_MAX_PX + "px) repeat(" +
+      project.stages.length + ", minmax(" + FF_STAGE_MIN_PX + "px, 1fr))";
 
     grid.appendChild(el("div", "ff-corner"));
     for (var s = 0; s < project.stages.length; s += 1) {
-      grid.appendChild(el("div", "ff-stage-header", project.stages[s]));
+      grid.appendChild(renderStageHeader(project, project.stages[s]));
     }
 
     for (var w = 0; w < project.workstreams.length; w += 1) {
@@ -383,12 +715,15 @@
     return grid;
   }
 
-  function renderProject(project) {
-    var section = el("div", "project");
-    section.setAttribute("data-project", project.id);
-
+  // Factory Floor 標題列（spec「Factory Floor」「標題為 Project name，有 warnings 時逐則顯示」；
+  // design D10 主標題 20/600；direction-01-visual task 3.2）：放在不捲動的外框
+  // （data-region="floor"）裡、內層捲動容器 .projects 之上——網格橫向或縱向捲動時標題與
+  // warnings 都不會被捲走。標題列不放刻度（design D8：刻度改在 stage 欄首上緣）。
+  function renderFloorTitlebar(project) {
     var header = el("div", "project-header");
-    header.appendChild(el("h2", "project-name", project.name));
+    var nameEl = el("h2", "project-name", project.name);
+    nameEl.title = project.name; // 單行省略，完整名稱放 title（design D3）
+    header.appendChild(nameEl);
     if (project.warnings.length > 0) {
       var warnings = el("ul", "project-warnings");
       for (var i = 0; i < project.warnings.length; i += 1) {
@@ -396,22 +731,62 @@
       }
       header.appendChild(warnings);
     }
-    section.appendChild(header);
+    return header;
+  }
+
+  function renderProject(project) {
+    var section = el("div", "project");
+    section.setAttribute("data-project", project.id);
 
     section.appendChild(renderFactoryFloor(project));
+
+    // fix round 3／N3（設計複審 r2 新找到的退步，2.1 修法改用 JS 算 min-width，不是 CSS
+    // `width: max-content`）：N3 原本的問題是「網格橫向溢出改由 `.projects` 承接後，`.project`
+    // 面板自己的框沒有跟著網格變寬」。第一版修法在 style.css 給 `.project` 加
+    // `width: max-content`，複審（round 3 自查）發現這會連帶把面板寬度撐得比實際需要的還寬：
+    // CSS Flexbox 規格（§9.9）規定「計算 flex-wrap: wrap 容器的 max-content 尺寸時，视同
+    // flex-wrap: nowrap（所有項目擠在同一行）」——`.ff-row-actions`／`.task-actions` 都是
+    // `flex-wrap: wrap`，一旦 `.project` 改問「我的 max-content 是多少」，這兩種按鈕列都會照
+    // 「全部擠一行」回報寬度，`.factory-floor` 的 grid 欄位（含 `minmax(140px, 1fr)` 的 stage
+    // 欄——瀏覽器在算 grid 容器自身 intrinsic size 時，`fr` 的 max track sizing function 會
+    // 降級當 `auto` 處理）也跟著抓到這個灌水後的寬度，即使 stage 數很少的預設投影也會被撐寬到
+    // 超出可視範圍，讓某些按鈕的可見殘影卡在面板裁切邊界上、疊到 `.projects` 自己的
+    // （overlay）捲軸，點不到本人（live-output-check.js E 段命中測試抓到）。
+    // 改法：不問瀏覽器「max-content 是多少」，直接用跟 `renderFactoryFloor()` 設
+    // `gridTemplateColumns` 同一組數字（`minmax(160px, 200px)` 的列首欄、`minmax(140px, 1fr)`
+    // 的 stage 欄；task 3.2 起 gap 為 0）算出網格的最小需要寬度，用 `min-width` 當下限（不是
+    // `width`／`max-content`，不觸發瀏覽器對子樹做 intrinsic-size 查詢，`.ff-row-actions`／
+    // `.task-actions` 照正常版面演算法算，該怎麼換行就怎麼換行）。`max(100%, …px)`：容器夠寬
+    // 時跟原本一樣填滿 100%；stage 數多到超過容器時至少撐到網格需要的寬度，`.projects` 就能
+    // 橫向捲動看到完整的面板框線與內容（跟原本 N3 想要的效果一致）。
+    // fix round 4／N3（Codex r3 質疑「把首欄當 160」）：首欄軌道的下限是固定值 160（不是 auto），
+    // grid 的 base size 就是 160、不受列首內容影響；首欄只在容器有剩餘空間時才長向上限（200），
+    // stage 欄也不會因此低於 140，所以網格寬度恆為 max(容器寬, 下面的算術值)，這個下限成立。
+    // 實測（長 runtime／pane ID、10 stage）：網格 scrollWidth＝clientWidth＝1620＝算術值。
+    // direction-01-visual task 3.2：網格 gap 改為 0、`.project` 不再畫框（2.2 設計審核 F7「框中
+    // 框」：外框已經是 data-region="floor"，裡面的 .project 不再有 padding／border），面板下限
+    // 因此就是網格下限本身，不再加 gap 與框的寬度。
+    var stageCount = project.stages.length;
+    var panelMinWidthPx = FF_ROW_HEADER_MIN_PX + stageCount * FF_STAGE_MIN_PX;
+    section.style.minWidth = "max(100%, " + panelMinWidthPx + "px)";
 
     return section;
   }
 
   function renderRuntimeCard(runtime, rebinding, selected) {
+    // design D11（direction-01-visual task 3.3）：右欄只有 runtime 卡本身一層框；卡內
+    // workspace／tab 用分隔線與縮排表現層次（見 style.css）。標題列＝runtime id（等寬、過長時
+    // 單行省略，完整在 title）＋連線狀態；endpoint 移進連線明細的定義列表。
     var card = el("div", "runtime-card");
 
     var header = el("div", "runtime-header");
-    header.appendChild(el("span", "runtime-id", runtime.id));
-    header.appendChild(el("span", "runtime-endpoint", runtime.endpoint));
+    var idEl = el("span", "runtime-id", runtime.id);
+    idEl.title = runtime.id;
+    header.appendChild(idEl);
+    header.appendChild(renderConnectionState(runtime.connection.state));
     card.appendChild(header);
 
-    card.appendChild(renderConnection(runtime.connection));
+    card.appendChild(renderConnection(runtime));
 
     for (var i = 0; i < runtime.workspaces.length; i += 1) {
       card.appendChild(renderWorkspace(runtime.workspaces[i], runtime, rebinding, selected));
@@ -433,8 +808,31 @@
     return "";
   }
 
+  // 把路徑拆成 [前段, 尾段]：尾段＝最後一個分隔符（\ 或 /）起到結尾；結尾的分隔符算在尾段裡。
+  // 沒有分隔符（或只在開頭）時整串都是尾段。
+  function splitPathTail(path) {
+    var end = path.length;
+    while (end > 0 && (path.charAt(end - 1) === "\\" || path.charAt(end - 1) === "/")) {
+      end -= 1;
+    }
+    var cut = end > 0 ? Math.max(path.lastIndexOf("\\", end - 1), path.lastIndexOf("/", end - 1)) : -1;
+    if (cut <= 0) {
+      return ["", path];
+    }
+    return [path.slice(0, cut), path.slice(cut)];
+  }
+
+  function eventTimeOfDay(at) {
+    if (typeof at !== "string") {
+      return orDash(at);
+    }
+    var t = at.indexOf("T");
+    return t === -1 ? at : at.slice(t + 1);
+  }
+
   function renderRecentEvents(events) {
     var section = el("div", "recent-events");
+    section.setAttribute("data-region", "events");
     section.appendChild(el("h2", "recent-events-title", "最近事件"));
 
     var list = el("ul", "recent-events-list");
@@ -442,7 +840,11 @@
     for (var i = 0; i < limited.length; i += 1) {
       var event = limited[i];
       var item = el("li", "event-row");
-      item.appendChild(el("span", "event-at", event.at));
+      // design D11（direction-01-visual task 3.3）：at 只顯示時間部分（例如 01:59:30Z，保留
+      // Z、不轉時區），完整字串放 title；不是「日期T時間」格式時原樣顯示。
+      var atEl = el("span", "event-at", eventTimeOfDay(event.at));
+      atEl.title = orDash(event.at);
+      item.appendChild(atEl);
       item.appendChild(el("span", "event-runtime", event.runtime));
       item.appendChild(el("span", "event-kind", event.kind));
       item.appendChild(el("span", "event-subject", eventSubject(event)));
@@ -483,48 +885,266 @@
     return banner;
   }
 
+  // direction-01-visual task 3.4 fix round 1（設計 M2）：灰階瞇眼圖下，錯誤與改綁提示原本只靠
+  // 色相與文字內容區分——補一個 aria-hidden 的 ✕ 符號（跟 Factory Floor failed 節點同一個字元，
+  // 見 TASK_STATUS_SYMBOLS.failed），朗讀輔助不受影響（role="alert" 唸的是後面的訊息文字）。
+  // 改綁提示不加符號（M2 只點名錯誤提示）。
   function renderErrorBanner(message) {
     var banner = el("div", "action-banner error-banner");
     banner.setAttribute("role", "alert");
+    var symbol = el("span", "action-banner-symbol", TASK_STATUS_SYMBOLS.failed);
+    symbol.setAttribute("aria-hidden", "true");
+    banner.appendChild(symbol);
     banner.appendChild(el("span", "action-banner-text", message));
     banner.appendChild(actionButton("關閉", { action: "error-dismiss" }));
     return banner;
   }
 
-  // 純函數：state、選填的 ui → 一棵新建的 DOM 子樹。不讀寫 document 上既有的節點、不留任何
-  // 全域狀態。
+  // 錯誤／改綁提示合併成單一 data-region="banner"（design D2；direction-01-visual task
+  // 2.1）：兩者都不存在時整個不輸出——`.shell` 的 grid-template-areas 裡「banner」那一列因此
+  // 沒有任何內容撐開，auto 高度收成 0，不需要另外用 CSS 條件式隱藏。回傳 null 代表「這次不畫
+  // 這個區塊」，呼叫端自己判斷要不要 appendChild。
+  function renderBannerRegion(state, error, rebind) {
+    if (error === null && rebind === null) {
+      return null;
+    }
+    var region = el("div", "region-banner");
+    region.setAttribute("data-region", "banner");
+    if (error !== null) {
+      region.appendChild(renderErrorBanner(error));
+    }
+    if (rebind !== null) {
+      region.appendChild(renderRebindBanner(state, rebind));
+    }
+    return region;
+  }
+
+  // 沒有 Project 的空狀態文案（design D11 逐字文案；direction-01-visual task 3.1／fix round 1
+  // M4）：D11 只給了 Factory Floor 那則的逐字文案，指向動作的完整說明（改 cockpit.toml、加
+  // [[project]]、需要重啟）留給那一則；左欄這則 fix round 1 之前重複了幾乎一樣的句子（兩段
+  // 上下或左右相鄰時讀起來像同一句話說兩次，「在這裡看到」也沒有受詞），設計審核 M4 建議改成
+  // 只講狀態，這裡採用：左欄只寫「沒有 Project」，不再重複 Factory Floor 那句的說明。
+  var PROJECTS_EMPTY_TEXT = "沒有 Project";
+  // design D11「沒有 Project 的空狀態文案」逐字：「在 cockpit.toml 加入 [[project]] 區段即可
+  // 在這裡看到 Factory Floor，加入後需要重啟 cockpit」。
+  var FLOOR_EMPTY_TEXT =
+    "在 cockpit.toml 加入 [[project]] 區段即可在這裡" +
+    "看到 Factory Floor，加入後需要重啟 cockpit";
+
+  function renderProjectsEmptyState() {
+    return el("div", "projects-empty-state", PROJECTS_EMPTY_TEXT);
+  }
+
+  function renderFloorEmptyState() {
+    return el("div", "floor-empty-state", FLOOR_EMPTY_TEXT);
+  }
+
+  // 左欄一個 Project 項目（spec「Project 切換」；design D6；direction-01-visual task 3.1）：
+  // `<button data-action="select-project" data-project="...">`，焦點還原（render.js 檔尾
+  // identityFromElement／findByFocusIdentity）自動涵蓋——不需要像 pane 列那樣額外處理
+  // tabIndex／role／keydown（design D6：「左欄項目是 button，帶 data-action／data-project，
+  // 焦點還原自動涵蓋」）。選定標示＝design D4「冰青的形狀分工」：--surface 底＋左緣 2px 冰青條
+  // （style.css .project-item.selected），跟 running 節點的四邊框加柔光在形狀上分開，也跟
+  // pane 列的 .selected 用同一套視覺語彙。
+  function renderProjectItem(project, isSelected) {
+    var item = el("button", "project-item" + (isSelected ? " selected" : ""));
+    item.type = "button";
+    item.setAttribute("data-action", "select-project");
+    item.setAttribute("data-project", project.id);
+    if (isSelected) {
+      item.setAttribute("aria-current", "true");
+    }
+
+    var header = el("div", "project-item-header");
+    var nameEl = el("span", "project-item-name", project.name);
+    // 長字串換行顯示（design D3；design 審核檢查清單「200 字的 Project 名稱會截斷或換行，
+    // 不撐破 220px 欄寬」）：完整內容另外放 title。
+    nameEl.title = project.name;
+    header.appendChild(nameEl);
+    if (project.warnings.length > 0) {
+      header.appendChild(renderWarningCount(project.warnings.length));
+    }
+    item.appendChild(header);
+
+    var counts = computeTaskStatusCounts(project);
+    if (counts.length > 0) {
+      var countsRow = el("div", "project-item-counts");
+      for (var i = 0; i < counts.length; i += 1) {
+        countsRow.appendChild(renderStatusCountChip(counts[i]));
+      }
+      item.appendChild(countsRow);
+    }
+
+    return item;
+  }
+
+  // 左欄（design D2 data-region="projects"；direction-01-visual task 2.1／3.1）：依
+  // `state.projects` 順序列出每個 Project（spec「Project 切換」），`selectedProjectId` 是
+  // `renderState()` 算好的「實際生效的選取」（已經套用過「找不到就用第一個」的退回規則，見
+  // `resolveSelectedProject()`）——這裡只負責標示哪一項該顯示 `.selected`，不重算退回規則，
+  // 避免兩處各自判斷、彼此不一致。投影沒有任何 Project 時顯示空狀態（spec「沒有 Project」）。
+  function renderProjectsRegion(state, selectedProjectId) {
+    var region = el("nav", "region-projects");
+    region.setAttribute("data-region", "projects");
+
+    if (state.projects.length === 0) {
+      region.appendChild(renderProjectsEmptyState());
+      return region;
+    }
+
+    var list = el("div", "project-list");
+    for (var i = 0; i < state.projects.length; i += 1) {
+      var project = state.projects[i];
+      list.appendChild(renderProjectItem(project, project.id === selectedProjectId));
+    }
+    region.appendChild(list);
+    return region;
+  }
+
+  // 「選取跨重畫保留」「未選定過時預設選定第一個」「選定的 Project 已不在最新投影中時改為
+  // 選定第一個」三條規則（spec「Project 切換」；design D6）的唯一實作點：`renderState()`／
+  // `renderProjectsRegion()` 都呼叫這裡，不各自重算，避免退回規則在兩處實作出現分歧。
+  function resolveSelectedProject(state, selectedProjectId) {
+    if (state.projects.length === 0) {
+      return null;
+    }
+    if (selectedProjectId !== null && selectedProjectId !== undefined) {
+      for (var i = 0; i < state.projects.length; i += 1) {
+        if (state.projects[i].id === selectedProjectId) {
+          return state.projects[i];
+        }
+      }
+    }
+    return state.projects[0];
+  }
+
+  // 底列通道狀態指示（design D4「連線配色也適用底列通道狀態」；direction-01-visual task
+  // 2.3；task 2.3 fix round 1／Codex C1）：沿用「連線」列的三色與燈號形狀，文字前面加一個
+  // 獨立的 span 標籤「cockpit 服務」，和頂列的 runtime 連線燈號（cockpit 到 HERDR 的連線）
+  // 區分開，避免同一個「connected」字樣讓使用者分不出是哪一段連線斷了（design D4 原文）。
+  // `#channel-status` 本身文字不變（只是 dot＋文字兩個子節點，textContent 仍然精確等於狀態
+  // 字串），`window.onChannel` 仍然只找 `#channel-status` 更新，不觸發整頁重畫（見檔尾
+  // window.onChannel）。
+  //
+  // Codex C1：這裡過去寫死 "connected"（理由是「既然這是隨整頁重畫畫出來的，代表 WebSocket
+  // 當下是通的」）——這個理由只在「這次重畫是由收到新投影觸發」時成立，但 window.repaint()
+  // 也會呼叫 paint()（例如使用者操作、UI-only 重畫，不是新投影抵達），若那時通道其實已經
+  // 斷線，這裡仍然會把底列畫回綠色，蓋掉 window.onChannel 剛設定的紅色。改讀
+  // latestChannelState（只由 window.onChannel 寫入），不再假設「有 repaint 就代表已連線」。
+  function renderChannelIndicator() {
+    var wrap = el("span", "statusbar-channel");
+    wrap.appendChild(el("span", "statusbar-channel-label", "cockpit 服務"));
+    // M4（設計審核，2.3 fix round 1）：說明這是「瀏覽器到 cockpit 服務」這一段連線，跟頂列的
+    // runtime 燈號（cockpit 到 HERDR）區分開。
+    wrap.title = "瀏覽器 → cockpit 服務：" + latestChannelState;
+
+    var badge = el("span", "channel-status " + connStateClass("channel-", latestChannelState));
+    badge.id = "channel-status";
+    badge.setAttribute("data-channel-state", "");
+
+    // M3（使用者決定，2.3 fix round 1）：符號改用 .conn-symbol 共用規則（見
+    // renderRuntimeLamp() 上方註解與 style.css），跟頂列燈號同一組三態形狀。
+    var dot = el("span", "channel-status-dot conn-symbol");
+    dot.setAttribute("aria-hidden", "true");
+    badge.appendChild(dot);
+
+    badge.appendChild(el("span", "channel-status-text", latestChannelState));
+
+    wrap.appendChild(badge);
+    return wrap;
+  }
+
+  // 底列（design D2 data-region="statusbar"；direction-01-visual task 2.3）：通道狀態
+  // （design D4）＋ version（--fs-meta、--text-dim、等寬，design D10／D11：「version 用等寬
+  // --text-dim 顯示，不搶注意力」）。
+  function renderStatusbarRegion(state) {
+    var region = el("div", "region-statusbar");
+    region.setAttribute("data-region", "statusbar");
+
+    region.appendChild(renderChannelIndicator());
+
+    var version = el("span", "version", "v" + state.version);
+    version.id = "version";
+    region.appendChild(version);
+
+    return region;
+  }
+
+  // 純函數：state、選填的 ui → 一份新建的 DocumentFragment（design D2；direction-01-visual
+  // task 2.1）。頂層輸出改成各區塊的平鋪清單（不再包一層 `.page`），每個區塊根節點帶
+  // `data-region`——`#app` 在 index.html 設 `display: contents`，這些區塊因此直接是 `.shell`
+  // 的 grid item，用 grid-area 就位（design D2「DOM 歸屬與版面位置分開」）。呼叫端
+  // （paint()）用 `appEl.replaceChildren(renderState(...))`：`replaceChildren` 會展開
+  // fragment，不接受陣列，呼叫端不用因此改參數型態。不讀寫 document 上既有的節點、不留任何
+  // 全域狀態（`document.createDocumentFragment()`／`el()` 內的 `document.createElement()` 都只
+  // 是節點工廠呼叫，不是讀寫既有 DOM）。
   function renderState(state, ui) {
     var rebind = ui && ui.rebind ? ui.rebind : null;
     var error = ui && ui.error ? ui.error : null;
     var selected = ui && ui.selected ? ui.selected : null;
+    var selectedProjectId = ui && ui.selectedProject ? ui.selectedProject : null;
 
-    var page = el("div", "page");
-    page.appendChild(renderTopbar(state));
+    // spec「Project 切換」／design D6：三條規則（未選定過時預設第一個、選定的 Project 已不在
+    // 最新投影中時改為第一個、選取跨重畫保留）都收斂在 resolveSelectedProject() 這一個呼叫，
+    // 左欄（哪一項標 .selected）與 Factory Floor（畫哪個 Project）用同一份結果，不會對不齊。
+    var selectedProject = resolveSelectedProject(state, selectedProjectId);
 
-    if (error !== null) {
-      page.appendChild(renderErrorBanner(error));
+    var frag = document.createDocumentFragment();
+    frag.appendChild(renderTopbar(state));
+
+    // DOM 順序跟著 M7 裁決的視覺順序走（topbar→Project→banner→Floor→runtime→…），雖然
+    // grid-template-areas 決定的是視覺位置、不是 DOM 順序（direction-01-visual task 2.1），
+    // 但兩者一致比較好理解、鍵盤 Tab 順序也比較合理。
+    frag.appendChild(renderProjectsRegion(state, selectedProject !== null ? selectedProject.id : null));
+
+    var banner = renderBannerRegion(state, error, rebind);
+    if (banner !== null) {
+      frag.appendChild(banner);
     }
-    if (rebind !== null) {
-      page.appendChild(renderRebindBanner(state, rebind));
-    }
 
-    // 每個 Project 一塊 Factory Floor，依 state.projects 順序上下排列，畫在 runtime 卡之前
-    // （spec 「Factory Floor」）。
-    var projects = el("div", "projects");
-    for (var p = 0; p < state.projects.length; p += 1) {
-      projects.appendChild(renderProject(state.projects[p]));
+    // 中上區域只顯示目前選定的 Project 的 Factory Floor（spec「Factory Floor」「找不到就用
+    // 第一個」；spec「兩個 Project」情境：「中上區域只有一張 Factory Floor……另一個的網格不在
+    // 畫面上，改由左欄切換」；direction-01-visual task 3.1，取代 2.1～3.0 期間「把
+    // state.projects 全部疊在一起畫」的暫時狀態，見 style.css fix round 3／N3 附近的註解）。
+    // fix round 1（design 審核 I2）：外層區塊本身（data-region="floor"）改成不捲動的框，真正
+    // 捲動的內層是沿用舊 class="projects" 的節點（factory-floor-check.js 逐字比對
+    // `class="projects"` 在 `class="runtime-cards"` 之前；design D1「保留 DOM 身分」）——兩層
+    // 分開之後，Factory Floor 的框線／未來 D8 切角掛在外層，不會跟著內層的捲動位置跑掉（3.2
+    // 沿用同一層做 sticky 欄首／列首）。沒有任何 Project 時顯示空狀態（spec「沒有 Project」）。
+    var floorRegion = el("div", "region-floor");
+    floorRegion.setAttribute("data-region", "floor");
+    if (selectedProject === null) {
+      floorRegion.appendChild(renderFloorEmptyState());
+    } else {
+      // direction-01-visual task 3.2：標題列在外框、捲動容器之外（見 renderFloorTitlebar()）。
+      floorRegion.appendChild(renderFloorTitlebar(selectedProject));
+      var floorScroll = el("div", "projects");
+      // sticky 列首蓋住捲動容器最左邊一段（首欄軌道最寬 FF_ROW_HEADER_MAX_PX）：
+      // scrollIntoView／focus() 橫向捲動時要讓開它，目標才不會停在列首底下（上緣讓開欄首的
+      // 部分見 style.css .projects 的 scroll-padding）。再多讓開 FOCUS_RING_ROOM_PX，焦點框才
+      // 不會縮在列首底下（task 5.4 final review／Codex F2，四邊的理由見 style.css 同一處）。
+      floorScroll.style.scrollPaddingLeft = FF_ROW_HEADER_MAX_PX + FOCUS_RING_ROOM_PX + "px";
+      floorScroll.appendChild(renderProject(selectedProject));
+      floorRegion.appendChild(floorScroll);
     }
-    page.appendChild(projects);
+    frag.appendChild(floorRegion);
 
+    // fix round 1（design 審核 I2）：runtime 卡外層同樣拆成「不捲動的框
+    // （data-region="runtimes"）＋捲動的內層（class="runtime-cards"，沿用舊名）」。
+    var runtimesRegion = el("div", "region-runtimes");
+    runtimesRegion.setAttribute("data-region", "runtimes");
     var cards = el("div", "runtime-cards");
     for (var i = 0; i < state.runtimes.length; i += 1) {
       cards.appendChild(renderRuntimeCard(state.runtimes[i], rebind !== null, selected));
     }
-    page.appendChild(cards);
+    runtimesRegion.appendChild(cards);
+    frag.appendChild(runtimesRegion);
 
-    page.appendChild(renderRecentEvents(state.recent_events));
+    frag.appendChild(renderRecentEvents(state.recent_events));
 
-    return page;
+    frag.appendChild(renderStatusbarRegion(state));
+
+    return frag;
   }
 
   // Live Output（spec live-output「選定一個 pane」；design D8；task 5.3）：交出目前投影裡還
@@ -689,6 +1309,63 @@
     }
   }
 
+  // 內層捲動位置跨重畫保留（direction-01-visual task 2.1 fix round 4）：2.1 把 Factory
+  // Floor、runtime 清單、最近事件改成「區塊是不捲的框、內層才捲動」（design 審核 I2），這些內層
+  // 捲動容器都在 #app 底下，每次 replaceChildren 都換成新節點、scrollTop／scrollLeft 歸零——
+  // 改版前捲的是整頁（document 不會被換掉），所以沒有這個問題。實測（COCKPIT_PREVIEW_PUSH_MS=100）：
+  // 把三個容器捲到 120／30 後 400ms 內全部被拉回 0；actions-check.js「頻繁重畫時按鈕仍有效」
+  // 因此在 scrollIntoView 之後、按下之前按鈕被捲走而漏送 POST（HEAD 上 4 次失敗 3 次）。
+  // 重畫前依選擇器記下位置、重畫後寫回（新內容比較短時瀏覽器會自己夾到合法範圍）。
+  var SCROLL_KEEP_SELECTORS = [
+    '[data-region="floor"] > .projects',
+    '[data-region="runtimes"] > .runtime-cards',
+    '[data-region="events"] > .recent-events-list',
+    // direction-01-visual task 3.1：左欄現在有真的內容，Project 數量夠多時會需要自己捲動——
+    // 但跟其餘三個區塊不同，左欄捲動的是「框」本身（[data-region="projects"]，style.css 依
+    // 版面分別給它 max-height+overflow-y:auto 或 overflow-y:auto，見該檔「左欄捲動策略」與
+    // 固定一屏那段的註解），不是內層的 .project-list（.project-list 只負責排版，沒有自己的
+    // overflow）。[data-region="projects"] 本身也是 renderState() 平鋪清單的一員、每次
+    // replaceChildren 都被換掉，一樣需要跨重畫保留捲動位置。
+    '[data-region="projects"]',
+  ];
+
+  // 捲動位置只在「同一份內容」重畫時保留（task 5.4 final review／Codex F1）：Factory Floor 的
+  // 捲動容器每次只畫一個 Project，選擇器一樣不代表內容一樣——切換 Project 後若照選擇器寫回，
+  // 上一個 Project 的捲動位置會套到新 Project 上（使用者從網格中段開始、看不到首欄與前面的
+  // stage）。所以每筆記錄另外記下容器當時畫的 Project（直接子節點 .project 的 data-project；
+  // 其餘三個容器沒有這個子節點，恆為 null），重畫後只有同一個 Project 才寫回；換了 Project
+  // 就不寫回，新 Project 從 0 開始（切回原本的 Project 也是 0，不另外記每個 Project 的位置）。
+  function scrollOwner(node) {
+    var project = node.querySelector(":scope > .project");
+    return project !== null ? project.getAttribute("data-project") : null;
+  }
+
+  function captureScroll(appEl) {
+    var saved = [];
+    for (var i = 0; i < SCROLL_KEEP_SELECTORS.length; i += 1) {
+      var node = appEl.querySelector(SCROLL_KEEP_SELECTORS[i]);
+      if (node !== null && (node.scrollTop !== 0 || node.scrollLeft !== 0)) {
+        saved.push({
+          selector: SCROLL_KEEP_SELECTORS[i],
+          owner: scrollOwner(node),
+          top: node.scrollTop,
+          left: node.scrollLeft,
+        });
+      }
+    }
+    return saved;
+  }
+
+  function restoreScroll(appEl, saved) {
+    for (var i = 0; i < saved.length; i += 1) {
+      var node = appEl.querySelector(saved[i].selector);
+      if (node !== null && scrollOwner(node) === saved[i].owner) {
+        node.scrollTop = saved[i].top;
+        node.scrollLeft = saved[i].left;
+      }
+    }
+  }
+
   function paint() {
     if (latestState === null) {
       return;
@@ -697,17 +1374,75 @@
       window.cockpitActions && typeof window.cockpitActions.uiSnapshot === "function"
         ? window.cockpitActions.uiSnapshot()
         : undefined;
+    // spec「Project 切換」「選定的 Project 已不在最新投影中時改為選定第一個」（design D6；
+    // direction-01-visual task 3.1 fix round 1／Codex finding）：這是正式的狀態改變，不只是
+    // 這次重畫的顯示 fallback——resolveSelectedProject() 原本只被 renderState() 拿來決定
+    // 「這次要畫哪個 Project」，沒有回寫 actions.js 那份持久狀態，若選定的 Project 只是暫時
+    // 從投影裡消失（例如短暫的投影抖動）、之後又出現，殘留的舊 ID 會讓畫面在使用者沒有任何
+    // 操作的情況下自己跳回去。只在「曾經明確選過某個 Project（ui.selectedProject 不是
+    // null）」時才回寫；未選定過的情形維持「動態預設第一個」，不會把某個當下剛好排第一的
+    // Project 鎖成往後的預設（呼叫 setSelectedProject() 見該函式上方註解：只改狀態、不觸發
+    // 另一次 repaint，這次重畫本來就會用 resolveSelectedProject() 算出同樣的 fallback 結果，
+    // 畫面已經正確）。
+    //
+    // fix round 2／Codex finding：round 1 只在 resolveSelectedProject() 回傳非 null（投影裡
+    // 還有其他 Project 可以 fallback）時才回寫，投影 projects 剛好是空陣列時
+    // resolveSelectedProject() 回傳 null，被 `!== null` 擋掉、完全不回寫——這裡殘留的舊 ID
+    // （例如 p）沒有被清掉；下一份投影若又恢復成 [cockpit, p]，殘留的舊 ID 仍然「找得到」
+    // （p 這次真的在投影裡），會被判定成「還是選定的」而直接跳回 p，不是「未選定過時預設第一
+    // 個」的 cockpit。修法：把「要不要回寫」與「回寫成什麼」分開算——`resolveSelectedProject()`
+    // 回傳 null 就正規化成 null（沒有 Project 可選，選取本身也該清空，等下一份非空投影再靠
+    // 「未選定過時預設第一個」自然選出 cockpit，不是提前鎖定任何 ID）、回傳某個 Project 就
+    // 正規化成它的 id；只要算出來的值跟目前記錄的不一樣就回寫。
+    if (ui && ui.selectedProject !== null && ui.selectedProject !== undefined) {
+      var resolvedForPersist = resolveSelectedProject(latestState, ui.selectedProject);
+      var normalizedSelectedProject = resolvedForPersist !== null ? resolvedForPersist.id : null;
+      if (normalizedSelectedProject !== ui.selectedProject) {
+        if (window.cockpitActions && typeof window.cockpitActions.setSelectedProject === "function") {
+          window.cockpitActions.setSelectedProject(normalizedSelectedProject);
+        }
+      }
+    }
     var appEl = document.getElementById("app");
     // fix round 1 Finding 1：pointerdown 觸發的同步重畫優先用「待還原目標」（見上方
     // consumePendingFocusIdentity 註解），沒有才照舊看 document.activeElement。
     var focusIdentity = consumePendingFocusIdentity() || captureFocusIdentity(appEl);
+    var savedScroll = captureScroll(appEl);
     appEl.replaceChildren(renderState(latestState, ui));
+    restoreScroll(appEl, savedScroll);
     // #output 不在 #app 底下、不被上面這行換掉（design D8）；每次重畫後仍要交出最新的 pane
     // 集合，讓 output.js 判斷被選的 pane 是否已經消失。
     if (window.liveOutput && typeof window.liveOutput.setKnownPanes === "function") {
       window.liveOutput.setKnownPanes(collectKnownPanes(latestState));
     }
-    restoreFocus(appEl, focusIdentity);
+    restoringFocus = true;
+    try {
+      restoreFocus(appEl, focusIdentity);
+    } finally {
+      restoringFocus = false;
+    }
+  }
+
+  // 鍵盤焦點進到 Factory Floor 時把整顆按鈕連同焦點框捲進來（task 5.4 final review／Codex
+  // F2）：style.css 的 .projects scroll-padding 四邊替焦點框留了位置，但 Chrome 用 Tab 移動焦點
+  // 時，橫向只要元素還露出 32px 以上就當作「看得見」、完全不橫向捲動（實測：右緣按鈕本體被裁掉
+  // 20px、焦點框整側不見，scrollLeft 不動）。`scrollIntoView({ inline: "nearest" })` 沒有這個
+  // 門檻、會遵守 scroll-padding，所以在焦點事件裡補捲一次。只處理鍵盤焦點（:focus-visible）；
+  // paint() 自己還原焦點時（restoringFocus）不捲——否則使用者捲開之後，每次重畫都會把畫面拉回
+  // 焦點所在的按鈕，違反「重畫不重置區塊內部捲動位置」。
+  var restoringFocus = false;
+  var appRoot = document.getElementById("app");
+  if (appRoot !== null) {
+    appRoot.addEventListener("focusin", function (event) {
+      var target = event.target;
+      if (restoringFocus || !(target instanceof Element)) {
+        return;
+      }
+      if (target.closest('[data-region="floor"] > .projects') === null || !target.matches(":focus-visible")) {
+        return;
+      }
+      target.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
   }
 
   window.onState = function (state) {
@@ -718,12 +1453,58 @@
   // 給 actions.js：UI 狀態改變後以最新投影重畫（沒有收過投影時什麼都不做）。
   window.repaint = paint;
 
+  // 通道狀態更新（spec cockpit-dashboard「畫面整頁重畫」；design D4「連線配色也適用底列通道
+  // 狀態」；direction-01-visual task 2.3；task 2.3 fix round 1／Codex C1／使用者決定 I2；
+  // fix round 2／N5）：不呼叫 window.repaint()／paint()，不觸發整頁重畫。四件事都在這裡做：
+  //   1. 更新 latestChannelState（Codex C1）——下一次整頁重畫（不管是新投影還是 UI-only
+  //      repaint()）都會用這個值重新產生 renderChannelIndicator()／renderTopbar() 的輸出，
+  //      不會再被寫死的 "connected" 蓋掉。
+  //   2. 更新 [data-region="topbar"] 的 data-channel-state 屬性（I2）——CSS 依這個屬性把
+  //      頂列燈號調暗＋顯示「最後已知」（見 style.css），不需要在 JS 這裡逐一碰每顆燈號的
+  //      顏色或顯示狀態。
+  //   3. 逐顆更新頂列燈號的 title（N5）——顏色／文字靠 CSS 屬性選擇器不重畫就能切換，但
+  //      title 不是 CSS 能控制的東西，要逐一改寫。每顆燈號自己的連線狀態（connState）不會
+  //      因為通道變動而改變，從 `[data-conn-state]` 子節點的 textContent 讀回來（跟
+  //      renderRuntimeLamp() 產生這個節點時的用途一致：既給腳本精確讀值，也給這裡讀回原值），
+  //      不需要另外存一份 data 屬性。
+  //   4. 更新 #channel-status 內的文字節點與 class（沿用 fix round 1 之前的做法）。
+  // #channel-status 底下的 .channel-status-dot（燈號符號，靠 currentColor 跟著
+  // #channel-status 自己的顏色走）：直接整個 textContent = status 會把這個 dot 節點一併
+  // 沖掉，所以改成只找 .channel-status-text 這個子節點寫文字。找不到（例如舊快取頁面／未來
+  // 結構被改動）才退回整個 textContent 覆寫，維持防禦性。
   window.onChannel = function (status) {
+    latestChannelState = status;
+
+    var topbar = document.querySelector('[data-region="topbar"]');
+    if (topbar) {
+      topbar.setAttribute("data-channel-state", status);
+      var lamps = topbar.querySelectorAll(".runtime-lamp[data-runtime]");
+      for (var i = 0; i < lamps.length; i += 1) {
+        var lamp = lamps[i];
+        var runtimeId = lamp.getAttribute("data-runtime");
+        var stateNode = lamp.querySelector("[data-conn-state]");
+        var connState = stateNode ? stateNode.textContent.trim() : "";
+        lamp.title = lampTitle(runtimeId, connState, status);
+      }
+    }
+
     var badge = document.getElementById("channel-status");
     if (!badge) {
       return;
     }
-    badge.textContent = status;
-    badge.className = "channel-status channel-" + status;
+    var textEl = badge.querySelector(".channel-status-text");
+    if (textEl) {
+      textEl.textContent = status;
+    } else {
+      badge.textContent = status;
+    }
+    badge.className = "channel-status " + connStateClass("channel-", status);
+
+    // M4：title 也要跟著更新——這是 .statusbar-channel（badge 的父層 wrap），不是 badge 本身
+    // （wrap.title 在 renderChannelIndicator() 設，見上方）。
+    var wrap = badge.closest(".statusbar-channel");
+    if (wrap) {
+      wrap.title = "瀏覽器 → cockpit 服務：" + status;
+    }
   };
 })();

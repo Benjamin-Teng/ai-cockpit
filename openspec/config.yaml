@@ -14,7 +14,7 @@ context: |
   （herdr-client、cockpit-core、cockpit-herdr、cockpit），依賴方向見 ADR-0003。
   品質 gate：cargo fmt --check、cargo clippy --all-targets -- -D warnings、cargo test --workspace、
   markdownlint-cli2 "**/*.md"（在 repo 根執行）。
-  Code review 一律 Codex（見 AGENTS.md），Claude subagent 只驗非 diff 內容。
+  Code review 一律 Codex，Claude subagent 只驗非 diff 內容。
 
 rules:
   proposal:
@@ -27,7 +27,6 @@ rules:
     - 不重述設計文件；只寫本 change 特有的取捨，並連結設計文件章節
   tasks:
     - 每個 task 可獨立驗收，附驗收指令或測試名稱
-    - 第一批 task 必須是設計文件 §11 的 spike（change herdr-client 適用）
     - 每個 task 結尾要跑該 crate 的 fmt、clippy、test
 
 operations:
