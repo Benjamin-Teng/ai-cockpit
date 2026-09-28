@@ -167,6 +167,8 @@ struct Reply {
     status: StatusCode,
     headers: HeaderMap,
     raw: String,
+    /// 回應本體的原始位元組（`raw` 是 lossy 解碼，比對非 UTF-8 本體要用這個）。
+    bytes: Vec<u8>,
     json: Value,
 }
 
@@ -204,6 +206,7 @@ async fn send_with_headers(
         status,
         headers,
         raw,
+        bytes: bytes.to_vec(),
         json,
     }
 }
@@ -1259,6 +1262,7 @@ fn files_error_mapping_matches_spec_and_hides_io_message() {
             status: actual_status,
             headers,
             raw: String::from_utf8_lossy(&bytes).into_owned(),
+            bytes: bytes.to_vec(),
             json: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         };
         assert_coded_error(
@@ -1573,7 +1577,7 @@ async fn render_over_2_mib_is_413() {
 // 原始內容端點
 // ---------------------------------------------------------------------------
 
-/// Scenario: HTML 帶 sandbox
+/// Scenario: HTML 帶 sandbox（`page.html` 的內容是 UTF-8）
 #[tokio::test]
 async fn raw_scenario_html_has_sandbox() {
     let fx = Fixture::new("raw-html");
@@ -1581,11 +1585,86 @@ async fn raw_scenario_html_has_sandbox() {
     fx.write("page.html", html.as_bytes());
     let reply = fx.get("raw", "page.html").await;
     assert_eq!(reply.status, StatusCode::OK, "本體：{}", reply.raw);
-    assert_eq!(header(&reply, "content-type"), Some("text/html"));
+    assert_eq!(
+        header(&reply, "content-type"),
+        Some("text/html; charset=utf-8")
+    );
     assert_eq!(header(&reply, "content-security-policy"), Some("sandbox"));
     assert_eq!(header(&reply, "x-content-type-options"), Some("nosniff"));
     assert_security_headers(&reply);
     assert_eq!(reply.raw, html);
+}
+
+const TEXT_HTML_UTF8: &str = "text/html; charset=utf-8";
+
+/// 「中文」的 Big5 位元組（中 = A4A4、文 = A4E5）；0xA4 在 UTF-8 裡只能當後續位元組，所以不是合法 UTF-8。
+const BIG5_CHINESE: &[u8] = b"\xa4\xa4\xa4\xe5";
+
+/// Scenario: 沒有宣告編碼的 UTF-8 HTML（無 `<meta charset>`、無 BOM、含中文）
+#[tokio::test]
+async fn raw_scenario_utf8_html_without_meta_gets_charset() {
+    let fx = Fixture::new("raw-html-nometa");
+    let html = "<h1>檔案瀏覽</h1>";
+    fx.write("nometa.html", html.as_bytes());
+    let reply = fx.get("raw", "nometa.html").await;
+    assert_eq!(reply.status, StatusCode::OK, "本體：{}", reply.raw);
+    assert_eq!(header(&reply, "content-type"), Some(TEXT_HTML_UTF8));
+    assert_eq!(header(&reply, "content-security-policy"), Some("sandbox"));
+    assert_eq!(reply.bytes, html.as_bytes());
+}
+
+/// Scenario: 非 UTF-8 的 HTML（Big5 並宣告 `<meta charset="big5">`）→ 不帶 charset、本體逐位元組相同
+#[tokio::test]
+async fn raw_scenario_non_utf8_html_has_no_charset() {
+    let fx = Fixture::new("raw-html-big5");
+    let mut content = b"<meta charset=\"big5\"><p>".to_vec();
+    content.extend_from_slice(BIG5_CHINESE);
+    content.extend_from_slice(b"</p>");
+    fx.write("old.html", &content);
+    let reply = fx.get("raw", "old.html").await;
+    assert_eq!(reply.status, StatusCode::OK, "本體：{}", reply.raw);
+    assert_eq!(header(&reply, "content-type"), Some("text/html"));
+    assert_eq!(header(&reply, "content-security-policy"), Some("sandbox"));
+    assert_security_headers(&reply);
+    assert_eq!(reply.bytes, content);
+}
+
+/// design D1／D2 的邊界：判斷看**整份回傳位元組**（不是中繼資料的前 8192 位元組）、副檔名不分大小寫、
+/// UTF-8 BOM 屬於合法 UTF-8、UTF-16 BOM 不是。
+#[tokio::test]
+async fn raw_html_charset_follows_whole_content() {
+    let fx = Fixture::new("raw-html-charset");
+
+    // 前 8192 位元組全是 ASCII，非 UTF-8 位元組在其後。
+    let mut tail_big5 = b"<p>".to_vec();
+    tail_big5.resize(8192, b'a');
+    tail_big5.extend_from_slice(BIG5_CHINESE);
+
+    let mut utf8_bom = b"\xef\xbb\xbf".to_vec();
+    utf8_bom.extend_from_slice("<p>中文</p>".as_bytes());
+
+    let mut upper_big5 = b"<p>".to_vec();
+    upper_big5.extend_from_slice(BIG5_CHINESE);
+
+    let cases: &[(&str, &[u8], &str)] = &[
+        ("tail.html", &tail_big5, "text/html"),
+        ("bom.html", &utf8_bom, TEXT_HTML_UTF8),
+        ("utf16.html", b"\xff\xfe<\0p\0>\0", "text/html"),
+        ("UPPER.HTM", "<p>中文</p>".as_bytes(), TEXT_HTML_UTF8),
+        ("upper-big5.HTM", &upper_big5, "text/html"),
+        ("ascii.htm", b"<p>ascii</p>", TEXT_HTML_UTF8),
+    ];
+    for (name, content, content_type) in cases {
+        fx.write(name, content);
+        let reply = fx.get("raw", name).await;
+        assert_eq!(reply.status, StatusCode::OK, "{name}：{}", reply.raw);
+        assert_eq!(
+            header(&reply, "content-type"),
+            Some(*content_type),
+            "{name}"
+        );
+        assert_eq!(reply.bytes, *content, "{name}");
+    }
 }
 
 /// spec「原始內容端點」content-type 對照表（副檔名不分大小寫；其他 viewer 為 text 的檔案為
@@ -1594,8 +1673,8 @@ async fn raw_scenario_html_has_sandbox() {
 async fn raw_content_type_table() {
     let fx = Fixture::new("raw-types");
     let cases: &[(&str, &[u8], &str)] = &[
-        ("a.html", b"<p>", "text/html"),
-        ("a.HTM", b"<p>", "text/html"),
+        ("a.html", b"<p>", TEXT_HTML_UTF8),
+        ("a.HTM", b"<p>", TEXT_HTML_UTF8),
         ("a.pdf", b"%PDF", "application/pdf"),
         ("a.svg", b"<svg/>", "image/svg+xml"),
         ("a.PNG", b"\x89PNG\0", "image/png"),

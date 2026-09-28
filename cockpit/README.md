@@ -204,6 +204,9 @@ Cockpit 依每個 pane 的 `cwd` 推算「檔案根目錄」（往上找到的�
 - `GET /api/files/<runtime>/<root_id>/render/<相對路徑>`：只對 Markdown 檔案有效，伺服器用 `comrak`
   渲染成 HTML 片段（GFM 表格／任務清單／刪除線／自動連結），原始 HTML 與危險連結一律被清掉。
 - `GET /api/files/<runtime>/<root_id>/raw/<相對路徑>`：檔案原始位元組，`Content-Type` 依副檔名決定。
+  `.html`／`.htm` 另看內容：整份回傳位元組是合法 UTF-8 時回 `text/html; charset=utf-8`（沒寫
+  `<meta charset>` 的 UTF-8 報告在繁中 Windows 上才不會被當成 Big5 而顯示亂碼），不是時回不帶 charset
+  的 `text/html`，交給檔內 `<meta charset>` 或 BOM 決定編碼。
 - `GET /vendor/<路徑>`：內嵌的第三方前端資源（pdf.js、Material Icon Theme 的 icon 與對照表），公開
   靜態資源，不套用下方的來源檢查與允許清單。
 

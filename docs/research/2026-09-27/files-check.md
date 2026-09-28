@@ -68,6 +68,7 @@ node docs/research/2026-09-27/files-check.js --scratch=D:\tmp\shots             
 | `file-review/md 相對連結在分頁區開啟` | file-review／檔案檢視器 | 點 README 內「設計」：`docs/design.md` 分頁為目前分頁，「決策」標題在內容捲動容器可視範圍內且 `scrollTop > 0`，整頁沒有離開 |
 | `file-review/外部圖片不載入` | file-review／檔案檢視器 | CDP Network：沒有任何對 `example.com` 的請求；內容顯示替代文字 `logo`；`raw/docs/pic.png` 請求 200 且圖片已載入 |
 | `file-review/HTML 內的腳本不執行` | file-review／檔案檢視器 | 頁面 `message` 監聽器沒收到 `ran`；iframe 帶 `sandbox` 且不含 `allow-scripts`／`allow-same-origin`；`raw/style.css` 請求 200（含 OOPIF 子 session 的網路事件） |
+| `file-review/沒有宣告編碼的 UTF-8 HTML` | file-review／原始內容端點（change html-charset） | 暫存副本加無 `<meta charset>`、無 BOM 的 UTF-8 `nometa.html`（含「檔案瀏覽」），從檔案樹開啟：`raw/nometa.html` 回應 200 且 `Content-Type` 為 `text/html; charset=utf-8`；以 CDP `DOM.getDocument`（pierce；OOPIF 時在子 session）讀 iframe 內解析後的文件，含「檔案瀏覽」字樣（不是亂碼） |
 | `file-review/中文 PDF` | file-review／檔案檢視器 | 工具列可見文字「1 / 3」；3 個 canvas 逐一捲入可視範圍後非背景像素比例 > 0.2%；第 1 頁標題帶（頁高 4%–11.5%）> 1%；存 viewport 截圖，存不下來判 FAIL，存下來印一行「需目視確認（非方框）：<路徑>」。**本段 PASS 不含「非方框」判定**，要搭配控制端目視截圖 |
 | `file-review/純文字不被解讀` | file-review／檔案檢視器 | `note.txt`：可見文字含 `<b>x</b>` 原字樣，tabpanel 內沒有 `b` 元素 |
 | `file-review/改檔後更新並保住捲動` | file-review／自動更新 | `long.md` 捲到中段，在暫存副本末端加一段：3 秒內出現，`scrollTop` 不變（±1 px） |

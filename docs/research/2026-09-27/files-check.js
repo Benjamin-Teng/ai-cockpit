@@ -37,6 +37,7 @@
 //   file-review/md 相對連結在分頁區開啟          檔案檢視器
 //   file-review/外部圖片不載入                   檔案檢視器
 //   file-review/HTML 內的腳本不執行              檔案檢視器
+//   file-review/沒有宣告編碼的 UTF-8 HTML        原始內容端點（change html-charset）
 //   file-review/中文 PDF                         檔案檢視器
 //   file-review/純文字不被解讀                   檔案檢視器
 //   file-review/改檔後更新並保住捲動             自動更新
@@ -91,7 +92,7 @@
 // %TEMP%\cockpit-ui-preview-<pid>-<ns>\review-repo（stdout 印 `review-repo: <路徑>`），另建 other-repo；
 // 假 pane `win/wJ:p4`（cwd＝review-repo/src）、`win/wJ:p5`（cwd＝other-repo）。spec scenario 裡的
 // `w1:p1`／`w2:p1` 分別對應 `wJ:p4`／`wJ:p5`，`w1:p2` 對應 `wJ:p1`（ticker 輸出）。需要額外檔案
-// （a.md／b.md／c.md、docs/a b.md、plan.md、many/）或改寫檔案的段落，一律只寫暫存副本，不碰 repo 內
+// （a.md／b.md／c.md、docs/a b.md、plan.md、nometa.html、many/）或改寫檔案的段落，一律只寫暫存副本，不碰 repo 內
 // 的 fixture（self/鷹架 另外用雜湊確認 repo 內 fixture 沒被改）。
 //
 // 注意：本檔一次只開一個 ui_preview，也不要與 visual-check.js 等同時跑（計時斷言與收尾清查會互相干擾）。
@@ -853,6 +854,7 @@ const isFileEndpoint = (kind) => ['root', 'list', 'meta', 'render', 'raw'].inclu
 async function recordNetwork(cdp) {
   const reqs = [];
   const byKey = new Map();
+  const sessions = []; // auto-attach 的子 session（OOPIF、worker）：{ sid, type, url }
   cdp.onEvent('Network.requestWillBeSent', (p, sid) => {
     const r = { key: `${sid || ''}|${p.requestId}`, url: p.request.url, kind: classify(p.request.url), at: Date.now(), status: null, failed: false, session: sid };
     byKey.set(r.key, r);
@@ -860,7 +862,10 @@ async function recordNetwork(cdp) {
   });
   cdp.onEvent('Network.responseReceived', (p, sid) => {
     const r = byKey.get(`${sid || ''}|${p.requestId}`);
-    if (r) r.status = p.response.status;
+    if (r) {
+      r.status = p.response.status;
+      r.headers = Object.fromEntries(Object.entries(p.response.headers || {}).map(([k, v]) => [k.toLowerCase(), v]));
+    }
   });
   cdp.onEvent('Network.loadingFailed', (p, sid) => {
     const r = byKey.get(`${sid || ''}|${p.requestId}`);
@@ -872,6 +877,7 @@ async function recordNetwork(cdp) {
   // OOPIF（例如 sandbox iframe）與 worker 自動 attach：啟用網路事件後放行。
   cdp.onEvent('Target.attachedToTarget', (p) => {
     const sid = p.sessionId;
+    sessions.push({ sid, type: p.targetInfo && p.targetInfo.type, url: p.targetInfo && p.targetInfo.url });
     (async () => {
       await cdp.send('Network.enable', {}, sid);
       await cdp.send('Runtime.runIfWaitingForDebugger', {}, sid);
@@ -881,6 +887,7 @@ async function recordNetwork(cdp) {
   await cdp.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
   return {
     reqs,
+    sessions,
     since: (t, kind) => reqs.filter((r) => r.at >= t && (!kind || r.kind === kind)),
   };
 }
@@ -1882,6 +1889,67 @@ async function segHtmlScriptBlocked() {
   });
 }
 
+// GIVEN nometa.html 以 UTF-8 寫成、含「檔案瀏覽」，沒有 <meta charset> 也沒有 BOM WHEN 開啟其分頁 THEN 原始內容回應的
+// Content-Type 為 text/html; charset=utf-8；iframe 內文件含「檔案瀏覽」（不是 Big5 等舊編碼解出的亂碼）。
+// iframe 帶 sandbox 且不含 allow-scripts／allow-same-origin，頁面讀不到它的 contentDocument、也不能在裡面跑腳本，
+// 所以用 CDP DOM 讀解析後的文件：同行程 frame 由頁面 session 的 pierce 取得，OOPIF 則在它的子 session 讀。
+async function segUtf8HtmlWithoutMeta() {
+  const rel = 'nometa.html';
+  const needle = '檔案瀏覽';
+  await withCockpit('viewer-html-charset', { beforeLoad: (preview) => writeTemp(preview, rel, Buffer.from(`<h1>${needle}</h1><p>files-check 沒有宣告編碼的 UTF-8 HTML。</p>`, 'utf8')) }, async (ctx) => {
+    await openTree(ctx);
+    await openFile(ctx, rel);
+    const hasFrame = await ctx.cdp.poll(() => !!window.__fc.currentPanel() && !!window.__fc.currentPanel().querySelector('iframe'), [], UI_TIMEOUT_MS);
+    need(!!hasFrame, `${rel} 分頁內有 iframe（契約 C6）；目前 DOM：${await contractDump(ctx)}`);
+    const isNometaRaw = (r) => r.kind === 'raw' && new URL(r.url).pathname.endsWith(`/raw/${rel}`);
+    const t = Date.now();
+    while (Date.now() - t < UI_TIMEOUT_MS && !ctx.net.reqs.some((r) => isNometaRaw(r) && r.status !== null)) await sleep(100);
+    const raws = ctx.net.reqs.filter((r) => isNometaRaw(r) && r.status !== null);
+    need(raws.length > 0, `${rel} 的原始內容有被請求（${JSON.stringify(ctx.net.reqs.filter((r) => r.kind === 'raw').map((r) => r.url))}）`);
+    const types = raws.map((r) => (r.headers || {})['content-type']);
+    check(raws.every((r) => r.status === 200) && types.every((v) => v === 'text/html; charset=utf-8'), `原始內容回應 200 且 Content-Type 為 text/html; charset=utf-8（${JSON.stringify(raws.map((r) => [r.status, (r.headers || {})['content-type']]))}）`);
+
+    // 在一個 session 的 DOM 樹裡找 documentURL 指向 raw/nometa.html 的文件，回傳其 outerHTML（找不到回 null）。
+    const frameHtml = async (sid) => {
+      const doc = await ctx.cdp.send('DOM.getDocument', { depth: -1, pierce: true }, sid);
+      if (!doc.result) return null;
+      const stack = [doc.result.root];
+      while (stack.length) {
+        const n = stack.pop();
+        if (n.nodeType === 9 && n.documentURL && n.documentURL.split('?')[0].endsWith(`/raw/${rel}`)) {
+          const html = await ctx.cdp.send('DOM.getOuterHTML', { nodeId: n.nodeId }, sid);
+          return html.result ? html.result.outerHTML : null;
+        }
+        if (n.contentDocument) stack.push(n.contentDocument);
+        for (const c of n.children || []) stack.push(c);
+        for (const c of n.shadowRoots || []) stack.push(c);
+      }
+      return null;
+    };
+    // 每輪重算：OOPIF 的子 session 可能在 iframe 導航後才 attach；文件導航請求記在父 session，不能靠它找子 session。
+    const sessionIds = () => [null, ...new Set(ctx.net.sessions.filter((s) => s.type === 'iframe').map((s) => s.sid))];
+    let sessions = sessionIds();
+    let html = null;
+    let where = null;
+    const deadline = Date.now() + UI_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      sessions = sessionIds();
+      for (const sid of sessions) {
+        html = await frameHtml(sid);
+        if (html && html.includes('files-check')) {
+          where = sid ? 'oopif' : 'page';
+          break;
+        }
+      }
+      if (where) break;
+      await sleep(200);
+    }
+    need(html !== null, `讀得到 iframe 內 ${rel} 的文件（CDP DOM；session：${JSON.stringify(sessions)}）`);
+    log(`iframe 文件（${where || '未載入完成'}）：${(html || '').slice(0, 200)}`);
+    check(html.includes(needle), `iframe 內文件含「${needle}」，不是亂碼（實際前 200 字「${html.slice(0, 200)}」）`);
+  });
+}
+
 // GIVEN report.pdf 共 3 頁、第 1 頁含中文標題 WHEN 開啟其分頁 THEN 工具列「1 / 3」，3 頁都畫出內容，第 1 頁中文標題
 // 可辨識。像素判準見 PDF_* 常數；「非方框」由截圖目視（路徑印在輸出）。
 async function segChinesePdf() {
@@ -2311,6 +2379,7 @@ const SEGMENTS = [
   { code: 'file-review/md 相對連結在分頁區開啟', fn: segMdRelativeLink },
   { code: 'file-review/外部圖片不載入', fn: segExternalImageBlocked },
   { code: 'file-review/HTML 內的腳本不執行', fn: segHtmlScriptBlocked },
+  { code: 'file-review/沒有宣告編碼的 UTF-8 HTML', fn: segUtf8HtmlWithoutMeta },
   { code: 'file-review/中文 PDF', fn: segChinesePdf },
   { code: 'file-review/純文字不被解讀', fn: segPlainTextNotParsed },
   { code: 'file-review/改檔後更新並保住捲動', fn: segAutoUpdateKeepsScroll },

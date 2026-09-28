@@ -771,8 +771,8 @@ fn raw_response(root: &Root, rel: &RelPath, limit: u64) -> Result<Response, File
         return Err(FilesError::TooLarge);
     }
     let path = resolve(&root.path, rel)?;
-    let content_type = raw_content_type(&path, meta.viewer);
     let bytes = read_capped(&path, limit)?;
+    let content_type = raw_content_type(&path, meta.viewer, &bytes);
     Ok(with_no_store_headers(
         (
             StatusCode::OK,
@@ -789,12 +789,17 @@ const TEXT_PLAIN_UTF8: &str = "text/plain; charset=utf-8";
 /// 路徑**——與 [`file_meta`] 的 `viewer` 分類看同一個名字（8.3 短名稱或根內連結時，請求的字面可能
 /// 不同）。表內沒有的副檔名：`viewer` 為 text → `text/plain; charset=utf-8`，其餘
 /// `application/octet-stream`。
-fn raw_content_type(path: &Path, viewer: Viewer) -> &'static str {
+///
+/// `.html`／`.htm` 依 `bytes`（**實際要回傳的整份位元組**，不是中繼資料只看的前 8192 位元組）決定：
+/// 合法 UTF-8 → 帶 `charset=utf-8`，否則不帶 charset，交給檔內 `<meta charset>` 或 BOM（design D1、D2）。
+/// 沒帶 charset 又沒宣告時，瀏覽器會用系統舊編碼（繁中 Windows 為 Big5）解碼 UTF-8 而成亂碼。
+fn raw_content_type(path: &Path, viewer: Viewer, bytes: &[u8]) -> &'static str {
     let ext = path
         .extension()
         .and_then(|ext| ext.to_str())
         .map(str::to_ascii_lowercase);
     match ext.as_deref() {
+        Some("html" | "htm") if std::str::from_utf8(bytes).is_ok() => "text/html; charset=utf-8",
         Some("html" | "htm") => "text/html",
         Some("pdf") => "application/pdf",
         Some("svg") => "image/svg+xml",
