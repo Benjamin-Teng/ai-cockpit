@@ -1,26 +1,24 @@
 # 交接：下一段任務
 
-> **建立日期**：2026-09-28　|　**上一段做完的事**：小 change `html-charset` apply 完成（6/6 task、整支分支 Codex review
-> approve），在 `feat/html-charset` 上，**尚未併回 `main`、尚未 archive**。
+> **建立日期**：2026-09-28　|　**上一段做完的事**：小 change `html-charset` 完成——Codex review approve、squash 併回
+> `main`（`de552f3`）、delta spec 同步進主規格 `file-review` 並 archive（`aa62893`）。
 > **性質**：接手用文件，會過期，每段重寫。
 > 為什麼做看 `docs/cockpit-spec.md`（北極星）與各 change 的 proposal；怎麼做看 `~/.claude/CLAUDE.md`（本 repo 精簡版在
 > `AGENTS.md`）；規格看 `openspec/specs/`。
 
 ## 0. 三十秒版本
 
-1. **active change：`html-charset`**（分支 `feat/html-charset`），實作與審查都完成，剩收尾：squash 併回 `main`、
-   `/opsx:archive html-charset`，見第 2 節。
-2. 收尾後：開 change 5b（git 唯讀層、diff、Git Graph）的 brainstorming，第一題問「Git Graph 只看還是也能操作」，
+1. **目前沒有 active change**，工作分支是 `main`（`feat/html-charset` 已刪）。
+2. **下一步：開 change 5b（git 唯讀層、diff、Git Graph）的 brainstorming**，第一題問「Git Graph 只看還是也能操作」，
    見第 3 節。開工前先開 feature 分支。
 3. 待使用者決定、不擋 5b：deferred lows 清單（第 5 節）。
 
 ## 1. 現在的狀態
 
-- **`feat/html-charset`（未併回）**：原始內容端點對 `.html`／`.htm` 依整份回傳位元組是否為合法 UTF-8 決定是否帶
-  `charset=utf-8`（`cockpit/src/files.rs` 的 `raw_content_type`；spec 見
-  `openspec/changes/html-charset/specs/file-review/spec.md`）；`files-check.js` 新增段
-  `file-review/沒有宣告編碼的 UTF-8 HTML`。實作 commit `3592a11`，tasks 勾選與本檔另一個 commit。
-- **已上線（`main`）**：change 1a／1b／2／3／4／5a。
+- **已上線（`main`）**：change 1a／1b／2／3／4／5a，以及小 change `html-charset`。
+  - `html-charset`：原始內容端點對 `.html`／`.htm` 依整份回傳位元組是否為合法 UTF-8 決定是否帶 `charset=utf-8`
+    （`cockpit/src/files.rs` 的 `raw_content_type`；主規格 `openspec/specs/file-review/spec.md`「原始內容端點」）；
+    `files-check.js` 新增段 `file-review/沒有宣告編碼的 UTF-8 HTML`。
   - change 5a 新增：
     - 新 crate `cockpit-files`（ADR `docs/adr/0006-cockpit-files-crate.md`；`cockpit-core` 不依賴它，方向見 ADR-0003）：
       根目錄推算、相對路徑界限、列目錄（`.gitignore` 過濾）、中繼資料與 viewer 分類、icon 對照、Markdown 渲染。
@@ -32,7 +30,8 @@
     - 驗收腳本 `docs/research/2026-09-27/files-check.js`（用法見同目錄 `files-check.md`），`visual-check.js` 補新段落。
   - change 4 的畫面規則（`.shell` 三欄外框、10 色 token、`--fs-*` 四階、Live Output 過期標示）仍然有效，見
     `git show 7aebc3b:docs/handover.md` 第 1 節。
-- **archive**：`openspec/changes/archive/2026-09-28-file-review/`（change 5a），其中 `sdd-ledger.md` 是 SDD 全紀錄
+- **archive**：`openspec/changes/archive/2026-09-28-html-charset/`（小 change，直接 apply 無 ledger）；
+  `openspec/changes/archive/2026-09-28-file-review/`（change 5a），其中 `sdd-ledger.md` 是 SDD 全紀錄
   （裁決 R1–R30、每個 task 的審查輪次、deferred minors、待使用者決定事項）。上一個是
   `openspec/changes/archive/2026-09-26-direction-01-visual/`（change 4）。
 - **可用指令**（repo 根目錄）：
@@ -48,23 +47,18 @@
   - WSL 真機：`docs/research/2026-09-19/live-output-real-check.js`（用法見 `live-output-acceptance.md`）；
     `--self-test-stale-signals` 可離線跑。
   - Codex 審查：`node ~/.claude/plugins/cache/openai-codex/codex/<最新版號>/scripts/codex-companion.mjs adversarial-review --wait --base <BASE> "<focus>"`
-- **測試數字**：以當場輸出為準。最後紀錄（2026-09-28，`feat/html-charset` 全 gate）：
+- **測試數字**：以當場輸出為準。最後紀錄（2026-09-28，`html-charset` 併回前全 gate）：
   `cargo test --workspace` 718 passed／0 failed／11 ignored；`ui_preview` example 31；
   `files-check.js` 27 段 ok 550／FAIL 0；`visual-check.js` ok 1648／FAIL 0；既有六支腳本全 PASS；
-  `markdownlint-cli2` 0 issues；`openspec validate --all` 18 passed。
+  `markdownlint-cli2` 0 issues；`openspec validate --all` 17 passed（archive 後，當場跑為準）。
 - **環境**：port 7680（svchost）與 7778（ArmouryCrate）是系統服務，不要碰。change 4 移除 Windows 端 herdr 的
   `herdr-sidebar` plugin 的備份仍在（`%APPDATA%\herdr\*.bak-20260926-pre-sidebar-uninstall`），
   `%LOCALAPPDATA%\herdr\plugins\herdr-sidebar.removed-20260926`；`layout.ps1`、`new-space.ps1` 還留著提到 sidebar 的過期註解。
 
-## 2. 立刻要做：`html-charset` 收尾，然後 change 5b brainstorming
+## 2. 立刻要做：change 5b brainstorming
 
-1. （可選）使用者目視：`cargo run -p cockpit --example ui_preview`，在暫存副本放一個沒有 `<meta charset>` 的中文 UTF-8
-   HTML、從檔案樹開啟，應正常顯示中文；`files-check.js` 的同名段已自動驗過同一件事。
-2. squash 併回 `main`（已授權，標準指令見 `~/.claude/guides/git-branch-workflow.md`），刪 `feat/html-charset`。
-3. `/opsx:archive html-charset`：delta spec 修改主規格 `openspec/specs/file-review/spec.md` 的「原始內容端點」；
-   archive 後跑 `openspec validate --all` 與 `markdownlint-cli2 "**/*.md"`。
-4. 改寫本檔（第 5 節移除 active change 相關描述），再開 change 5b：使用者下指令後走 superpowers brainstorming，
-   再 `/opsx:propose`。前置事實與要問的第一題見第 3 節「change 5b」。開工前 `git switch -c feat/<slug>`。
+使用者下指令後走 superpowers brainstorming，再 `/opsx:propose`。前置事實與要問的第一題見第 3 節「change 5b」。
+開工前 `git switch -c feat/<slug>`。
 
 ## 3. 接著要做（依序）
 
@@ -158,7 +152,7 @@ change 5a 以前仍然有效的坑（HERDR 行為、change 4 前端、axum、WSL
 | 決策 | 狀態 |
 |---|---|
 | 路線：change 5a 檔案瀏覽與 Review（已完成、已併回並 archive）→ change 5b git 唯讀層／diff／Git Graph → change 6 進度模型 → change 7 畫面與操作修補 | **已定** |
-| 沒有 `<meta charset>` 的 UTF-8 HTML 在 iframe 會亂碼 | **已定並實作**（change `html-charset`，待併回與 archive）：依內容決定——合法 UTF-8 帶 `charset=utf-8`，否則不帶；不偵測 Big5、不轉碼、不改 `.css`（CSS 跟著 HTML 的編碼） |
+| 沒有 `<meta charset>` 的 UTF-8 HTML 在 iframe 會亂碼 | **已完成**（change `html-charset`，已併回並 archive）：依內容決定——合法 UTF-8 帶 `charset=utf-8`，否則不帶；不偵測 Big5、不轉碼、不改 `.css`（CSS 跟著 HTML 的編碼） |
 | HTML 檢視器改用「隱藏 iframe 先載入、Resource Timing 確認 200 才換掉舊 iframe」（R30，取代最初的 R28/R29 兩次請求做法） | **已定**（實測可行，5.4 修正波已套用），理由：同時維持 spec 字面（iframe 載入原始內容端點）又消除 R28/R29 的競態；不做 `srcdoc`（會改寫使用者 HTML，違反 design D8「不改寫使用者內容」） |
 | Markdown 以 `/` 開頭的相對連結以 repo 根目錄為基準（同 GitHub）；前端另加元素／屬性白名單清洗，縱深防禦 comrak 未來新增輸出元素 | **已定**（R25） |
 | 允許清單範圍是「目前有 pane 的整個 repo」，shell pane 停在家目錄／磁碟根會讓整個範圍進允許清單 | **已定不額外限制**（只對本機同源、只讀，等同使用者在該 pane 本來能讀到的範圍） |
@@ -191,3 +185,4 @@ change 7 畫面與操作修補 → 推 remote 前的去識別化小 change → �
 | 22 | 2026-09-28 | change 5a `file-review` SDD apply 完成（task 1.1–5.4，整支分支 Codex review 通過），待使用者目視驗收（5.5） |
 | 23 | 2026-09-28 | change 5a 使用者目視驗收通過、squash 併回 `main`、3 份 delta spec 同步並 archive；下一段為 change 5b brainstorming |
 | 24 | 2026-09-28 | 小 change `html-charset` propose 與 apply 完成（6/6 task、Codex approve），待 squash 併回與 archive |
+| 25 | 2026-09-28 | `html-charset` squash 併回 `main`、delta spec 同步並 archive；下一段為 change 5b brainstorming |
