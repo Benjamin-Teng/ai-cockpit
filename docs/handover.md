@@ -1,23 +1,22 @@
 # 交接：下一段任務
 
-> **建立日期**：2026-09-28　|　**上一段做完的事**：change 5a `file-review` 的 SDD apply（task 1.1–5.4）全部完成，
-> 整支分支 Codex review 通過（1 輪修正）。
+> **建立日期**：2026-09-28　|　**上一段做完的事**：change 5a `file-review` 完成——使用者目視驗收通過、squash 併回 `main`
+> （`f56a463`）、3 份 delta spec 同步進主規格並 archive（`b5c936b`）。
 > **性質**：接手用文件，會過期，每段重寫。
 > 為什麼做看 `docs/cockpit-spec.md`（北極星）與各 change 的 proposal；怎麼做看 `~/.claude/CLAUDE.md`（本 repo 精簡版在
 > `AGENTS.md`）；規格看 `openspec/specs/`。
 
 ## 0. 三十秒版本
 
-1. **active change = `file-review`（change 5a）**，分支 `feat/file-review`。實作與全部自動化驗收（task 1.1–5.4）
-   已完成，只剩 **task 5.5：使用者目視驗收**，通過才算完成整段。
-2. **下一步是使用者目視驗收**。截圖曾放在 scratchpad `final-5.1/`，但 scratchpad 是暫存目錄、session 之間不保證還在，
-   所以驗收一律重新啟動服務現場看，checklist 見第 2 節。
-3. 使用者目視通過後：`/opsx:archive file-review`，squash 併回 `main`（使用者已授權）。併回後才開 change 5b
-   （git 唯讀層、diff、Git Graph）的 brainstorming，見第 3 節。
+1. **目前沒有 active change**，工作分支是 `main`（`feat/file-review` 已刪）。
+2. **下一步：開 change 5b（git 唯讀層、diff、Git Graph）的 brainstorming**，第一題問「Git Graph 只看還是也能操作」，
+   見第 3 節。開工前先開 feature 分支。
+3. 待使用者決定、不擋 5b 的兩件事：沒有 `<meta charset>` 的 UTF-8 HTML 在檢視器會亂碼（要改 spec），以及 deferred
+   lows 清單。兩者都在第 5 節。
 
 ## 1. 現在的狀態
 
-- **已上線（`main`）**：change 1a／1b／2／3／4。**進行中：`feat/file-review`（change 5a），實作完成、待使用者目視**。
+- **已上線（`main`）**：change 1a／1b／2／3／4／5a。
   - change 5a 新增：
     - 新 crate `cockpit-files`（ADR `docs/adr/0006-cockpit-files-crate.md`；`cockpit-core` 不依賴它，方向見 ADR-0003）：
       根目錄推算、相對路徑界限、列目錄（`.gitignore` 過濾）、中繼資料與 viewer 分類、icon 對照、Markdown 渲染。
@@ -27,12 +26,11 @@
     - 前端：`/app/files.js`（檔案樹、檔案分頁）、`/app/viewers.js`（Markdown／純文字／HTML／PDF 檢視器），
       下半部分頁區（`#review`，Live Output 移入成為第一個分頁 + 檔案分頁）。
     - 驗收腳本 `docs/research/2026-09-27/files-check.js`（用法見同目錄 `files-check.md`），`visual-check.js` 補新段落。
-  - change 4 的畫面規則（`.shell` 三欄外框、10 色 token、`--fs-*` 四階、Live Output 過期標示）仍然有效，見上一版
+  - change 4 的畫面規則（`.shell` 三欄外框、10 色 token、`--fs-*` 四階、Live Output 過期標示）仍然有效，見
     `git show 7aebc3b:docs/handover.md` 第 1 節。
-- **archive**：`openspec/changes/archive/2026-09-26-direction-01-visual/`（change 4）。change 5a 的 SDD 全紀錄目前在
-  `.superpowers/sdd/tasks/progress.md`（控制端本機檔，不進版控），**快照已存進
-  `openspec/changes/file-review/sdd-ledger.md`**（archive change 時會跟著搬）；內容含裁決 R1–R30、每個 task 的審查輪次、
-  deferred minors、待使用者決定事項。
+- **archive**：`openspec/changes/archive/2026-09-28-file-review/`（change 5a），其中 `sdd-ledger.md` 是 SDD 全紀錄
+  （裁決 R1–R30、每個 task 的審查輪次、deferred minors、待使用者決定事項）。上一個是
+  `openspec/changes/archive/2026-09-26-direction-01-visual/`（change 4）。
 - **可用指令**（repo 根目錄）：
   - 全 gate：`cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test --workspace && cargo test -p cockpit --example ui_preview && markdownlint-cli2 "**/*.md" && openspec validate --all`
   - 正式服務：`cargo run -p cockpit`（讀工作目錄的 `cockpit.toml`；沒有就是零設定模式，Factory Floor 為空）
@@ -46,52 +44,20 @@
   - WSL 真機：`docs/research/2026-09-19/live-output-real-check.js`（用法見 `live-output-acceptance.md`）；
     `--self-test-stale-signals` 可離線跑。
   - Codex 審查：`node ~/.claude/plugins/cache/openai-codex/codex/<最新版號>/scripts/codex-companion.mjs adversarial-review --wait --base <BASE> "<focus>"`
-- **測試數字**：以當場輸出為準。最後紀錄（2026-09-28，task 5.4 全 gate，併回前）：
+- **測試數字**：以當場輸出為準。最後紀錄（2026-09-28，併回前全 gate）：
   `cargo test --workspace` 715 passed／0 failed／11 ignored；`ui_preview` example 31；
   `files-check.js` 26 段 ok 532／FAIL 0；`visual-check.js` ok 1648／FAIL 0；既有六支腳本全 PASS；
-  `markdownlint-cli2` 92 檔 0 issues；`openspec validate --all` 17 passed。
+  `markdownlint-cli2` 0 issues；`openspec validate --all` 17 passed（archive 後新增 file-review 主規格，當場跑為準）。
 - **環境**：port 7680（svchost）與 7778（ArmouryCrate）是系統服務，不要碰。change 4 移除 Windows 端 herdr 的
   `herdr-sidebar` plugin 的備份仍在（`%APPDATA%\herdr\*.bak-20260926-pre-sidebar-uninstall`），
   `%LOCALAPPDATA%\herdr\plugins\herdr-sidebar.removed-20260926`；`layout.ps1`、`new-space.ps1` 還留著提到 sidebar 的過期註解。
 
-## 2. 立刻要做：task 5.5 使用者目視驗收
+## 2. 立刻要做：change 5b brainstorming
 
-自動化驗收（files-check、visual-check、六支腳本、Codex review）都已通過，**這一步只驗「人眼看起來對不對」**，
-不需要再跑腳本。步驟：
+使用者下指令後走 superpowers brainstorming，再 `/opsx:propose`。前置事實與要問的第一題見第 3 節「change 5b」。
+開工前 `git switch -c feat/<slug>`。
 
-```bash
-cargo run -p cockpit --example ui_preview
-# 開瀏覽器 http://127.0.0.1:7770
-```
-
-checklist（每項看什麼、正常長怎樣）：
-
-1. **左欄有「Project」與「檔案」兩個分頁**：切到「檔案」看得到檔案樹（假 repo，含子資料夾、中文檔名的 PDF）。
-2. **檔案樹**：資料夾在前、依名稱排序；點資料夾能展開／收合；icon 依副檔名／資料夾狀態變化（Material Icon Theme 風格，
-   不是純色方塊）。
-3. **開檔測試（下半部分頁區會多出對應分頁）**：
-   - `README.md`：Markdown 渲染成正常排版（標題、清單等），不是原始 `#`、`-` 符號。
-   - `report.pdf`（中文檔名的那份）：能看到中文標題與內文（不是空白方框），可翻頁／縮放。
-   - `page.html`：iframe 內顯示 HTML 畫面（含樣式），不是原始碼、不是空白。
-   - `note.txt`：以純文字顯示，不套用任何 Markdown／HTML 解讀。
-4. **下半部分頁切換**：開檔後下半部有「Live Output」與各檔案分頁並存；點選一個有輸出的 pane，會自動切回
-   Live Output 分頁；切到某個檔案分頁時，Live Output 停止捲動（不佔頻寬），切回去立即恢復且貼底。
-5. **VS Code 連結**（task 1.2 只用 Windows protocol handler 搭配 UI Automation 實測過，**這是第一次在 Chrome 裡實際點擊**）：
-   在任一檔案分頁的工具列點「在 VS Code 開啟」，Chrome 會跳出「要開啟 Visual Studio Code 嗎？」確認框，按允許後
-   VS Code 應該開到該檔案（WSL 檔案會開遠端視窗）。這一步需要使用者親自點，自動化工具做不到。
-
-**用完 `ui_preview` 記得關閉**（Ctrl+C 或依 PID），確認 7770 沒有 LISTEN 殘留，不要動到別人手動開著的 7770。
-
-全部項目通過後：
-
-```bash
-/opsx:archive file-review
-```
-
-然後 squash 併回 `main`（使用者已授權，見第 5 節）。併回並 archive 後，`tasks.md` 的 5.5 才可以打勾——控制端統一勾，
-不要在使用者確認前搶先勾。
-
-## 3. 接著要做
+## 3. 接著要做（依序）
 
 ### change 5b：git 唯讀層、diff、Git Graph（下一個要開 brainstorming 的 change）
 
@@ -122,7 +88,7 @@ checklist（每項看什麼、正常長怎樣）：
 
 ## 4. 這一段（change 5a）踩過的坑
 
-（**不會報錯的錯誤**加粗。全紀錄與裁決理由見 `openspec/changes/file-review/sdd-ledger.md`。）
+（**不會報錯的錯誤**加粗。全紀錄與裁決理由見 `openspec/changes/archive/2026-09-28-file-review/sdd-ledger.md`。）
 
 流程與工具：
 
@@ -169,7 +135,7 @@ change 5a 以前仍然有效的坑（HERDR 行為、change 4 前端、axum、WSL
 
 | 決策 | 狀態 |
 |---|---|
-| 路線：change 5a 檔案瀏覽與 Review（已完成，待目視）→ change 5b git 唯讀層／diff／Git Graph → change 6 進度模型 → change 7 畫面與操作修補 | **已定** |
+| 路線：change 5a 檔案瀏覽與 Review（已完成、已併回並 archive）→ change 5b git 唯讀層／diff／Git Graph → change 6 進度模型 → change 7 畫面與操作修補 | **已定** |
 | 沒有 `<meta charset>` 的 UTF-8 HTML 在 iframe 會亂碼——spec 規定 raw `.html` 回 `text/html` 不帶 charset | **待使用者決定**：修正需改 spec（例如改回 `text/html; charset=utf-8`） |
 | HTML 檢視器改用「隱藏 iframe 先載入、Resource Timing 確認 200 才換掉舊 iframe」（R30，取代最初的 R28/R29 兩次請求做法） | **已定**（實測可行，5.4 修正波已套用），理由：同時維持 spec 字面（iframe 載入原始內容端點）又消除 R28/R29 的競態；不做 `srcdoc`（會改寫使用者 HTML，違反 design D8「不改寫使用者內容」） |
 | Markdown 以 `/` 開頭的相對連結以 repo 根目錄為基準（同 GitHub）；前端另加元素／屬性白名單清洗，縱深防禦 comrak 未來新增輸出元素 | **已定**（R25） |
@@ -178,7 +144,7 @@ change 5a 以前仍然有效的坑（HERDR 行為、change 4 前端、axum、WSL
 | Git Graph：只當參考、不取用程式碼（授權禁止散布衍生作品） | **已定**（控制端查證 LICENSE） |
 | 不做 VS Code extension host | **建議**，使用者尚未最終表態 |
 | 多 runtime 通用支援 | **不做**，等真的有第二個 runtime 再開 |
-| deferred lows（Codex 分級可延後，不擋合併）：405 缺 `Allow` 標頭（3.2）；`ui_preview` 外層寫入路由 405 空本體；1100 寬 Factory Floor 頂緣低 12px；1200×720 固定一屏時 Live Output 面板 227.6px；單欄開檔時分頁區高度在中繼資料回來前跳動一次；tablist 內含關閉 button 的 ARIA 結構（`role=presentation` 包裝）；PDF 固定倍率下 devicePixelRatio 改變不立即重畫；過期標示與中繼資料成功重疊時偶發短暫閃爍；Markdown 內文缺最大行寬（已在最終修正波補約 80ch，若之後嫌不夠可再調） | **延後**，細節見 `openspec/changes/file-review/sdd-ledger.md` |
+| deferred lows（Codex 分級可延後，不擋合併）：405 缺 `Allow` 標頭（3.2）；`ui_preview` 外層寫入路由 405 空本體；1100 寬 Factory Floor 頂緣低 12px；1200×720 固定一屏時 Live Output 面板 227.6px；單欄開檔時分頁區高度在中繼資料回來前跳動一次；tablist 內含關閉 button 的 ARIA 結構（`role=presentation` 包裝）；PDF 固定倍率下 devicePixelRatio 改變不立即重畫；過期標示與中繼資料成功重疊時偶發短暫閃爍；Markdown 內文缺最大行寬（已在最終修正波補約 80ch，若之後嫌不夠可再調） | **延後**，細節見 `openspec/changes/archive/2026-09-28-file-review/sdd-ledger.md` |
 | `main` 上既有檔案含真實主機名／使用者名稱 | **未處理**：推上遠端之前另開一個小 change 清掉 |
 | Codex stop review gate（per-repo）本 repo 未啟用 | 靠流程內手動跑 `adversarial-review` |
 | Claude 在 feature 分支 commit，收尾時 squash 併回 main | **已授權** |
@@ -186,7 +152,7 @@ change 5a 以前仍然有效的坑（HERDR 行為、change 4 前端、axum、WSL
 
 ## 6. 之後的路
 
-change 5a 檔案瀏覽與 Review（待目視驗收）→ change 5b git 唯讀層／diff／Git Graph → change 6 進度模型 →
+change 5a 檔案瀏覽與 Review（已完成）→ change 5b git 唯讀層／diff／Git Graph → change 6 進度模型 →
 change 7 畫面與操作修補 → 推 remote 前的去識別化小 change → 評估 Tauri 桌面殼（ADR-0005）。
 北極星見 `docs/cockpit-spec.md`。
 
@@ -201,3 +167,4 @@ change 7 畫面與操作修補 → 推 remote 前的去識別化小 change → �
 | 20 | 2026-09-26 | change 4 完成 3.4–5.5、使用者目視驗收通過、squash 併回 `main` 並 archive；路線重排為 change 5 檔案瀏覽與 Review、change 6 進度模型、change 7 畫面與操作修補 |
 | 21 | 2026-09-27 | change 5 brainstorming（拆 5a／5b）、5a `file-review` propose 完成，開分支 `feat/file-review` |
 | 22 | 2026-09-28 | change 5a `file-review` SDD apply 完成（task 1.1–5.4，整支分支 Codex review 通過），待使用者目視驗收（5.5） |
+| 23 | 2026-09-28 | change 5a 使用者目視驗收通過、squash 併回 `main`、3 份 delta spec 同步並 archive；下一段為 change 5b brainstorming |
