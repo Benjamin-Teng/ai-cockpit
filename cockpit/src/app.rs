@@ -52,6 +52,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::config::{Args, Config, ConfigSource, load};
+use crate::files::PathMapping;
 use crate::http::{AppState, router};
 use crate::progress;
 use crate::progress_service::ProgressService;
@@ -183,6 +184,8 @@ pub fn build_components(config: &Config) -> anyhow::Result<Components> {
         progress: progress_service.clone(),
         port: Arc::clone(&port),
         runtimes: Arc::clone(&runtimes),
+        path_mappings: Arc::new(path_mappings(config)),
+        files: Arc::new(crate::files::FileSettings::embedded()),
     });
 
     Ok(Components {
@@ -196,6 +199,21 @@ pub fn build_components(config: &Config) -> anyhow::Result<Components> {
         port,
         runtimes,
     })
+}
+
+/// 檔案端點的路徑對應表（file-review task 3.1；design D2）：設定裡每一筆 `[[runtime]]` 各一筆，
+/// 依端點決定 `cwd` 怎麼轉成主機路徑（[`PathMapping::from_endpoint`]）。
+fn path_mappings(config: &Config) -> HashMap<RuntimeId, PathMapping> {
+    config
+        .runtimes
+        .iter()
+        .map(|runtime| {
+            (
+                RuntimeId::new(runtime.id.clone()),
+                PathMapping::from_endpoint(&runtime.endpoint),
+            )
+        })
+        .collect()
 }
 
 /// 啟動時算出初始 `DomainState`（task 3.4）：`config.projects` 為空就是沒有任何 project，

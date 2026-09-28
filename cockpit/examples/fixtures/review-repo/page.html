@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<title>page.html（file-review task 3.4 fixture）</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<h1>page.html</h1>
+<p>
+  這個頁面透過原始內容端點以 <code>&lt;iframe sandbox&gt;</code> 載入。下面的腳本嘗試回報
+  「我執行了」；如果 iframe 的 <code>sandbox</code> 屬性正確地不含 <code>allow-scripts</code>，
+  外層頁面不應該收到這個訊息。
+</p>
+<script>parent.postMessage('ran', '*')</script>
+</body>
+</html>

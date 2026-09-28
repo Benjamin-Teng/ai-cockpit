@@ -67,7 +67,11 @@ async function main() {
     const dom = r.stdout || '';
     check(r.status === 0 && dom.length > 0, `headless Chrome dump-dom 成功（${dom.length} bytes）`);
     const rows = dom.match(/<[^>]*class="[^"]*pane-row[^"]*"[^>]*>[\s\S]*?<\/(?:li|tr|div)>/g) || [];
-    check(rows.length === 3, `pane 列數為 3（${rows.length}）`);
+    // file-review task 3.4（design D12）：fixture 多了兩個 exited pane（`wJ:p4`／`wJ:p5`，掛在
+    // 新增的 tab `wJ:t2`，供瀏覽器驗收腳本測檔案瀏覽），pane 列數從 3 變成 5；這兩個新 pane 是
+    // `exited: true`，不影響本情境驗的「未知 agent_status 不破壞畫面」（`panes[0]` 仍是
+    // `wJ:p1`，`summary[0]` 仍對得上）。
+    check(rows.length === 5, `pane 列數為 5（${rows.length}）`);
     const summary = rows.map((row) => {
       const cls = (row.match(/status status-([a-z]+)/) || [])[1];
       const text = (row.match(/class="status[^"]*"[^>]*>([^<]*)</) || [])[1];

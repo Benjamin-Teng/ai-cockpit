@@ -185,6 +185,22 @@
 //       對照（擋掉 render.js focusin 補捲、拿掉 scroll-padding 的焦點框餘裕）。[FR1/text200]：
 //       文字放大 200%（同 CH1 (f)）× 700／1100／1536 寬 × 兩個 Project，每顆節點與列首按鈕都在
 //       所屬框內；否定對照還原成不可斷行。
+//   FT1／FT2／FT3：file-review task 3.5 新增，對應 openspec/changes/file-review/specs/cockpit-dashboard/
+//       spec.md 的三個 scenario（先寫測試：file-review 4.x 前端落地前預期 RED，main() 結尾的段落彙總會把
+//       這三段與既有段落分開列）。前端契約（#files／#review、role="tab"、data-path、data-viewer 等）
+//       與 docs/research/2026-09-27/files-check.js 檔頭「前端契約」C1–C6 同一份，定位規則見下方
+//       FILES_CONTRACT_JS（兩個腳本不共用模組，改契約時兩邊一起改）。
+//     FT1：dashboard/分頁很多不撐破頁面（1280 寬、20 個 60 字元檔名的檔案分頁；檔案只寫在 ui_preview
+//          的暫存副本）：重畫後分頁列內部橫向捲動、頁面沒有橫向捲軸、中欄（Factory Floor）寬度不變且
+//          分頁區不超出中欄。
+//     FT2：dashboard/頻繁重畫不影響檔案分頁（COCKPIT_PREVIEW_PUSH_MS=100、long.md 往下捲）：3 秒後分頁區、
+//          分頁列、分頁、tabpanel、檢視器與其下所有內容子節點都沒被換掉，捲動容器仍是原本那一個且在頁面上，
+//          捲動位置（讀目前的捲動容器）與目前分頁不變。fix round 1（Codex finding 2）：加內容子節點與捲動容器的
+//          比對；偵測器正負對照先在合成 DOM 上跑（重設檢視器 innerHTML 必須轉紅），前端落地後另在真頁面跑一次。
+//     FT3：dashboard/Markdown檢視遵守色彩與對比（README.md：標題、段落、連結、表格、行內程式碼、程式碼
+//          區塊）：Markdown 內容區每個含文字的元素對比 ≥4.5:1（沿用 textContrast），文字色、實際背景色與
+//          元素自身不透明背景色都是 10 個色彩 token 之一；排除 PDF canvas 與 iframe 內容（design D11）；
+//          附否定對照（注入 #ff0000 文字必須被抓到）。
 //
 // Ruling R3（1.2 的 RED 放寬）：已經在目前前端就滿足的 scenario 段——目前判斷會出現在 V3、D1、
 // FN1（各自理由見段落內註解），各自在段落內附一個「否定對照」自我測試：在頁面裡注入一個刻意
@@ -722,6 +738,7 @@ async function startPreview(envOverrides, label) {
   const port = pickPort(7830);
   const requests = [];
   const writeRequests = [];
+  const fixturePaths = { reviewRepo: null };
   const server = spawn(UI_PREVIEW_EXE, [], {
     stdio: ['ignore', 'pipe', 'ignore'],
     windowsHide: true,
@@ -749,6 +766,9 @@ async function startPreview(envOverrides, label) {
       if (m) requests.push({ runtime: m[1], pane: m[2], at: Date.now() });
       const w = /^write-request (\S+) (\S+) ?(.*)$/.exec(line);
       if (w) writeRequests.push({ method: w[1], path: w[2], body: w[3] });
+      // file-review task 3.5：記下 ui_preview 暫存副本的路徑（FT1 要在副本裡建檔；stopPreview 用它清目錄）。
+      const rr = /^review-repo: (.+)$/.exec(line);
+      if (rr) fixturePaths.reviewRepo = rr[1].trim();
     }
   });
 
@@ -770,7 +790,7 @@ async function startPreview(envOverrides, label) {
     check(!portListening, `${label} 啟動失敗收尾後 port ${port} 應該不再有 LISTENING 的行程`);
     throw new Error(`${label} 沒有起來`);
   }
-  return { server, port, requests, writeRequests };
+  return { server, port, requests, writeRequests, fixturePaths };
 }
 
 async function stopPreview(preview, label) {
@@ -779,6 +799,22 @@ async function stopPreview(preview, label) {
   const { exited, portListening } = await settleTrackedChild(preview.server, preview.port, label);
   check(exited, `${label} 應該觀察到子行程的 exit 事件（PID ${preview.server.pid}）`);
   check(!portListening, `port ${preview.port}（${label}）應該不再有 LISTENING 的行程`);
+  // file-review task 3.4 起 ui_preview 會把 review-repo fixture 複製到 %TEMP%\cockpit-ui-preview-*；
+  // taskkill /F 結束時它沒有機會自己刪（task 3.4 report「暫存目錄生命週期」），這裡代刪（file-review
+  // task 3.5）。只記 log、不加斷言，既有段落的斷言不變。
+  const reviewRepo = preview.fixturePaths && preview.fixturePaths.reviewRepo;
+  if (reviewRepo && path.basename(path.dirname(reviewRepo)).startsWith('cockpit-ui-preview-')) {
+    const tempRoot = path.dirname(reviewRepo);
+    for (let i = 0; i < 20 && fs.existsSync(tempRoot); i++) {
+      try {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+      } catch {
+        // Windows 偶爾 EBUSY／EPERM（檔案還被剛結束的行程鎖著），稍後重試。
+      }
+      if (fs.existsSync(tempRoot)) await sleep(250);
+    }
+    if (fs.existsSync(tempRoot)) log(`${label}：ui_preview 暫存目錄刪不掉（${tempRoot}），下次 ui_preview 啟動時會清`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2844,6 +2880,9 @@ async function partViewportDesktop() {
       const rects = await getRects(mcdp, {
         floor: '[data-region="floor"]',
         output: '[data-region="output"]',
+        // file-review task 4.1：spec cockpit-dashboard「版面與窄視窗」把中欄下半部從 Live Output 改成
+        // 分頁區（Live Output 是其中第一個分頁），R17 的「≥240px」改量分頁區。
+        review: '[data-region="review"]',
         banner: '[data-region="banner"]',
         statusbar: '[data-region="statusbar"]',
         topbar: '[data-region="topbar"]',
@@ -2932,9 +2971,10 @@ async function partViewportDesktop() {
         const heights = [m0, m1, m2].map((m) => m.rects.output && m.rects.output.height);
         const allPresent = heights.every((h) => typeof h === 'number');
         const allEqual = allPresent && heights.every((h) => Math.abs(h - heights[0]) < 0.5);
+        const reviewHeights = [m0, m1, m2].map((m) => m.rects.review && m.rects.review.height);
         check(
-          allPresent && heights[0] >= 239.5,
-          `${width}x${height}（固定一屏）：Live Output 高度應該 ≥240px（實際 0/1/2 則提示 ${JSON.stringify(heights)}）`
+          reviewHeights.every((h) => typeof h === 'number' && h >= 239.5),
+          `${width}x${height}（固定一屏）：下半部分頁區高度應該 ≥240px（實際 0/1/2 則提示 ${JSON.stringify(reviewHeights)}）`
         );
         check(
           allEqual,
@@ -3096,7 +3136,9 @@ async function partViewportMedium() {
     const rects = await getRects(cdp, {
       topbar: '.topbar',
       floor: '.projects',
-      output: '#output',
+      // file-review task 4.1：spec「中等寬度」改成「runtime 卡位於 Factory Floor 與下半部分頁區的下方」——
+      // 量整個分頁區（#review，含分頁列），不再只量 Live Output 面板。
+      review: '#review',
       runtimes: '.runtime-cards',
       events: '.recent-events',
     });
@@ -3105,16 +3147,16 @@ async function partViewportMedium() {
       `runtime 卡應該完整在 Factory Floor 下方（floor.bottom=${rects.floor && rects.floor.bottom}, runtimes.top=${rects.runtimes && rects.runtimes.top}）`
     );
     check(
-      !!rects.output && !!rects.runtimes && rects.runtimes.top >= rects.output.bottom - 0.5,
-      `runtime 卡應該完整在 Live Output 面板下方（design 尚未實作三欄→兩欄斷點，目前預期 FAIL；output.bottom=${rects.output && rects.output.bottom}, runtimes.top=${rects.runtimes && rects.runtimes.top}）`
+      !!rects.review && !!rects.runtimes && rects.runtimes.top >= rects.review.bottom - 0.5,
+      `runtime 卡應該完整在下半部分頁區下方（review.bottom=${rects.review && rects.review.bottom}, runtimes.top=${rects.runtimes && rects.runtimes.top}）`
     );
     check(
-      !!rects.floor && !!rects.output && rects.output.top >= rects.floor.bottom - 0.5,
-      `Live Output 面板應該完整在 Factory Floor 下方（floor.bottom=${rects.floor && rects.floor.bottom}, output.top=${rects.output && rects.output.top}）`
+      !!rects.floor && !!rects.review && rects.review.top >= rects.floor.bottom - 0.5,
+      `下半部分頁區應該完整在 Factory Floor 下方（floor.bottom=${rects.floor && rects.floor.bottom}, review.top=${rects.review && rects.review.top}）`
     );
     // fix round 2：改用 allPairs() 產生完整配對，不再手 key（V2 的 fix round 1 就手漏過
     // ['floor','output'] 這一組，程式產生從結構上排除這種遺漏）。
-    checkNoOverlap(rects, allPairs(['topbar', 'floor', 'output', 'runtimes', 'events']), '中等寬度不重疊');
+    checkNoOverlap(rects, allPairs(['topbar', 'floor', 'review', 'runtimes', 'events']), '中等寬度不重疊');
 
     // 「頁面沒有橫向捲軸、可整頁捲動」：用自我測試證明過的偵測器（同 V1）；目前沒有任何
     // @media 斷點，這條在現行前端很可能碰巧成立（沒有任何跨欄 grid），所以額外做一次否定對
@@ -3152,18 +3194,38 @@ async function partViewportMedium() {
     // 12px（沿用 .shell 的面板間距 token），不是貼齊視窗最上緣的 0——審核截圖
     // fixture-1100x900-scroll333.png 指出 top: 0 時左欄上框線直接貼在 y=0，跟其他面板永遠
     // 和視窗邊緣留 12px 間距的樣子不一致。
+    // file-review task 4.1：spec cockpit-dashboard「版面與窄視窗」改成「左欄頂端為『Project』『檔案』
+    // 兩個分頁，其下顯示目前分頁的內容」——左欄最上面是分頁列（#files），Project 清單在分頁列下方。
+    // 「左欄貼在 top: 12px」改驗左欄頂端的 #files；Project 清單的 sticky top＝12px＋分頁列高度＋8px
+    // 間距（緊接在分頁列下方一起貼住，不被分頁列蓋住、也不跟分頁列分開捲）。
     const projectsStickyAt1100 = await cdp.eval(`(() => {
       var el = document.querySelector('[data-region="projects"]');
       var cs = getComputedStyle(el);
-      return { position: cs.position, top: cs.top, alignSelf: cs.alignSelf };
+      var files = document.getElementById('files');
+      var fcs = files ? getComputedStyle(files) : null;
+      var tablist = files ? files.querySelector('[role="tablist"]') : null;
+      return {
+        position: cs.position,
+        top: cs.top,
+        alignSelf: cs.alignSelf,
+        filesPosition: fcs ? fcs.position : null,
+        filesTop: fcs ? fcs.top : null,
+        tabStripHeight: tablist ? tablist.getBoundingClientRect().height : null,
+      };
     })()`);
     check(
-      projectsStickyAt1100.position === 'sticky',
-      `1100 寬（兩欄）時左欄應該是 position: sticky（實際 ${projectsStickyAt1100.position}）`
+      projectsStickyAt1100.position === 'sticky' && projectsStickyAt1100.filesPosition === 'sticky',
+      `1100 寬（兩欄）時左欄（分頁列 #files 與 Project 清單）應該是 position: sticky（實際 ${JSON.stringify(projectsStickyAt1100)}）`
     );
     check(
-      projectsStickyAt1100.top === '12px',
-      `1100 寬（兩欄）時左欄 sticky 的 top 應該是 12px（設計審核 M1；實際 ${projectsStickyAt1100.top}）`
+      projectsStickyAt1100.filesTop === '12px',
+      `1100 寬（兩欄）時左欄頂端（分頁列 #files）sticky 的 top 應該是 12px（設計審核 M1；實際 ${projectsStickyAt1100.filesTop}）`
+    );
+    check(
+      typeof projectsStickyAt1100.tabStripHeight === 'number' &&
+        projectsStickyAt1100.tabStripHeight > 0 &&
+        Math.abs(parseFloat(projectsStickyAt1100.top) - (12 + projectsStickyAt1100.tabStripHeight + 8)) < 0.5,
+      `1100 寬（兩欄）時 Project 清單 sticky 的 top 應該是 12px＋分頁列高度＋8px（實際 ${JSON.stringify(projectsStickyAt1100)}）`
     );
   } finally {
     await stopChrome(chrome, 'chrome-V2');
@@ -3354,11 +3416,13 @@ async function partViewportWideShort() {
       projects: '[data-region="projects"]',
       floor: '[data-region="floor"]',
       output: '[data-region="output"]',
+      // file-review task 4.1：spec「寬但矮的視窗」的高度下限改量下半部分頁區（見下方 clamp 斷言）。
+      review: '[data-region="review"]',
       runtimes: '[data-region="runtimes"]',
       events: '[data-region="events"]',
       statusbar: '[data-region="statusbar"]',
     });
-    for (const label of ['topbar', 'projects', 'floor', 'output', 'runtimes', 'events', 'statusbar']) {
+    for (const label of ['topbar', 'projects', 'floor', 'output', 'review', 'runtimes', 'events', 'statusbar']) {
       check(rects[label] !== null, `寬但矮的視窗：data-region="${label}" 應該存在且可見（實際 ${JSON.stringify(rects[label])}）`);
     }
 
@@ -3426,9 +3490,11 @@ async function partViewportWideShort() {
     // headless 模式模擬的視窗外框），不能直接拿 650 算 50vh，改用 window.innerHeight 現場算。
     const viewportInnerHeight = await cdp.eval('window.innerHeight');
     const expectedOutputHeight = Math.min(560, Math.max(320, viewportInnerHeight * 0.5));
+    // file-review task 4.1：spec「寬但矮的視窗」改為「下半部分頁區高度不小於 320px」——clamp 改驗分頁區
+    // （#review），Live Output 是其中第一個分頁的內容。
     check(
-      !!rects.output && Math.abs(rects.output.height - expectedOutputHeight) <= 5,
-      `寬但矮的視窗：Live Output 高度應該是 clamp(320px, 50vh, 560px)（innerHeight=${viewportInnerHeight}，預期 ${expectedOutputHeight}，實際 ${rects.output && rects.output.height}）`
+      !!rects.review && Math.abs(rects.review.height - expectedOutputHeight) <= 5,
+      `寬但矮的視窗：下半部分頁區高度應該是 clamp(320px, 50vh, 560px)（innerHeight=${viewportInnerHeight}，預期 ${expectedOutputHeight}，實際 ${rects.review && rects.review.height}）`
     );
 
     // --- M9（使用者 2026-09-24 裁決）：Factory Floor 加高度上限「視窗高度－頂列－提示列－
@@ -8392,6 +8458,98 @@ async function partCssInventory() {
     await collect('點選 pane 列');
     await cdp.eval('window.liveOutput.clear(); true');
 
+    // file-review task 4.2：左欄「檔案」分頁的檔案樹（spec file-review「左欄檔案樹」新增的畫面狀態）——
+    // 樹列、展開的資料夾、資料夾讀取失敗（暫存副本裡先建 cl1-gone/，樹列出後刪掉再展開 → not_found）、
+    // 根目錄查詢失敗（wJ:p1 的 cwd 在 fixture 裡不存在 → no_root）。只寫 ui_preview 的暫存副本。
+    for (let i = 0; i < 40 && !preview.fixturePaths.reviewRepo; i++) await sleep(50);
+    const cl1Repo = preview.fixturePaths.reviewRepo;
+    check(!!cl1Repo, `[CL1] 讀到 ui_preview 印出的 review-repo 暫存路徑（${cl1Repo}）`);
+    const cl1Gone = path.join(cl1Repo, 'cl1-gone');
+    fs.mkdirSync(cl1Gone, { recursive: true });
+    await cdp.eval("window.liveOutput.select('win', 'wJ:p4'); true");
+    await cdp.click('#files-tab-files');
+    await cdp.waitFor("!!document.querySelector('#files [role=\"treeitem\"][title=\"cl1-gone\"]')", 5000, '[CL1] 左欄檔案樹列出 review-repo 第一層');
+    fs.rmSync(cl1Gone, { recursive: true, force: true });
+    await cdp.click('#files [role="treeitem"][title="src"]');
+    await cdp.waitFor("!!document.querySelector('#files [role=\"treeitem\"][title=\"src/main.rs\"]')", 5000, '[CL1] 展開 src');
+    await cdp.click('#files [role="treeitem"][title="cl1-gone"]');
+    await cdp.waitFor("!!document.querySelector('#files .tree-note[data-tone=\"warn\"]')", 5000, '[CL1] 展開已刪除的 cl1-gone：顯示讀取失敗原因');
+    await collect('左欄檔案樹（展開、資料夾讀取失敗）');
+    // file-review task 4.3：中欄下半部的檔案分頁（spec file-review「檔案分頁」新增的畫面狀態）——開 README.md
+    // （分頁、工具列、「在 VS Code 開啟」、檢視器容器）、開一個樹列出後才在暫存副本刪掉的 cl1-gone.md（讀取失敗
+    // 原因）。之後選 wJ:p1 時分頁區自動切回 Live Output（spec live-output「選定一個 pane」），檔案分頁留著。
+    await cdp.click('#files [role="treeitem"][title="README.md"]');
+    await cdp.waitFor("(() => { var t = document.querySelector('#review [role=\"tab\"][data-path=\"README.md\"]'); var p = t && document.getElementById(t.getAttribute('aria-controls')); var a = p && p.querySelector('a'); return !!a && !a.hidden; })()", 5000, '[CL1] 開 README.md 檔案分頁：工具列的「在 VS Code 開啟」出現');
+    await collect('檔案分頁（README.md）');
+    // file-review task 4.4：檔案檢視器（spec file-review「檔案檢視器」新增的畫面狀態）——note.txt（純文字）、
+    // page.html（HTML iframe）、bin.dat（不支援預覽），以及暫存副本裡的 cl1-big.txt（超過 2 MiB：「檔案太大，
+    // 無法預覽」）與 cl1-md.md（README.md 沒有的 Markdown 元素：h3–h6、有序清單、引用、分隔線、點了不動作的
+    // 連結）。只寫 ui_preview 的暫存副本；各分頁留著（非目前分頁的 tabpanel 只是 hidden，節點仍在）。
+    fs.writeFileSync(
+      path.join(cl1Repo, 'cl1-md.md'),
+      '# cl1-md\n\n### h3\n\n#### h4\n\n##### h5\n\n###### h6\n\n1. 一\n2. 二\n\n> 引用\n\n---\n\n[跳出根目錄](../../outside.md)\n'
+    );
+    fs.writeFileSync(path.join(cl1Repo, 'cl1-big.txt'), 'x'.repeat(2 * 1024 * 1024 + 1));
+    await cdp.click('#files .files-refresh');
+    await cdp.waitFor("!!document.querySelector('#files [role=\"treeitem\"][title=\"cl1-big.txt\"]') && !!document.querySelector('#files [role=\"treeitem\"][title=\"cl1-md.md\"]')", 5000, '[CL1] 重新整理後檔案樹列出 cl1-big.txt 與 cl1-md.md');
+    for (const [file, viewer] of [['note.txt', 'text'], ['page.html', 'html'], ['bin.dat', 'unsupported'], ['cl1-big.txt', 'text'], ['cl1-md.md', 'markdown']]) {
+      await cdp.click(`#files [role="treeitem"][title="${file}"]`);
+      await cdp.waitFor(
+        `(() => { var t = document.querySelector('#review [role="tab"][data-path="${file}"]'); var p = t && document.getElementById(t.getAttribute('aria-controls')); return !!p && !p.hidden && !!p.querySelector('[data-viewer="${viewer}"]'); })()`,
+        5000,
+        `[CL1] 開 ${file}：檔案分頁以 ${viewer} 檢視器顯示`
+      );
+    }
+    await collect('檔案檢視器（純文字、HTML、不支援預覽、檔案太大、Markdown 其他元素）');
+    // file-review task 4.5：PDF 檢視器（spec file-review「檔案檢視器」的 pdf）——report.pdf（工具列、頁框、canvas；
+    // 停在第 1 頁時「上一頁」為 aria-disabled、預設「符合寬度」為 aria-pressed）與暫存副本裡的 cl1-broken.pdf
+    // （「PDF 無法解析」，沿用 .viewer-note）。只寫 ui_preview 的暫存副本；兩個分頁都留著。
+    fs.writeFileSync(path.join(cl1Repo, 'cl1-broken.pdf'), 'CL1：這不是 PDF，只是改名的文字檔\n');
+    await cdp.click('#files .files-refresh');
+    await cdp.waitFor("!!document.querySelector('#files [role=\"treeitem\"][title=\"cl1-broken.pdf\"]')", 5000, '[CL1] 重新整理後檔案樹列出 cl1-broken.pdf');
+    await cdp.click('#files [role="treeitem"][title="report.pdf"]');
+    await cdp.waitFor(
+      "(() => { var t = document.querySelector('#review [role=\"tab\"][data-path=\"report.pdf\"]'); var p = t && document.getElementById(t.getAttribute('aria-controls')); var s = p && p.querySelector('[data-viewer=\"pdf\"] .pdf-page-status'); return !!s && s.textContent === '1 / 3' && !!p.querySelector('.pdf-page > canvas'); })()",
+      10000,
+      '[CL1] 開 report.pdf：PDF 檢視器顯示「1 / 3」與每頁的 canvas'
+    );
+    await cdp.click('#files [role="treeitem"][title="cl1-broken.pdf"]');
+    await cdp.waitFor(
+      "(() => { var t = document.querySelector('#review [role=\"tab\"][data-path=\"cl1-broken.pdf\"]'); var p = t && document.getElementById(t.getAttribute('aria-controls')); return !!p && !p.hidden && !!p.querySelector('.viewer-note[data-viewer=\"pdf\"]'); })()",
+      10000,
+      '[CL1] 開 cl1-broken.pdf：顯示「PDF 無法解析」'
+    );
+    await collect('PDF 檢視器（report.pdf、無法解析）');
+    // file-review task 4.6：自動更新的過期標示（spec file-review「自動更新」：讀取失敗時保留最後一次的內容並標為
+    // 過期）——暫存副本裡建 cl1-stale.md 與 cl1-stale.txt，各自開啟、畫出內容後刪掉，等自動更新把該分頁標為過期
+    // （.file-panel.is-stale）。先標過期的 Markdown 分頁切走後仍留著標示（非目前分頁不查詢），兩個一起取樣。
+    // 只寫 ui_preview 的暫存副本。
+    fs.writeFileSync(path.join(cl1Repo, 'cl1-stale.md'), '# cl1-stale\n\nCL1：刪掉後標為過期的 Markdown。\n');
+    fs.writeFileSync(path.join(cl1Repo, 'cl1-stale.txt'), 'CL1：刪掉後標為過期的純文字\n');
+    await cdp.click('#files .files-refresh');
+    await cdp.waitFor("!!document.querySelector('#files [role=\"treeitem\"][title=\"cl1-stale.md\"]') && !!document.querySelector('#files [role=\"treeitem\"][title=\"cl1-stale.txt\"]')", 5000, '[CL1] 重新整理後檔案樹列出 cl1-stale.md 與 cl1-stale.txt');
+    for (const [file, viewer] of [['cl1-stale.md', 'markdown'], ['cl1-stale.txt', 'text']]) {
+      const panelJs = `(() => { var t = document.querySelector('#review [role="tab"][data-path="${file}"]'); return t && document.getElementById(t.getAttribute('aria-controls')); })()`;
+      await cdp.click(`#files [role="treeitem"][title="${file}"]`);
+      await cdp.waitFor(`(() => { var p = ${panelJs}; return !!p && !p.hidden && !!p.querySelector('[data-viewer="${viewer}"]'); })()`, 5000, `[CL1] 開 ${file}：檔案分頁以 ${viewer} 檢視器顯示`);
+      fs.rmSync(path.join(cl1Repo, file), { force: true });
+      await cdp.waitFor(`(() => { var p = ${panelJs}; return !!p && p.classList.contains('is-stale'); })()`, 5000, `[CL1] 刪掉 ${file}：自動更新把分頁標為過期`);
+    }
+    await collect('檔案分頁過期（Markdown、純文字）');
+    fs.writeFileSync(path.join(cl1Repo, 'cl1-gone.md'), '# cl1-gone\n');
+    await cdp.click('#files .files-refresh');
+    await cdp.waitFor("!!document.querySelector('#files [role=\"treeitem\"][title=\"cl1-gone.md\"]')", 5000, '[CL1] 重新整理後檔案樹列出 cl1-gone.md');
+    fs.rmSync(path.join(cl1Repo, 'cl1-gone.md'), { force: true });
+    await cdp.click('#files [role="treeitem"][title="cl1-gone.md"]');
+    await cdp.waitFor("(() => { var t = document.querySelector('#review [role=\"tab\"][data-path=\"cl1-gone.md\"]'); var p = t && document.getElementById(t.getAttribute('aria-controls')); var s = p && p.querySelector('[data-tone=\"warn\"]'); return !!s && !s.hidden; })()", 5000, '[CL1] 開已刪除的 cl1-gone.md：檔案分頁顯示讀取失敗原因');
+    await collect('檔案分頁（讀取失敗）');
+    await cdp.eval("window.liveOutput.select('win', 'wJ:p1'); true");
+    await cdp.waitFor("(() => { var s = document.querySelector('#files .files-status[data-tone=\"warn\"]'); return !!s && !s.hidden; })()", 5000, '[CL1] 選 wJ:p1：根目錄查詢失敗原因出現');
+    await collect('左欄檔案樹（根目錄查詢失敗）');
+    await cdp.eval('window.liveOutput.clear(); true');
+    await cdp.click('#files-tab-projects');
+    await cdp.waitFor("document.getElementById('files-tab-projects').getAttribute('aria-selected') === 'true'", 3000, '[CL1] 切回左欄 Project 分頁');
+
     await cdp.click('[data-action="rebind"][data-project="cockpit"][data-workstream="be"]');
     await cdp.click('[data-action="fail"][data-project="cockpit"][data-task="be-1"]');
     await cdp.waitFor(
@@ -9543,6 +9701,424 @@ async function partFinalReviewFixes() {
 }
 
 // ---------------------------------------------------------------------------
+// FT1–FT3：file-review 的 cockpit-dashboard delta（file-review task 3.5；先寫測試，4.x 前預期 RED）
+// ---------------------------------------------------------------------------
+
+// 前端契約的定位規則（與 docs/research/2026-09-27/files-check.js 的 pageHelpers() 同一份契約 C1–C6，
+// 這裡只取 FT1–FT3 用得到的部分；改契約時兩邊一起改）。
+function filesContractHelpers() {
+  const txt = (el) => {
+    if (!el) return '';
+    let t = el.innerText;
+    if (typeof t !== 'string') t = el.textContent || '';
+    return t.replace(/\s+/g, ' ').trim();
+  };
+  const visible = (el) => {
+    if (!el || !el.isConnected) return false;
+    const cs = getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+    return el.getClientRects().length > 0;
+  };
+  const filesRoot = () => document.getElementById('files');
+  const reviewRoot = () => document.getElementById('review');
+  const leftTablist = () => (filesRoot() ? filesRoot().querySelector('[role="tablist"]') : null);
+  const leftTab = (name) => (leftTablist() ? Array.from(leftTablist().querySelectorAll('[role="tab"]')).find((t) => txt(t) === name) || null : null);
+  const tree = () => (filesRoot() ? filesRoot().querySelector('[role="tree"]') : null);
+  const row = (p) => (tree() ? Array.from(tree().querySelectorAll('[role="treeitem"]')).find((r) => r.getAttribute('title') === p) || null : null);
+  const reviewTablist = () => (reviewRoot() ? reviewRoot().querySelector('[role="tablist"]') : null);
+  const reviewTabs = () => (reviewTablist() ? Array.from(reviewTablist().querySelectorAll('[role="tab"]')) : []);
+  const fileTab = (p) => reviewTabs().find((t) => t.getAttribute('data-path') === p) || null;
+  const selectedTab = () => reviewTabs().find((t) => t.getAttribute('aria-selected') === 'true') || null;
+  const panelOf = (t) => {
+    if (!t) return null;
+    const id = t.getAttribute('aria-controls');
+    const p = id ? document.getElementById(id) : null;
+    return p && p.getAttribute('role') === 'tabpanel' ? p : null;
+  };
+  const currentPanel = () => panelOf(selectedTab());
+  const viewer = () => (currentPanel() ? currentPanel().querySelector('[data-viewer]') : null);
+  const scrollable = (n) => {
+    const cs = getComputedStyle(n);
+    return (cs.overflowY === 'auto' || cs.overflowY === 'scroll') && n.scrollHeight > n.clientHeight + 1;
+  };
+  const contentScroller = () => {
+    const p = currentPanel();
+    if (!p) return null;
+    for (let n = viewer() || p; n; n = n.parentElement) {
+      if (scrollable(n)) return n;
+      if (n === p) break;
+    }
+    for (const n of p.querySelectorAll('*')) if (scrollable(n)) return n;
+    return null;
+  };
+  const contract = () => ({
+    files: !!filesRoot(),
+    leftTab檔案: !!leftTab('檔案'),
+    tree: !!tree(),
+    review: !!reviewRoot(),
+    reviewTablist: !!reviewTablist(),
+    tabs: reviewTabs().map((t) => ({ label: txt(t), path: t.getAttribute('data-path'), selected: t.getAttribute('aria-selected') })),
+  });
+  window.__fcv = { txt, visible, leftTab, row, reviewRoot, reviewTablist, reviewTabs, fileTab, selectedTab, currentPanel, viewer, contentScroller, contract };
+  return true;
+}
+const FILES_CONTRACT_JS = `(${filesContractHelpers.toString()})()`;
+
+function runFn(cdp, fn, ...args) {
+  return cdp.eval(`(${fn.toString()})(${args.map((a) => JSON.stringify(a)).join(',')})`);
+}
+async function pollFn(cdp, fn, args, timeoutMs) {
+  const start = Date.now();
+  for (;;) {
+    const v = await runFn(cdp, fn, ...args).catch(() => false);
+    if (v) return v;
+    if (Date.now() - start >= timeoutMs) return false;
+    await sleep(100);
+  }
+}
+// 前置條件不成立：記一條 FAIL 後中止本段（main() 認得 ftAbort，不再多記一條「段中止」）。
+function ftNeed(cond, label) {
+  if (!check(cond, label)) {
+    const e = new Error(label);
+    e.ftAbort = true;
+    throw e;
+  }
+}
+// 把 finder 回傳的元素標上 data-fc-click，再用既有的 cdp.click() 點（#files／#review 不在整頁重畫範圍，
+// 標記不會被洗掉）。
+async function ftClick(cdp, finderSrc, args, label) {
+  const marked = await cdp.eval(`(() => {
+    document.querySelectorAll('[data-fc-click]').forEach((n) => n.removeAttribute('data-fc-click'));
+    const el = (${finderSrc})(${args.map((a) => JSON.stringify(a)).join(',')});
+    if (!el) return false;
+    el.setAttribute('data-fc-click', '1');
+    return true;
+  })()`);
+  ftNeed(marked, `找得到要點的元素：${label}`);
+  ftNeed(await cdp.click('[data-fc-click="1"]'), `點 ${label}`);
+}
+async function ftContractDump(cdp) {
+  return JSON.stringify(await runFn(cdp, () => window.__fcv.contract()).catch((e) => ({ error: e.message })));
+}
+
+// 選定 wJ:p4（根目錄 review-repo 暫存副本）→ 左欄「檔案」→ 逐一在檔案樹點開 relPaths。
+async function ftOpenFiles(cdp, relPaths) {
+  const paneSel = '.pane-row[data-runtime="win"][data-pane="wJ:p4"]';
+  ftNeed(await cdp.click(paneSel), '點 pane 列 win/wJ:p4');
+  ftNeed(!!(await pollFn(cdp, (s) => !!document.querySelector(s) && document.querySelector(s).classList.contains('selected'), [paneSel], 5000)), 'wJ:p4 出現選定標示');
+  const hasLeft = await pollFn(cdp, () => !!window.__fcv.leftTab('檔案'), [], 5000);
+  ftNeed(!!hasLeft, `找不到左欄分頁「檔案」（files-check.js 前端契約 C1：#files 內 role="tablist" 的 role="tab"）；目前 DOM：${await ftContractDump(cdp)}`);
+  await ftClick(cdp, '(n) => window.__fcv.leftTab(n)', ['檔案'], '左欄分頁「檔案」');
+  for (const rel of relPaths) {
+    const parts = rel.split('/');
+    for (let i = 1; i < parts.length; i++) {
+      const dir = parts.slice(0, i).join('/');
+      ftNeed(!!(await pollFn(cdp, (p) => !!window.__fcv.row(p), [dir], 5000)), `檔案樹有資料夾列 ${dir}（契約 C2）`);
+      if ((await runFn(cdp, (p) => window.__fcv.row(p).getAttribute('aria-expanded'), dir)) !== 'true') {
+        await ftClick(cdp, '(p) => window.__fcv.row(p)', [dir], `資料夾列 ${dir}`);
+        ftNeed(!!(await pollFn(cdp, (p) => window.__fcv.row(p).getAttribute('aria-expanded') === 'true', [dir], 5000)), `資料夾列 ${dir} 展開`);
+      }
+    }
+    const rowOk = await pollFn(cdp, (p) => !!window.__fcv.row(p) && window.__fcv.visible(window.__fcv.row(p)), [rel], 5000);
+    ftNeed(!!rowOk, `檔案樹有可見的列 title="${rel}"（契約 C2）；目前 DOM：${await ftContractDump(cdp)}`);
+    await ftClick(cdp, '(p) => window.__fcv.row(p)', [rel], `檔案列 ${rel}`);
+    const opened = await pollFn(cdp, (p) => !!window.__fcv.fileTab(p) && window.__fcv.fileTab(p).getAttribute('aria-selected') === 'true', [rel], 5000);
+    ftNeed(!!opened, `${rel} 的檔案分頁出現並成為目前分頁（契約 C3）；目前 DOM：${await ftContractDump(cdp)}`);
+  }
+}
+
+async function ftWaitReviewRepo(preview) {
+  for (let i = 0; i < 40 && !preview.fixturePaths.reviewRepo; i++) await sleep(50);
+  ftNeed(!!preview.fixturePaths.reviewRepo, `讀到 ui_preview 印出的 review-repo 暫存路徑（${preview.fixturePaths.reviewRepo}）`);
+  return preview.fixturePaths.reviewRepo;
+}
+
+// FT1：GIVEN 視窗寬 1280，已打開 20 個檔名各長 60 個字元的檔案分頁 WHEN 重畫 THEN 分頁列在內部橫向捲動，
+// 頁面沒有橫向捲軸，中欄寬度不變。
+async function partManyFileTabs() {
+  log('=== FT1. dashboard/分頁很多不撐破頁面（1280 寬、20 個 60 字元檔名的檔案分頁）===');
+  let preview = null;
+  let chrome = null;
+  try {
+    preview = await startPreview({}, 'preview-FT1');
+    const reviewRepo = await ftWaitReviewRepo(preview);
+    const names = [];
+    for (let i = 1; i <= 20; i++) {
+      const base = `tab-${String(i).padStart(2, '0')}-`;
+      const name = `${base}${'x'.repeat(60 - base.length - 3)}.md`;
+      fs.writeFileSync(path.join(reviewRepo, name), `# ${name}\n\nFT1 檔案（只在 ui_preview 暫存副本內）。\n`);
+      names.push(name);
+    }
+    check(names.every((n) => n.length === 60), '[FT1] 20 個檔名各長 60 個字元（只寫在 ui_preview 暫存副本）');
+    chrome = await startChrome(pickPort(19410, [preview.port]), `http://127.0.0.1:${preview.port}/`, 'chrome-FT1', '1280,1024');
+    const { cdp } = chrome;
+    await waitForFirstProjection(cdp, preview.port);
+    await cdp.eval(FILES_CONTRACT_JS);
+    const floor0 = await runFn(cdp, () => document.querySelector('[data-region="floor"]').getBoundingClientRect().width);
+    await ftOpenFiles(cdp, names);
+    await cdp.eval('window.repaint(); true');
+    await sleep(300);
+    const m = await runFn(cdp, () => {
+      const tl = window.__fcv.reviewTablist();
+      const cs = getComputedStyle(tl);
+      const floor = document.querySelector('[data-region="floor"]').getBoundingClientRect();
+      const review = document.getElementById('review').getBoundingClientRect();
+      const de = document.documentElement;
+      return {
+        tabs: window.__fcv.reviewTabs().length,
+        overflowX: cs.overflowX,
+        tlScroll: tl.scrollWidth,
+        tlClient: tl.clientWidth,
+        docScroll: de.scrollWidth,
+        docClient: de.clientWidth,
+        floor: { left: floor.left, right: floor.right, width: floor.width },
+        review: { left: review.left, right: review.right },
+      };
+    });
+    log(`[FT1] 量測：${JSON.stringify(m)}`);
+    check(m.tabs === 21, `[FT1] 分頁列有 Live Output＋20 個檔案分頁（實際 ${m.tabs}）`);
+    check((m.overflowX === 'auto' || m.overflowX === 'scroll') && m.tlScroll > m.tlClient + 1, `[FT1] 分頁列在內部橫向捲動（overflow-x ${m.overflowX}，scrollWidth ${m.tlScroll} > clientWidth ${m.tlClient}）`);
+    check(m.docScroll <= m.docClient, `[FT1] 頁面沒有橫向捲軸（documentElement scrollWidth ${m.docScroll} ≤ clientWidth ${m.docClient}）`);
+    check(Math.abs(m.floor.width - floor0) <= 0.5, `[FT1] 中欄寬度不變（Factory Floor 寬 ${floor0} → ${m.floor.width}）`);
+    check(m.review.left >= m.floor.left - 1 && m.review.right <= m.floor.right + 1, `[FT1] 分頁區沒有超出中欄（#review ${m.review.left}–${m.review.right}，中欄 ${m.floor.left}–${m.floor.right}）`);
+  } finally {
+    await stopChrome(chrome, 'chrome-FT1');
+    await stopPreview(preview, 'preview-FT1');
+  }
+}
+
+// FT2 的快照與比對（file-review task 3.5 fix round 1，Codex finding 2）：除了分頁區外殼（#review、分頁列、各分頁、
+// tabpanel、檢視器元素），還保存檢視器底下**所有子孫節點**（Markdown 內容本身）逐一比 identity；捲動容器要是
+// 「目前」的 contentScroller() 且仍在頁面上，捲動位置讀目前的捲動容器，不是讀保存下來、可能已脫離頁面的舊節點。
+// finderKey 為 null 時用 window.__fcv；偵測器自我測試用合成 DOM 時傳入另一個同介面的全域物件名稱
+// （reviewRoot／reviewTablist／reviewTabs／currentPanel／viewer／contentScroller／selectedTab）。
+function ft2Snapshot(finderKey) {
+  const F = finderKey ? window[finderKey] : window.__fcv;
+  const sc = F.contentScroller();
+  const viewer = F.viewer();
+  if (!sc || !viewer) return { error: `找不到內容捲動容器或檢視器（契約 C6；scroller ${!!sc}、viewer ${!!viewer}）` };
+  window.__ft2 = {
+    review: F.reviewRoot(),
+    tablist: F.reviewTablist(),
+    tabs: F.reviewTabs(),
+    panel: F.currentPanel(),
+    viewer,
+    content: Array.from(viewer.querySelectorAll('*')),
+    sc,
+    scrollTop: sc.scrollTop,
+    selected: F.selectedTab(),
+  };
+  return { scrollTop: sc.scrollTop, content: window.__ft2.content.length };
+}
+function ft2Compare(finderKey) {
+  const F = finderKey ? window[finderKey] : window.__fcv;
+  const k = window.__ft2;
+  const tabs = F.reviewTabs();
+  const viewer = F.viewer();
+  const content = viewer ? Array.from(viewer.querySelectorAll('*')) : [];
+  const sc = F.contentScroller();
+  return {
+    review: F.reviewRoot() === k.review && !!k.review && k.review.isConnected,
+    tablist: F.reviewTablist() === k.tablist,
+    tabs: tabs.length === k.tabs.length && tabs.every((t, i) => t === k.tabs[i]),
+    panel: F.currentPanel() === k.panel && k.panel.isConnected,
+    viewer: viewer === k.viewer && k.viewer.isConnected,
+    content: content.length === k.content.length && content.every((n, i) => n === k.content[i]),
+    contentNodes: content.length,
+    scSame: sc === k.sc && k.sc.isConnected,
+    scrollTop: sc ? sc.scrollTop : null,
+    expect: k.scrollTop,
+    selected: F.selectedTab() === k.selected,
+  };
+}
+// 合成 DOM 上的偵測器正負對照（真的 Markdown 檢視器由 file-review 4.4 才實作；這段在目前前端就跑得到）：
+// (a) 什麼都不動→全部相同；(b) 只把檢視器的 innerHTML 重設成同樣內容→content 與 scSame（捲動容器在檢視器內）
+// 必須轉紅，外殼（tabpanel、檢視器元素）仍相同——證明只驗外殼抓不到這種替換。
+function ft2SyntheticDetectorProbe() {
+  const host = document.createElement('div');
+  host.style.cssText = 'position:fixed;left:0;top:0;width:300px;';
+  host.innerHTML =
+    '<div data-fc-review><div role="tablist"><div role="tab" aria-selected="true" aria-controls="ft2-syn-p">x.md</div></div>' +
+    '<div role="tabpanel" id="ft2-syn-p"><div data-viewer="markdown"><div data-fc-sc style="height:60px;overflow:auto">' +
+    '<h1>x</h1>' + '<p>段落</p>'.repeat(30) + '</div></div></div></div>';
+  document.body.appendChild(host);
+  const q = (s) => host.querySelector(s);
+  window.__ft2Synth = {
+    reviewRoot: () => q('[data-fc-review]'),
+    reviewTablist: () => q('[role="tablist"]'),
+    reviewTabs: () => Array.from(host.querySelectorAll('[role="tab"]')),
+    currentPanel: () => q('[role="tabpanel"]'),
+    viewer: () => q('[data-viewer]'),
+    contentScroller: () => q('[data-fc-sc]'),
+    selectedTab: () => q('[role="tab"]'),
+  };
+  q('[data-fc-sc]').scrollTop = 200;
+  const out = {};
+  ft2Snapshot('__ft2Synth');
+  out.untouched = ft2Compare('__ft2Synth');
+  const v = q('[data-viewer]');
+  v.innerHTML = v.innerHTML;
+  q('[data-fc-sc]').scrollTop = 200;
+  out.innerReplaced = ft2Compare('__ft2Synth');
+  host.remove();
+  delete window.__ft2Synth;
+  return out;
+}
+const FT2_JS = `window.ft2Snapshot = ${ft2Snapshot.toString()}; window.ft2Compare = ${ft2Compare.toString()}; true`;
+
+// FT2：GIVEN 已打開一個 Markdown 檔案分頁且往下捲動，投影每 100 ms 推送 WHEN 經過 3 秒 THEN 分頁區與檔案內容的
+// DOM 節點沒有被換掉，捲動位置不變，目前分頁不變。
+async function partRepaintKeepsFileTab() {
+  log('=== FT2. dashboard/頻繁重畫不影響檔案分頁（COCKPIT_PREVIEW_PUSH_MS=100，long.md 往下捲）===');
+  let preview = null;
+  let chrome = null;
+  try {
+    preview = await startPreview({ COCKPIT_PREVIEW_PUSH_MS: '100' }, 'preview-FT2');
+    chrome = await startChrome(pickPort(19420, [preview.port]), `http://127.0.0.1:${preview.port}/`, 'chrome-FT2');
+    const { cdp } = chrome;
+    await waitForFirstProjection(cdp, preview.port);
+    await cdp.eval(FILES_CONTRACT_JS);
+    await cdp.eval(FT2_JS);
+    const syn = await runFn(cdp, ft2SyntheticDetectorProbe);
+    const u = syn.untouched;
+    check(
+      u.review && u.tablist && u.tabs && u.panel && u.viewer && u.content && u.scSame && u.selected && u.scrollTop === u.expect,
+      `[FT2] 偵測器正對照（合成 DOM）：什麼都不動時全部判定相同（${JSON.stringify(u)}）`
+    );
+    const r = syn.innerReplaced;
+    check(
+      r.panel && r.viewer && !r.content && !r.scSame,
+      `[FT2] 偵測器負對照（合成 DOM）：只重設檢視器 innerHTML 時外殼仍相同、但內容子節點與捲動容器被判定為換掉（${JSON.stringify(r)}）`
+    );
+    await ftOpenFiles(cdp, ['long.md']);
+    ftNeed(!!(await pollFn(cdp, () => !!window.__fcv.viewer() && window.__fcv.txt(window.__fcv.viewer()).includes('long.md'), [], 5000)), '[FT2] long.md 分頁顯示 Markdown 內容（契約 C6：data-viewer）');
+    const setup = await runFn(cdp, () => {
+      const sc = window.__fcv.contentScroller();
+      if (!sc) return { error: '找不到內容捲動容器（契約 C6）' };
+      sc.scrollTop = Math.round((sc.scrollHeight - sc.clientHeight) / 2);
+      return window.ft2Snapshot(null);
+    });
+    ftNeed(!setup.error && setup.scrollTop > 0 && setup.content > 0, `[FT2] 前置：內容往下捲動並記下內容子節點（${JSON.stringify(setup)}）`);
+    let repaints = 0;
+    let last = await cdp.eval("document.getElementById('version').textContent");
+    const start = Date.now();
+    while (Date.now() - start < 3000) {
+      await sleep(100);
+      const v = await cdp.eval("document.getElementById('version').textContent");
+      if (v !== last) {
+        repaints += 1;
+        last = v;
+      }
+    }
+    check(repaints >= 10, `[FT2] 3 秒內真的發生了多次整頁重畫（#version 變化 ${repaints} 次）`);
+    const after = await runFn(cdp, () => window.ft2Compare(null));
+    check(after.review && after.tablist && after.tabs, `[FT2] 分頁區、分頁列與各分頁的 DOM 節點沒有被換掉（${JSON.stringify(after)}）`);
+    check(after.panel && after.viewer && after.content, `[FT2] 檔案內容（tabpanel、檢視器與其下 ${after.contentNodes} 個內容節點）的 DOM 節點沒有被換掉`);
+    check(after.scSame, '[FT2] 捲動容器仍是原本那一個且仍在頁面上');
+    check(after.scrollTop !== null && Math.abs(after.scrollTop - after.expect) <= 1, `[FT2] 捲動位置不變（讀目前的捲動容器：${after.expect} → ${after.scrollTop}）`);
+    check(after.selected, '[FT2] 目前分頁不變');
+    // 真頁面負對照（前端落地後才跑得到）：只把檢視器的 innerHTML 重設成同樣內容，比對必須轉紅。
+    const neg = await runFn(cdp, () => {
+      window.ft2Snapshot(null);
+      const v = window.__fcv.viewer();
+      v.innerHTML = v.innerHTML;
+      return window.ft2Compare(null);
+    });
+    check(!neg.content, `[FT2] 真頁面負對照：重設檢視器 innerHTML 後偵測器判定內容節點被換掉（${JSON.stringify(neg)}）`);
+  } finally {
+    await stopChrome(chrome, 'chrome-FT2');
+    await stopPreview(preview, 'preview-FT2');
+  }
+}
+
+// FT3：GIVEN 已打開含標題、段落、連結、表格、行內程式碼與程式碼區塊的 Markdown 分頁（README.md）WHEN 對內容區每個
+// 含文字的元素計算對比並檢查文字色與背景色 THEN 每一組對比 ≥4.5:1，所有顏色都來自 10 個色彩 token。
+// 對比沿用 __cockpitVisualTools.textContrast（含半透明疊層與 opacity 鏈）；「背景色」檢查兩件事：實際背景
+// （effectiveBackground 合成結果）與元素自己的不透明背景色都要是 token。排除 PDF canvas 與 iframe（design D11）。
+function measureMarkdownColors(tokens, rootSelector) {
+  const T = window.__cockpitVisualTools;
+  const root = rootSelector ? document.querySelector(rootSelector) : window.__fcv.viewer();
+  const set = new Set(tokens);
+  const rgb = (c) => `rgb(${Math.round(c.r)}, ${Math.round(c.g)}, ${Math.round(c.b)})`;
+  const ownText = (el) => Array.from(el.childNodes).some((n) => n.nodeType === 3 && n.textContent.trim().length > 0);
+  const items = [];
+  for (const el of [root, ...root.querySelectorAll('*')]) {
+    if (el.closest('canvas, iframe')) continue;
+    if (!ownText(el) || !window.__fcv.visible(el)) continue;
+    const cs = getComputedStyle(el);
+    const tc = T.textContrast(el);
+    const own = T.parseColor(cs.backgroundColor);
+    const eff = rgb(T.effectiveBackground(el));
+    items.push({
+      tag: el.tagName,
+      text: el.textContent.trim().slice(0, 30),
+      ratio: Math.round(tc.ratio * 100) / 100,
+      color: cs.color,
+      colorOk: set.has(cs.color),
+      bg: eff,
+      bgOk: set.has(eff),
+      ownBgOk: own.a === 0 || (own.a >= 0.999 && set.has(rgb(own))),
+    });
+  }
+  return items;
+}
+
+async function partMarkdownColors() {
+  log('=== FT3. dashboard/Markdown檢視遵守色彩與對比（README.md 內容區）===');
+  let preview = null;
+  let chrome = null;
+  try {
+    preview = await startPreview({}, 'preview-FT3');
+    chrome = await startChrome(pickPort(19430, [preview.port]), `http://127.0.0.1:${preview.port}/`, 'chrome-FT3');
+    const { cdp } = chrome;
+    await waitForFirstProjection(cdp, preview.port);
+    await installTools(cdp);
+    await cdp.eval(FILES_CONTRACT_JS);
+    await ftOpenFiles(cdp, ['README.md']);
+    const ready = await pollFn(cdp, () => {
+      const v = window.__fcv.viewer();
+      return !!v && v.getAttribute('data-viewer') === 'markdown' && !!v.querySelector('table');
+    }, [], 5000);
+    ftNeed(!!ready, `[FT3] README.md 分頁以 Markdown 檢視器顯示（契約 C6：data-viewer="markdown"）；目前 DOM：${await ftContractDump(cdp)}`);
+    const has = await runFn(cdp, () => {
+      const v = window.__fcv.viewer();
+      return {
+        heading: !!v.querySelector('h1,h2,h3,h4,h5,h6'),
+        p: !!v.querySelector('p'),
+        a: !!v.querySelector('a'),
+        table: !!v.querySelector('table'),
+        inlineCode: Array.from(v.querySelectorAll('code')).some((c) => !c.closest('pre')),
+        pre: !!v.querySelector('pre'),
+      };
+    });
+    check(Object.values(has).every(Boolean), `[FT3] 內容區含標題、段落、連結、表格、行內程式碼與程式碼區塊（${JSON.stringify(has)}）`);
+    const tokens = Object.values(SPEC_COLORS);
+    const items = await runFn(cdp, measureMarkdownColors, tokens, null);
+    check(items.length > 0, `[FT3] 內容區有含文字的元素可檢查（${items.length} 個）`);
+    const lowContrast = items.filter((i) => i.ratio < 4.5);
+    const badColor = items.filter((i) => !i.colorOk || !i.bgOk || !i.ownBgOk);
+    check(lowContrast.length === 0, `[FT3] 每一組對比皆不低於 4.5:1（不合格 ${JSON.stringify(lowContrast.slice(0, 8))}）`);
+    check(badColor.length === 0, `[FT3] 文字色與背景色都來自 10 個色彩 token（不合格 ${JSON.stringify(badColor.slice(0, 8))}）`);
+    // 否定對照（Ruling R3 慣例）：注入一個 #ff0000 文字的節點，偵測器必須抓到它的文字色不是 token。
+    const neg = await runFn(cdp, (tks) => {
+      const v = window.__fcv.viewer();
+      const span = document.createElement('span');
+      span.id = 'ft3-negative';
+      span.style.color = '#ff0000';
+      span.textContent = '否定對照';
+      v.appendChild(span);
+      return tks.length;
+    }, tokens);
+    const negItems = await runFn(cdp, measureMarkdownColors, tokens, '#ft3-negative');
+    await cdp.eval("document.getElementById('ft3-negative').remove(); true");
+    check(neg === 10 && negItems.length === 1 && negItems[0].colorOk === false, `[FT3] 否定對照：#ff0000 文字被判定為不是 token（${JSON.stringify(negItems)}）`);
+  } finally {
+    await stopChrome(chrome, 'chrome-FT3');
+    await stopPreview(preview, 'preview-FT3');
+  }
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -9572,7 +10148,14 @@ const PARTS = [
   ['CL1', partCssInventory],
   ['DF1', partDeferredItems],
   ['FR1', partFinalReviewFixes],
+  // file-review task 3.5（cockpit-dashboard delta；4.x 前端落地前預期 RED，見 FILE_REVIEW_RED_CODES）。
+  ['FT1', partManyFileTabs],
+  ['FT2', partRepaintKeepsFileTab],
+  ['FT3', partMarkdownColors],
 ];
+
+// file-review task 3.5 新增、先寫測試的段落（彙總時與既有段落分開計數）。
+const FILE_REVIEW_RED_CODES = ['FT1', 'FT2', 'FT3'];
 
 async function main() {
   const segments = parseSegmentArg(SEGMENT_ARG, PARTS.map(([code]) => code));
@@ -9587,16 +10170,31 @@ async function main() {
     throw new Error(`找不到 Chrome：${CHROME}（可用環境變數 COCKPIT_CHROME 指定路徑）`);
   }
   killLeftovers();
+  const segmentFailCounts = [];
   for (const [code, fn] of PARTS) {
     if (!shouldRun(code)) continue;
+    const before = failures.length;
     try {
       await fn();
     } catch (e) {
-      check(false, `${code} 段中止：${e.message}`);
+      // FT1–FT3 的前置條件不成立時已經記過一條 FAIL（ftNeed），不再多記「段中止」。
+      if (e && e.ftAbort) log(`${code}：前置條件不成立，本段中止`);
+      else check(false, `${code} 段中止：${e.message}`);
     }
+    segmentFailCounts.push([code, failures.length - before]);
   }
+  const beforeFinal = failures.length;
   check(!isPortListening(7770), '結束後 port 7770（ui_preview 預設埠）沒有 LISTENING 的行程');
   finalSweep(); // fix round 1／Codex F3：最後一道防線，見 finalSweep() 上方註解。
+  // 段落彙總（file-review task 3.5）：讓控制端一眼分辨「既有段落是否全綠」與「新增的 FT1–FT3 是否依預期 RED」。
+  console.log('=== 段落彙總 ===');
+  for (const [code, n] of segmentFailCounts) {
+    const note = FILE_REVIEW_RED_CODES.includes(code) ? '（file-review task 3.5 新增；4.x 前端落地前預期 RED）' : '';
+    console.log(`${(n === 0 ? 'PASS' : `FAIL(${n})`).padEnd(9)} ${code}${note}`);
+  }
+  const existingFails = segmentFailCounts.filter(([c]) => !FILE_REVIEW_RED_CODES.includes(c)).reduce((sum, [, n]) => sum + n, 0);
+  const newFails = segmentFailCounts.filter(([c]) => FILE_REVIEW_RED_CODES.includes(c)).reduce((sum, [, n]) => sum + n, 0);
+  console.log(`既有段落 FAIL 數：${existingFails}；FT1–FT3 FAIL 數：${newFails}；收尾 FAIL 數：${failures.length - beforeFinal}`);
   if (failures.length) {
     console.log(`RESULT: FAIL (${failures.length})`);
     process.exitCode = 2;

@@ -15,8 +15,9 @@
 //! 重新讀 `Arc<AtomicU16>`，不是 middleware 建構時的快照——服務真正 bind 之後靠同一個 `Arc`
 //! 回填實際監聽埠，這裡要立刻認新值，`port = 0` 的測試環境也要正確比對）；有 `Origin` 標頭
 //! 時，其值必須逐字等於 `http://` 加上前面驗證通過的那個 `Host` 值。任何一項不符合就回
-//! 403、完全不進到 handler；本體沿用 [`crate::http::error_response`] 的 `{"error": ...}`
-//! 慣例，不另開一套錯誤格式。
+//! 403、完全不進到 handler；本體是 `{"error": "<固定中文>", "code": "forbidden_source"}`
+//! （file-review task 3.2；design D10：先前沿用 `{"error": ...}` 並把 `Host`／`Origin` 原文寫進
+//! `error`，改成帶 `code`、不反射任何請求標頭）。
 //!
 //! 否決：不額外正規化 `Host`（大小寫、省略埠號等）——spec 要求的是「必須是」三種寫法之一
 //! 加實際埠，字面比對已經足夠嚴謹，放寬比對只會擴大攻擊面而不會修到任何已知案例。
@@ -33,7 +34,7 @@ use axum::http::{HeaderMap, HeaderName, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::Response;
 
-use crate::http::{AppState, error_response};
+use crate::http::{AppState, coded_error_response};
 
 /// 檢查這次請求的 `Host`／`Origin`；不符合直接回 403，符合就放行給下一層（真正的 handler）。
 pub async fn source_check(State(app): State<AppState>, request: Request, next: Next) -> Response {
@@ -41,17 +42,12 @@ pub async fn source_check(State(app): State<AppState>, request: Request, next: N
 
     let host = match exactly_one(request.headers(), header::HOST) {
         Ok(Some(host)) => host,
-        Ok(None) => return error_response(StatusCode::FORBIDDEN, "缺少合法的 Host 標頭"),
-        Err(()) => {
-            return error_response(StatusCode::FORBIDDEN, "Host 標頭重複或不是合法字串");
-        }
+        Ok(None) => return forbidden("缺少合法的 Host 標頭"),
+        Err(()) => return forbidden("Host 標頭重複或不是合法字串"),
     };
 
     if !host_is_loopback(&host, port) {
-        return error_response(
-            StatusCode::FORBIDDEN,
-            &format!("Host 不是本機位址（含實際監聽埠 {port}）：{host}"),
-        );
+        return forbidden("Host 不是本機位址與實際監聽埠");
     }
 
     match exactly_one(request.headers(), header::ORIGIN) {
@@ -59,18 +55,20 @@ pub async fn source_check(State(app): State<AppState>, request: Request, next: N
         Ok(Some(origin)) => {
             let expected = format!("http://{host}");
             if origin != expected {
-                return error_response(
-                    StatusCode::FORBIDDEN,
-                    &format!("Origin（{origin}）與 Host 不符，預期 {expected}"),
-                );
+                return forbidden("Origin 與 Host 不符");
             }
         }
-        Err(()) => {
-            return error_response(StatusCode::FORBIDDEN, "Origin 標頭重複或不是合法字串");
-        }
+        Err(()) => return forbidden("Origin 標頭重複或不是合法字串"),
     }
 
     next.run(request).await
+}
+
+/// 403 回應（file-review task 3.2；design D10）：本體 `{"error": "<固定中文>", "code":
+/// "forbidden_source"}`，**不含請求的 `Host`／`Origin` 原文**——DNS rebinding 時那些值由攻擊者控制，
+/// 反射回去沒有好處。兩個安全標頭由 [`coded_error_response`] 補上。
+fn forbidden(reason: &str) -> Response {
+    coded_error_response(StatusCode::FORBIDDEN, "forbidden_source", reason)
 }
 
 /// 從標頭裡挑出「剛好一個」`name` 的值：完全沒有回 `Ok(None)`；剛好一個且是合法字串回

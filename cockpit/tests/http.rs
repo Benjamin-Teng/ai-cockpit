@@ -54,6 +54,9 @@ async fn routes_return_200_with_expected_content_types() {
         ("/app/channel.js", "text/javascript"),
         ("/app/actions.js", "text/javascript"),
         ("/app/output.js", "text/javascript"),
+        // file-review task 4.1：左欄分頁／分頁區（files.js）與檢視器（viewers.js）的路由。
+        ("/app/files.js", "text/javascript"),
+        ("/app/viewers.js", "text/javascript"),
         ("/manifest.webmanifest", "application/manifest+json"),
         ("/icons/icon-192.png", "image/png"),
         ("/icons/icon-512.png", "image/png"),
@@ -280,4 +283,143 @@ async fn unknown_path_is_404() {
             "{path} 應該回 404"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// `/vendor/{*path}` 內嵌資源（file-review task 3.3；spec `cockpit-dashboard`「路由與內嵌資源」
+// scenario「vendored 資源」「單一執行檔」；design D9）
+// ---------------------------------------------------------------------------
+
+fn nosniff(response: &axum::response::Response) -> Option<String> {
+    response
+        .headers()
+        .get("x-content-type-options")
+        .map(|v| v.to_str().expect("nosniff 標頭值應為合法字串").to_string())
+}
+
+async fn get(router: axum::Router, path: &str) -> axum::response::Response {
+    let request = Request::builder()
+        .uri(path)
+        .body(Body::empty())
+        .expect("request 建構不應該失敗");
+    router
+        .oneshot(request)
+        .await
+        .expect("oneshot 呼叫不應該失敗")
+}
+
+/// scenario「vendored 資源」：pdf.js 函式庫主檔（`.mjs`）與 worker 皆為 JavaScript。
+#[tokio::test]
+async fn vendor_pdfjs_main_files_are_javascript() {
+    let (_handle, state) = new_app_state();
+
+    for path in [
+        "/vendor/pdfjs/pdf.min.mjs",
+        "/vendor/pdfjs/pdf.worker.min.mjs",
+    ] {
+        let response = get(http::router(state.clone()), path).await;
+        assert_eq!(response.status(), StatusCode::OK, "{path} 應該回 200");
+        assert_eq!(
+            nosniff(&response).as_deref(),
+            Some("nosniff"),
+            "{path} 應該帶 nosniff"
+        );
+        let ct = content_type(&response);
+        assert!(
+            ct.starts_with("text/javascript"),
+            "{path} 的 content-type 應以 text/javascript 開頭，實際: {ct:?}"
+        );
+        let body = body_bytes(response).await;
+        assert!(!body.is_empty(), "{path} 的 body 不應為空");
+    }
+}
+
+/// scenario「vendored 資源」：任一 `cmaps/` 檔為 `application/octet-stream`。
+#[tokio::test]
+async fn vendor_cmaps_file_is_octet_stream() {
+    let (_handle, state) = new_app_state();
+    let response = get(http::router(state), "/vendor/pdfjs/cmaps/78-EUC-H.bcmap").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(nosniff(&response).as_deref(), Some("nosniff"));
+    assert_eq!(content_type(&response), "application/octet-stream");
+}
+
+/// `.wasm` 一律 `application/wasm`（瀏覽器才會串流編譯）。
+#[tokio::test]
+async fn vendor_wasm_file_is_application_wasm() {
+    let (_handle, state) = new_app_state();
+    let response = get(http::router(state), "/vendor/pdfjs/wasm/jbig2.wasm").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(nosniff(&response).as_deref(), Some("nosniff"));
+    assert_eq!(content_type(&response), "application/wasm");
+}
+
+/// scenario「vendored 資源」：`/vendor/material-icons/icons/` 下的預設檔案 icon 為
+/// `image/svg+xml`——預設檔案 icon 檔名從 `material-icons.json` 的 `file` 定義取，不寫死。
+#[tokio::test]
+async fn vendor_material_icons_default_file_icon_is_svg() {
+    let (_handle, state) = new_app_state();
+
+    let raw: serde_json::Value = serde_json::from_str(include_str!(
+        "../assets/vendor/material-icons/material-icons.json"
+    ))
+    .expect("material-icons.json 應為合法 JSON");
+    let default_key = raw["file"].as_str().expect("file 應存在");
+    let icon_path = raw["iconDefinitions"][default_key]["iconPath"]
+        .as_str()
+        .expect("iconDefinitions.<file>.iconPath 應存在");
+    let default_icon_name = icon_path
+        .rsplit(['/', '\\'])
+        .next()
+        .expect("iconPath 應有檔名");
+
+    let path = format!("/vendor/material-icons/icons/{default_icon_name}");
+    let response = get(http::router(state), &path).await;
+    assert_eq!(response.status(), StatusCode::OK, "{path} 應該回 200");
+    assert_eq!(nosniff(&response).as_deref(), Some("nosniff"));
+    assert_eq!(content_type(&response), "image/svg+xml");
+}
+
+/// 查無的 vendor 檔案回 404。
+#[tokio::test]
+async fn vendor_unknown_material_icon_is_404() {
+    let (_handle, state) = new_app_state();
+    let response = get(http::router(state), "/vendor/material-icons/不存在.svg").await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/// 控制端裁決：跳出嘗試一律 404，不得讀到 vendor 目錄外的檔案。用 raw request（不經瀏覽器／axum
+/// 正規化）直接打帶 `..`、`%2e%2e`／`%2F`、反斜線的路徑。
+#[tokio::test]
+async fn vendor_path_traversal_attempts_are_404() {
+    let (_handle, state) = new_app_state();
+
+    for path in [
+        "/vendor/../Cargo.toml",
+        "/vendor/pdfjs/..%2F..%2Fsrc%2Fhttp.rs",
+        "/vendor/pdfjs/..\\..\\src\\http.rs",
+    ] {
+        let response = get(http::router(state.clone()), path).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "{path} 應該回 404（不得跳出 vendor 目錄）"
+        );
+    }
+}
+
+/// 只收 GET；不套用 `source_check`（vendor 是靜態資源，同 `/app/`）。
+#[tokio::test]
+async fn vendor_rejects_non_get_methods() {
+    let (_handle, state) = new_app_state();
+    let request = Request::builder()
+        .method("POST")
+        .uri("/vendor/pdfjs/pdf.min.mjs")
+        .body(Body::empty())
+        .expect("request 建構不應該失敗");
+    let response = http::router(state)
+        .oneshot(request)
+        .await
+        .expect("oneshot 呼叫不應該失敗");
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
 }

@@ -103,14 +103,24 @@ body {
 
 /* direction-01-visual task 5.1（3.2 設計 M3／Ruling R32）：scrollbar-width 不繼承，每個內層
    捲動容器都要自己宣告，否則回到瀏覽器預設的粗捲軸。清單＝render.js SCROLL_KEEP_SELECTORS
-   的四個容器＋頂列燈號列（寬 ≥1200 時橫向捲動）與 Live Output 內容框；新增捲動容器時要加進
-   來（visual-check.js [DF1/scrollbar] 掃描全頁 overflow 為 auto／scroll 的節點）。 */
+   的四個容器＋頂列燈號列（寬 ≥1200 時橫向捲動）與 Live Output 內容框，file-review task 4.1 加上
+   分頁列（內部橫向捲動）與左欄「檔案」分頁的內容框，file-review task 4.2 加上檔案樹，file-review task 4.3
+   加上檔案分頁的檢視器容器，file-review task 4.4 加上 Markdown 的表格與程式碼區塊（各自橫向捲動），
+   file-review task 4.5 加上 PDF 的頁面捲動區；新增
+   捲動容器時要加進來（visual-check.js [DF1/scrollbar] 掃描全頁 overflow 為 auto／scroll 的節點）。 */
 [data-region="floor"] > .projects,
 [data-region="runtimes"] > .runtime-cards,
 [data-region="events"] > .recent-events-list,
 [data-region="projects"],
 .topbar-runtimes,
-.output-text {
+.output-text,
+.tabbar,
+.files-panel,
+.files-tree,
+.file-viewer-host,
+.md-body table,
+.md-body pre,
+.pdf-pages {
   scrollbar-width: thin;
 }
 
@@ -1627,7 +1637,8 @@ body {
    （--warn 對 --bg-deep 10.58:1，遠高於 4.5:1）；只在 .is-stale 時顯示（output.js setStale()
    切換 hidden，不靠 display——沒有另外宣告 display，UA 預設的 [hidden] { display: none }
    生效）。flex: none：面板標題很長被截斷時，這個標籤仍固定寬度、不被擠壓或跟著換行。 */
-.output-stale-label {
+.output-stale-label,
+.file-stale-label {
   flex: none;
   color: var(--warn);
   font-size: var(--fs-meta);
@@ -1798,6 +1809,10 @@ body {
   --statusbar-line-height: 1.4;
   --shell-statusbar-h: calc(var(--statusbar-line-height) * var(--fs-meta) + 2 * 2px + 2 * 5px + 1px);
   --shell-banner-1: 44px;
+  /* file-review task 4.1：分頁列（左欄與下半部分頁區共用 .tabbar）的高度＝一行分頁文字（行高 1.4 ×
+     --fs-dense）＋分頁上下 padding 各 7px＋分頁列下緣框線 1px，跟著字級走。左欄的 Project 清單以它
+     讓出分頁列的位置（見 [data-region="projects"] 的 margin-top）。 */
+  --tab-strip-h: calc(1.4 * var(--fs-dense) + 2 * 7px + 1px);
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   /* M7（design 審核，2026-09-24 由控制端確認、不需使用者裁決）：Project 排在 Factory Floor
@@ -1809,7 +1824,7 @@ body {
     "banner"
     "floor"
     "runtimes"
-    "output"
+    "review"
     "events"
     "statusbar";
   gap: 12px;
@@ -1958,6 +1973,845 @@ body {
      加入真正的 Project 清單後這條下限通常不會生效（清單本身就有高度），保留無害，拿掉風險
      比留著大（沒有 Project 的空狀態文字同樣需要一點高度才看得到）。 */
   min-height: 48px;
+  /* file-review task 4.1（design D6）：左欄分頁列（#files 的 .tabbar）跟 Project 清單疊在同一個
+     grid area，分頁列在上；清單往下讓出分頁列＋8px 間距。 */
+  margin-top: calc(var(--tab-strip-h) + 8px);
+}
+
+/* 左欄分頁（file-review task 4.1；design D6）：#files 跟 [data-region="projects"] 共用 grid area
+   projects。它的框（撐滿整個 grid area）只是排版容器：分頁列在頂端、「檔案」分頁的內容
+   （.files-panel）填滿其餘高度；「Project」分頁時 .files-panel 是 hidden，框的其餘部分透明且
+   pointer-events: none，點擊與命中測試落到底下的 Project 清單（#files 在 DOM 上排在 #app 之前，
+   本來就畫在 Project 清單下面）。 */
+#files {
+  grid-area: projects;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+#files > * {
+  pointer-events: auto;
+}
+
+/* 「檔案」分頁的內容框：跟 Project 清單同一款左欄框（1px --line、--bg-base、直角、8px 內距，見下方
+   [data-region="projects"] 等三個框的規則）。file-review task 4.2：改成直向 flex——頂端（根目錄名稱、
+   runtime、「重新整理」）與狀態列固定，檔案樹（.files-tree）吃掉其餘高度、自己捲動（files-check 契約
+   C2：捲動容器是 tree 本身）。框本身保留 overflow-y: auto 只當極矮視窗的退路。 */
+.files-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  background: var(--bg-base);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 檔案樹頂端（spec「左欄檔案樹」：根目錄 name、runtime id、「重新整理」）：名稱單行省略（完整路徑在
+   title），runtime id 依 D11 用等寬、--fs-meta、--text-dim；按鈕沿用 .action-button，固定不縮。 */
+.files-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.files-head-names {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.files-root-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-panel);
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.files-runtime {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+}
+
+.files-refresh {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* 狀態列（讀取中、根目錄查詢失敗的原因）與樹內的提示列（讀取中、資料夾讀取失敗、「還有 N 項未顯示」、
+   空資料夾）：一般提示 --text-dim；失敗原因 --warn（同 .output-error-reason：暫時性的讀取問題）。 */
+.files-status {
+  flex: none;
+  margin: 0;
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  color: var(--text-dim);
+}
+
+.files-status[data-tone="warn"],
+.tree-note[data-tone="warn"] {
+  color: var(--warn);
+}
+
+/* 檔案樹（role="tree"）：扁平的列，深度以 --tree-level（files.js 依 aria-level 設定）換算左側縮排。
+   每列＝展開符號（資料夾才有）＋16px icon＋名稱，名稱單行省略、完整相對路徑在列的 title。
+   外框往內 2px（樹會捲動，外推的焦點外框會被裁掉；同 .tabbar-tab）。 */
+.files-tree {
+  flex: 1 1 auto;
+  min-height: 96px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  margin: 0 -4px;
+  padding: 2px 4px;
+}
+
+.tree-row,
+.tree-note {
+  --tree-indent: calc((var(--tree-level, 1) - 1) * 12px);
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  padding: 2px 6px 2px calc(2px + var(--tree-indent));
+  border-radius: 4px;
+  color: var(--text);
+  font-size: var(--fs-dense);
+  line-height: 1.3;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tree-row:hover {
+  background: var(--focused-tint);
+}
+
+.tree-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* 展開符號：資料夾列畫一個以框線轉 45° 的小角（收合朝右、展開朝下），檔案列留同寬空白讓 icon 對齊。
+   純裝飾（aria-hidden；狀態由 aria-expanded 表達），顏色 --text-dim。 */
+.tree-twisty {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tree-row[data-kind="dir"] > .tree-twisty::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-right: 1.5px solid var(--text-dim);
+  border-bottom: 1.5px solid var(--text-dim);
+  transform: translateX(-1px) rotate(-45deg);
+}
+
+.tree-row[aria-expanded="true"] > .tree-twisty::before {
+  transform: translateY(-1px) rotate(45deg);
+}
+
+.tree-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.tree-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-note {
+  padding: 3px 6px 3px calc(2px + var(--tree-indent) + 16px);
+  color: var(--text-dim);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* < 760px 單欄時左欄沒有高度上限（跟著內容長），檔案樹限制在大約半個視窗高、自己捲動，避免一個大
+   資料夾把整頁拉得很長。 */
+@media (max-width: 759.98px) {
+  .files-tree {
+    max-height: 50vh;
+  }
+}
+
+/* 沒有選定 pane 時的空狀態（spec file-review「左欄檔案樹」逐字文案）：比照 .output-empty 的次要
+   文字色與字級。 */
+.files-empty {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-panel);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* #files／#review 內一律以 hidden 屬性切換（design D6「切換分頁用 hidden 屬性」）：這些節點有自己
+   的 display 宣告（.review-panel 等），會蓋掉 UA 的 [hidden] { display: none }，這裡用 id 的
+   specificity 蓋回來。 */
+#files [hidden],
+#review [hidden] {
+  display: none;
+}
+
+/* 分頁列（file-review task 4.1；左欄「Project／檔案」與下半部分頁區共用）：role="tablist"，每個
+   分頁是一顆 <button role="tab">。design D4「冰青的形狀分工」：目前分頁＝--surface 底＋下緣 2px
+   冰青條（跟選定 Project／pane 列的「--surface 底＋左緣冰青條」同一套語彙，只是換到分頁該有的
+   下緣），文字 --text／600；其餘分頁 --text-dim、透明底。分頁列下緣 1px --line 只是裝飾分隔。
+   高度固定為 --tab-strip-h（見 .shell），左欄的 Project 清單靠同一個值讓位。分頁過多時在分頁列
+   內部橫向捲動（spec「分頁很多不撐破頁面」），頁面不出現橫向捲軸。 */
+.tabbar {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  height: var(--tab-strip-h);
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.tabbar-tab {
+  flex: none;
+  min-width: 0;
+  padding: 0 12px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-dense);
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tabbar-tab:hover {
+  /* 同 .project-item:hover：既有的中性半透明提示色，不新增顏色。 */
+  background: var(--focused-tint);
+  color: var(--text);
+}
+
+.tabbar-tab[aria-selected="true"] {
+  background: var(--surface);
+  border-bottom-color: var(--accent);
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* design D4「焦點」2px 冰青外框。分頁列會內部橫向捲動（overflow-x: auto），外推的外框會被裁掉，
+   改成往內 2px（同 [data-region="output"]:focus-visible 的做法）。 */
+.tabbar-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* 左欄只有兩個分頁：平分欄寬。 */
+.files-tabbar > .tabbar-tab {
+  flex: 1 1 0;
+}
+
+/* 檔案分頁（file-review task 4.3；spec file-review「檔案分頁」）：包裝元素 .review-tab 放分頁本身
+   （.review-tab-main，role="tab"）與關閉按鈕（互動元素不能巢狀，兩者是手足）。目前分頁的標示畫在
+   包裝元素上，跟 Live Output 分頁（.tabbar-tab[aria-selected="true"]）同一套：--surface 底＋下緣
+   2px 冰青條＋文字 --text／600；其餘分頁 --text-dim、透明底。分頁不縮（flex: none），檔名過長時在
+   .review-tab-label 內省略（完整相對路徑與根目錄名稱在分頁的 title），分頁多時由 .tabbar 內部橫向
+   捲動（spec cockpit-dashboard「分頁很多不撐破頁面」）。 */
+.review-tab {
+  flex: none;
+  display: flex;
+  align-items: center;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+}
+
+.review-tab:hover {
+  background: var(--focused-tint);
+  color: var(--text);
+}
+
+.review-tab.is-current {
+  background: var(--surface);
+  border-bottom-color: var(--accent);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.review-tab-main {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 4px 0 12px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--fs-dense);
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.review-tab-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.review-tab-label {
+  max-width: 16em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 關閉按鈕：18px 方塊、次要文字色，滑過時中性提示底＋--text；只有目前分頁的關閉按鈕在 Tab 順序中
+   （files.js），其餘可用滑鼠點或在分頁上按 Delete。 */
+.review-tab-close {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 0 6px 0 2px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-dense);
+  font-weight: 400;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.review-tab-close:hover {
+  background: var(--focused-tint);
+  color: var(--text);
+}
+
+/* 焦點外框：分頁列會內部橫向捲動，外推的外框會被裁掉，改成往內 2px（同 .tabbar-tab）。 */
+.review-tab-main:focus-visible,
+.review-tab-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* 檔案分頁的內容（tabpanel）：跟左右欄同一款框（1px --line、--bg-base、直角；design D8 的切角只給
+   Factory Floor 與 Live Output），12px 內距。工具列與狀態列固定，檢視器容器吃掉其餘高度、自己捲動。 */
+.file-panel {
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: var(--bg-base);
+}
+
+/* 工具列：相對路徑（單行省略，完整路徑在 title）、最後一次成功讀取的時間（design D11：時間用等寬）、
+   「在 VS Code 開啟」（沿用 .action-button 的第三層級按鈕外觀，跟左欄「重新整理」一致）。 */
+.file-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.file-toolbar-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-dense);
+  line-height: 1.4;
+}
+
+.file-toolbar-time {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.file-vscode {
+  flex: none;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+/* 狀態列（讀取中、讀取失敗的原因）：同左欄 .files-status——一般提示 --text-dim，失敗原因 --warn。 */
+.file-status {
+  flex: none;
+  margin: 0;
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  color: var(--text-dim);
+}
+
+.file-status[data-tone="warn"] {
+  color: var(--warn);
+}
+
+/* 檔案分頁的「過期」標示（file-review task 4.6；spec file-review「自動更新」要求與 spec live-output「失敗與
+   消失的呈現」相同的呈現）：跟 Live Output 同一組語彙——左緣 --warn 色條（inset box-shadow，不動 box model，
+   理由同 .output-panel.is-stale）、內容文字改 --text-dim（不用 opacity，對比才維持 ≥4.5:1；--text-dim 對
+   --bg-base／--surface／--bg-deep 皆 ≥7:1）、工具列「過期」字樣（.file-stale-label，規則與 .output-stale-label
+   共用）、狀態列以 --warn 顯示原因（.file-status[data-tone="warn"]）。files.js 只在畫面上留著上一次的內容時
+   加 is-stale。改色的對象是 Markdown 內文與標題、純文字的內容欄（行號本來就是 --text-dim）；連結維持
+   --accent 以保留可點的提示。PDF 的 canvas 與 HTML 的 iframe 是檔案自己的內容（spec「檔案內容的例外」），
+   不改色，靠色條、字樣與原因表達。 */
+.file-panel.is-stale {
+  box-shadow: inset 2px 0 0 0 var(--warn);
+}
+
+.file-panel.is-stale .md-body,
+.file-panel.is-stale .md-body :is(h1, h2, h3, h4, h5),
+.file-panel.is-stale .text-content {
+  color: var(--text-dim);
+}
+
+.file-viewer-host {
+  flex: 1 1 auto;
+  min-height: 4em;
+  overflow: auto;
+}
+
+/* 檔案檢視器（file-review task 4.4；spec file-review「檔案檢視器」；spec cockpit-dashboard「Direction 01
+   視覺語彙」——Markdown 渲染結果與純文字檢視不在「檔案內容的例外」內：顏色只取 10 個 token、字級只取
+   --fs-* 四階、文字對比 ≥4.5:1、字體只用系統字體堆疊）。容器（.file-panel）底色是 --bg-base；需要自己的
+   底色時一律用不透明 token（程式碼區塊 --bg-deep、行內程式碼與表頭 --surface），對比才算得準。
+   4.3 的 .file-placeholder 規則已刪（file-review task 4.5 補上 pdf 之後，五種 viewer 都有檢視器）。 */
+
+/* Markdown（.md-body 就是 data-viewer="markdown" 的元素）：內文 --fs-panel、行高 1.6（中文內文，design
+   D10 的 1.5 之上多留一點給長段落）。標題四階只能靠字級＋字重＋分隔線區分：h1 --fs-title；h2 --fs-panel
+   600＋下緣分隔線；h3 --fs-panel 600；h4 --fs-dense 600；h5／h6 --fs-meta 600（h6 用 --text-dim）。
+   最大行寬約 80ch（file-review 最終修正波；寬視窗下長段落不拉滿整欄）：限制在 .md-body 本身，表格與程式碼
+   區塊維持 max-width: 100%＋自己橫向捲動，超出的部分在區塊內捲動。 */
+.md-body {
+  max-width: 80ch;
+  color: var(--text);
+  font-size: var(--fs-panel);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  padding-right: 4px;
+}
+
+.md-body > :first-child {
+  margin-top: 0;
+}
+
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4,
+.md-body h5,
+.md-body h6 {
+  margin: 20px 0 8px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text);
+}
+
+.md-body h1 {
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--fs-title);
+}
+
+.md-body h2 {
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--fs-panel);
+}
+
+.md-body h3 {
+  font-size: var(--fs-panel);
+}
+
+.md-body h4 {
+  font-size: var(--fs-dense);
+}
+
+.md-body h5,
+.md-body h6 {
+  font-size: var(--fs-meta);
+}
+
+.md-body h6 {
+  color: var(--text-dim);
+}
+
+/* comrak 在每個標題後放的空 a.anchor（viewers.js 把 aria-label 改成中文）：平常看不到，滑過標題或以
+   鍵盤聚焦時顯示「#」。 */
+.md-body .anchor {
+  margin-left: 6px;
+  color: var(--text-dim);
+  text-decoration: none;
+}
+
+.md-body .anchor::before {
+  content: "#";
+  visibility: hidden;
+}
+
+.md-body :is(h1, h2, h3, h4, h5, h6):hover .anchor::before,
+.md-body .anchor:focus-visible::before {
+  visibility: visible;
+}
+
+.md-body p,
+.md-body ul,
+.md-body ol,
+.md-body blockquote,
+.md-body table,
+.md-body pre {
+  margin: 0 0 12px;
+}
+
+/* 連結：品牌強調色＋底線（不只靠顏色辨認）。會在新瀏覽器分頁開啟的 http／https 連結、在分頁區開檔的
+   相對連結、同頁錨點外觀相同；點了不動作的連結（跳出根目錄、不支援的 scheme，viewers.js 已拿掉 href）
+   不是連結，改用次要文字色＋點狀底線，看得出「這裡原本是連結」。 */
+.md-body a[href] {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.md-body a[href]:hover {
+  text-decoration-thickness: 2px;
+}
+
+.md-body a:not([href]) {
+  color: var(--text-dim);
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+.md-body ul,
+.md-body ol {
+  padding-left: 24px;
+}
+
+.md-body li + li {
+  margin-top: 2px;
+}
+
+/* 任務清單：拿掉項目符號，勾選框放在原本符號的位置。勾選框自己畫（appearance: none）：未勾＝--text-dim
+   外框的空方框，已勾＝--accent 實心方框（內縮一圈底色），兩者與 --bg-base 的對比都遠高於 3:1，狀態也
+   由無障礙樹的 checked 表達。 */
+.md-body li:has(> input[type="checkbox"]) {
+  list-style: none;
+}
+
+.md-body input[type="checkbox"] {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin: 0 6px 0 -18px;
+  vertical-align: -1px;
+  border: 1.5px solid var(--text-dim);
+  border-radius: 2px;
+  background: transparent;
+}
+
+.md-body input[type="checkbox"]:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: inset 0 0 0 2px var(--bg-base);
+}
+
+.md-body blockquote {
+  padding-left: 12px;
+  border-left: 2px solid var(--line);
+  color: var(--text-dim);
+}
+
+.md-body hr {
+  margin: 16px 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+/* 表格：寬度超過時表格自己橫向捲動（display: block），不撐出頁面橫向捲軸。表頭 --surface 底。 */
+.md-body table {
+  display: block;
+  max-width: 100%;
+  width: max-content;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: var(--fs-dense);
+  line-height: 1.5;
+}
+
+.md-body th,
+.md-body td {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.md-body th {
+  background: var(--surface);
+  font-weight: 600;
+}
+
+/* th 預設置中；沒有指定對齊（comrak 以 align 屬性表達 :-: 等對齊，屬性提示的優先序低於這裡）的表頭靠左，
+   跟內容欄一致。 */
+.md-body th:not([align]) {
+  text-align: start;
+}
+
+/* 程式碼：系統等寬字體。行內程式碼 --surface 底；程式碼區塊 --bg-deep 底（同 Live Output 那扇「嵌進
+   面板的窗」）、過長時區塊內橫向捲動。 */
+.md-body code {
+  padding: 1px 4px;
+  border-radius: 2px;
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: var(--fs-dense);
+}
+
+.md-body pre {
+  padding: 10px 12px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  background: var(--bg-deep);
+  font-family: var(--font-mono);
+  font-size: var(--fs-dense);
+  line-height: 1.5;
+}
+
+.md-body pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.md-body img {
+  max-width: 100%;
+  height: auto;
+  vertical-align: middle;
+}
+
+/* 沒有載入的圖片（外部網址、跳出根目錄）：顯示替代文字，虛線框標出「這裡原本是一張圖」。 */
+.md-img-alt {
+  padding: 0 4px;
+  border: 1px dashed var(--line);
+  color: var(--text-dim);
+  font-size: var(--fs-dense);
+}
+
+/* 純文字：等寬、保留換行與空白、不自動換行；行號欄 sticky 在左側（整個檢視器比容器寬時由 .file-viewer-host
+   橫向捲動，行號留在原地），不透明 --bg-base 底蓋住捲過去的內容。行號是裝飾（aria-hidden、不可選取）。 */
+.text-viewer {
+  display: flex;
+  align-items: flex-start;
+  width: max-content;
+  min-width: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--fs-dense);
+  line-height: 1.5;
+}
+
+.text-gutter,
+.text-content {
+  margin: 0;
+  font-family: inherit;
+  font-size: var(--fs-dense);
+  line-height: inherit;
+}
+
+.text-gutter {
+  position: sticky;
+  left: 0;
+  flex: none;
+  padding-right: 10px;
+  border-right: 1px solid var(--line);
+  background: var(--bg-base);
+  color: var(--text-dim);
+  text-align: right;
+  user-select: none;
+}
+
+.text-content {
+  flex: 1 0 auto;
+  padding-left: 12px;
+  color: var(--text);
+  white-space: pre;
+  tab-size: 4;
+}
+
+/* HTML：sandbox iframe 填滿檢視器容器。iframe 內是檔案自己的內容（spec「檔案內容的例外」）；
+   color-scheme 設成跟 Cockpit 深色介面不同的一方，使沒有自訂底色的頁面照瀏覽器規則畫上不透明的淺色
+   畫布（跟直接開啟該檔案時一樣），而不是透出 Cockpit 的深色底、變成深底黑字。 */
+.html-viewer {
+  height: 100%;
+}
+
+.html-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 240px;
+  border: 1px solid var(--line);
+  color-scheme: dark;
+}
+
+/* 不支援預覽、檔案太大：一行說明＋檔案大小（數值等寬，design D11）。 */
+.viewer-note {
+  padding: 16px 0;
+}
+
+.viewer-note-title {
+  margin: 0 0 4px;
+  color: var(--text);
+  font-size: var(--fs-panel);
+  font-weight: 600;
+}
+
+.viewer-note-meta {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-meta);
+}
+
+.viewer-note-size {
+  font-family: var(--font-mono);
+}
+
+/* PDF（file-review task 4.5；design D7）：工具列（上一頁、目前頁／總頁數、下一頁；縮小、縮放比例、放大、
+   符合寬度）＋頁面捲動區。檢視器填滿容器，由捲動區自己上下左右捲動（放大到比捲動區寬時只在這裡橫向捲，
+   頁面不出現橫向捲軸）。頁面畫出的內容（canvas）屬 spec「檔案內容的例外」；工具列、捲動區底色與還沒畫好
+   的頁框是 Cockpit 自己畫的，只用 10 個 token 與 --fs-* 字級。 */
+.pdf-viewer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+}
+
+/* 兩組按鈕之間的距離大於組內，分組不另外畫分隔線；窄的時候整組換行。 */
+.pdf-toolbar {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 20px;
+}
+
+.pdf-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 目前頁／總頁數與縮放比例是數值：等寬（design D11），固定最小寬度，數字變動時按鈕不跳動。 */
+.pdf-page-status,
+.pdf-zoom-level {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.3;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.pdf-page-status {
+  min-width: 9ch;
+  color: var(--text);
+}
+
+.pdf-zoom-level {
+  min-width: 5ch;
+  color: var(--text-dim);
+}
+
+/* 到頭的翻頁、到極限的縮放：用 aria-disabled（仍可聚焦，鍵盤連按到底時焦點不會掉），外框退成靜態框線色、
+   滑過不變亮；文字維持 --text-dim（對 --bg-base 8.46:1）。 */
+.pdf-tool[aria-disabled="true"],
+.pdf-tool[aria-disabled="true"]:hover {
+  border-color: var(--line);
+  color: var(--text-dim);
+  cursor: default;
+}
+
+/* 「符合寬度」生效中：品牌強調色（對 --bg-base 10.15:1），同時有 aria-pressed。 */
+.pdf-tool[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* 頁面捲動區：--bg-deep 底襯出頁面，1px --line 框。scrollbar-gutter 固定保留捲軸的位置，符合寬度的計算不會
+   因為捲軸出現／消失而來回變動。position: relative 讓各頁的 offsetTop 以捲動區為準（viewers.js 用來算目前頁）。 */
+.pdf-pages {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: var(--bg-deep);
+}
+
+/* 每頁的框：尺寸由 viewers.js 依頁面比例與縮放設定（inline width／height）；還沒畫好時是 --surface 色塊。
+   比捲動區窄時置中；比捲動區寬時從左邊開始、往右捲。 */
+.pdf-page {
+  margin: 0 auto 12px;
+  background: var(--surface);
+}
+
+.pdf-page:last-child {
+  margin-bottom: 0;
+}
+
+.pdf-page > canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* < 760px 單欄時分頁區沒有固定高度（跟著內容長），檢視器容器限制在大約半個視窗高多一些、自己捲動，
+   避免一份長文件把整頁拉得很長（同 .files-tree 的做法）。HTML 檢視器的 iframe 沒有內容高度可撐，
+   給一個略小於容器上限的固定高度（容器本身不必再捲動）。 */
+@media (max-width: 759.98px) {
+  .file-viewer-host {
+    max-height: 60vh;
+  }
+
+  .html-frame {
+    height: calc(60vh - 4px);
+  }
+
+  .pdf-viewer {
+    height: calc(60vh - 4px);
+  }
 }
 
 /* 左欄在部分整頁捲動的版面下維持可見（design 審核 M8 carry-over，2.1 記錄、task 3.1 落地／
@@ -2008,12 +2862,26 @@ body {
    N1(a) 註解——兩個修法都做，任何一個算錯或算式本身在极端組合下有誤差時，另一個仍然守得住
    「底列永遠看得到」這個承諾（控制端 Ruling R30）。 */
 @media (min-width: 760px) and (max-width: 1199.98px), (min-width: 1200px) and (max-height: 719.98px) {
-  [data-region="projects"] {
+  /* file-review task 4.1：左欄分頁列（#files）跟 Project 清單一起貼住——#files 用同一組 top／
+     max-height（「檔案」分頁時它就是整個左欄）；Project 清單貼在分頁列下方（top 與 max-height
+     再扣掉分頁列＋8px 間距，跟 margin-top 一致）。兩者都 align-self: start，#files 在「Project」
+     分頁時只有分頁列那麼高，不跟 Project 清單重疊。 */
+  #files {
     position: sticky;
     top: 12px;
     z-index: 1;
     align-self: start;
     max-height: calc(100dvh - var(--shell-topbar-h) - 3 * 12px - var(--shell-statusbar-h));
+  }
+
+  [data-region="projects"] {
+    position: sticky;
+    top: calc(12px + var(--tab-strip-h) + 8px);
+    z-index: 1;
+    align-self: start;
+    max-height: calc(
+      100dvh - var(--shell-topbar-h) - 3 * 12px - var(--shell-statusbar-h) - var(--tab-strip-h) - 8px
+    );
     overflow-y: auto;
   }
 }
@@ -2022,12 +2890,29 @@ body {
   grid-area: floor;
 }
 
-/* #output 是 `.shell` 的一般 grid item，位置、高度與格線對齊完全交給 grid-area 與下面各斷點
-   各自設定的 height（task 2.1 fix round 1／design 審核 M1 當時用 position: static 等宣告蓋掉
-   改版前 .output-panel 的 sticky／45vh／margin；direction-01-visual task 5.1 連同被蓋掉的
-   舊宣告一起刪除，見 .output-panel 上方註解）。 */
+/* 中欄下半部分頁區（file-review task 4.1；design D6）：#review 是 `.shell` 的一般 grid item，位置、
+   高度與格線對齊完全交給 grid-area 與下面各斷點各自設定的 height（這些 height 原本設在 #output 上，
+   #output 移進分頁區後改設在這裡；更早的沿革見 .output-panel 上方註解）。分頁列在上，目前分頁的
+   tabpanel 填滿其餘高度。 */
+[data-region="review"] {
+  grid-area: review;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* file-review task 4.1（design D6）：#output 移進下半部分頁區，成為第一個分頁（Live Output）的
+   tabpanel 內容；tabpanel 與 #output 依序撐滿分頁列以下的高度（各斷點的高度改設在
+   [data-region="review"] 上，見下方 media query）。 */
+.review-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 [data-region="output"] {
-  grid-area: output;
+  flex: 1 1 auto;
 }
 
 [data-region="runtimes"] {
@@ -2194,7 +3079,8 @@ body {
 /* 760–1199px：兩欄（design D3）。runtime 卡／最近事件併入中欄，排在 Live Output 之下；
    Factory Floor 最小高度 240px；Live Output 改固定高度＋內部捲動（取代桌面固定一屏那種按
    Factory Floor／Live Output 比例分配剩餘高度的規則）；banner 只占中欄（I1／fix round 1；
-   design 審核建議：`"projects banner"` 接著 `"projects floor"`，不再橫跨左欄）。 */
+   design 審核建議：`"projects banner"` 接著 `"projects floor"`，不再橫跨左欄）。
+   file-review task 4.1：Live Output 移進下半部分頁區（grid area review），固定高度改設在分頁區上。 */
 @media (min-width: 760px) and (max-width: 1199.98px) {
   .shell {
     grid-template-columns: 220px minmax(0, 1fr);
@@ -2202,7 +3088,7 @@ body {
       "topbar    topbar"
       "projects  banner"
       "projects  floor"
-      "projects  output"
+      "projects  review"
       "projects  runtimes"
       "projects  events"
       "statusbar statusbar";
@@ -2212,7 +3098,7 @@ body {
     min-height: 240px;
   }
 
-  [data-region="output"] {
+  [data-region="review"] {
     height: clamp(320px, 50vh, 560px);
   }
 }
@@ -2236,7 +3122,7 @@ body {
     grid-template-areas:
       "topbar    topbar   topbar"
       "projects  floor    runtimes"
-      "projects  output   events"
+      "projects  review   events"
       "statusbar statusbar statusbar";
   }
 
@@ -2245,7 +3131,7 @@ body {
       "topbar    topbar   topbar"
       "projects  banner   runtimes"
       "projects  floor    runtimes"
-      "projects  output   events"
+      "projects  review   events"
       "statusbar statusbar statusbar";
   }
 
@@ -2331,7 +3217,7 @@ body {
     grid-template-areas:
       "topbar    topbar   topbar"
       "projects  floor    runtimes"
-      "projects  output   events"
+      "projects  review   events"
       "statusbar statusbar statusbar";
   }
 
@@ -2340,11 +3226,11 @@ body {
       "topbar    topbar   topbar"
       "projects  banner   runtimes"
       "projects  floor    runtimes"
-      "projects  output   events"
+      "projects  review   events"
       "statusbar statusbar statusbar";
   }
 
-  [data-region="output"] {
+  [data-region="review"] {
     height: clamp(320px, 50vh, 560px);
   }
 
@@ -2405,8 +3291,8 @@ body {
     grid-template-areas:
       "topbar    topbar   topbar"
       "projects  floor    runtimes"
-      "projects  output   runtimes"
-      "projects  output   events"
+      "projects  review   runtimes"
+      "projects  review   events"
       "statusbar statusbar statusbar";
     grid-template-rows:
       min-content
@@ -2421,8 +3307,8 @@ body {
       "topbar    topbar   topbar"
       "projects  banner   runtimes"
       "projects  floor    runtimes"
-      "projects  output   runtimes"
-      "projects  output   events"
+      "projects  review   runtimes"
+      "projects  review   events"
       "statusbar statusbar statusbar";
     grid-template-rows:
       min-content
@@ -2433,7 +3319,7 @@ body {
       min-content;
   }
 
-  [data-region="output"] {
+  [data-region="review"] {
     height: auto;
   }
 

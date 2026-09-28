@@ -72,6 +72,12 @@ Chrome，單獨挑 `TK1` 跑時最快。
 | CL1 | 清理：`style.css` 每一條選擇器至少在一種畫面狀態下對得到元素 | task 5.1 |
 | DF1 | task 5.1 帶到後面的延後項目（topbar／statusbar／conn／scrollbar／pretty／cwd／focus／pin） | task 5.1 |
 | FR1 | final review 修正：切換 Project 捲動位置歸零、Floor 邊界焦點框完整可見（真實 Tab 路徑）、文字放大 200% 按鈕不出節點 | task 5.4 final review／Codex F1–F3／Ruling R43 |
+| FT1 | 分頁很多不撐破頁面：1280 寬、20 個 60 字元檔名的檔案分頁，重畫後分頁列內部橫向捲動、頁面沒有橫向捲軸、中欄寬度不變 | file-review task 3.5；`file-review` change 的 cockpit-dashboard delta |
+| FT2 | 頻繁重畫不影響檔案分頁：推送 100 ms、Markdown 分頁往下捲，3 秒後分頁區、檢視器與其下所有內容子節點都不變，捲動容器仍是原本那一個且在頁面上，捲動位置（讀目前的捲動容器）與目前分頁不變；偵測器正負對照先在合成 DOM 上跑（只重設檢視器 innerHTML 必須轉紅），前端落地後另在真頁面跑一次 | file-review task 3.5（fix round 1：Codex finding 2）；同上 |
+| FT3 | Markdown 檢視遵守色彩與對比：README 內容區每個含文字元素對比 ≥4.5:1、文字色與背景色都是 10 個色彩 token（排除 PDF canvas 與 iframe） | file-review task 3.5；同上／design D11 |
+
+`FT1`–`FT3` 是 file-review task 3.5 先寫的測試，file-review 4.x 前端落地前預期 RED；它們用的前端契約（`#files`、
+`#review`、`role="tab"`、`data-path`、`data-viewer` 等）見 `docs/research/2026-09-27/files-check.md`「前端契約」。
 
 每個段落開頭都會印一行 `=== <代號>. <段落標題> ===`（例如 `=== V1. 1536x1024：桌面寬度不整頁捲動…
 ===`），要在大量輸出裡定位某一段時可以搜尋這個字串。
@@ -82,7 +88,9 @@ Chrome，單獨挑 `TK1` 跑時最快。
 - `PEND <說明>（PENDING(<task>)）`：屬於 Ruling R2 的暫緩子斷言，不算 PASS 也不計入失敗，代表這條
   要等到指定 task 才會補成真斷言。
 - `[<timestamp>] <說明>`：`log()` 印的過程訊息（啟動／收尾／等待中等），不是斷言。
-- 全部段落跑完後固定印 `RESULT: PASS` 或 `RESULT: FAIL (<n>)`；後者同時把 `process.exitCode` 設成
+- 全部段落跑完後先印「段落彙總」（file-review task 3.5 起）：每段一行 `PASS` 或 `FAIL(<n>)`，`FT1`–`FT3` 另標「預期
+  RED」，再印一行「既有段落 FAIL 數／FT1–FT3 FAIL 數／收尾 FAIL 數」，方便分辨既有段落是否全綠。
+- 接著固定印 `RESULT: PASS` 或 `RESULT: FAIL (<n>)`；後者同時把 `process.exitCode` 設成
   `2`。腳本本身未預期的例外（`main()` 外層 `catch`）會印 `FAIL <錯誤>` 並把 `exitCode` 設成 `1`。
 - 只跑部分段落（`node visual-check.js V1,G1`）時，`RESULT` 只反映有跑到的段落。
 - 段落代號拼錯（例如 `V1X`、`v1`）、參數是空字串或只有逗號時，腳本在清殘留與啟動任何行程之前就印
@@ -99,6 +107,8 @@ Chrome，單獨挑 `TK1` 跑時最快。
   觀察到它的 `exit` 事件」（`child.exitCode`／`child.signalCode` 皆為 `null`），不是 PID＋事後身分比對
   ——後者在同路徑重複啟動、身分完全相同的情況下分辨不出「這一次」是誰（fix round 3／控制端 Ruling
   R14 換設計的原因，三段一手來源見程式碼中 `finalSweep()` 上方的長註解）。
+- file-review task 3.4 起 `ui_preview` 會把 review-repo fixture 複製到 `%TEMP%\cockpit-ui-preview-*`，被 `taskkill /F`
+  結束時沒有機會自己刪；`stopPreview` 依 stdout 的 `review-repo: <路徑>` 代刪那一個目錄（只記 log、不加斷言）。
 - `main()` 結尾一律跑 `finalSweep()` 當最後一道防線：對照 `SPAWNED_CHILDREN` 清單，逐一比照同樣的
   「未觀察到 exit 才終止」規則收尾；另外斷言預設埠 7770（`ui_preview` 的預設監聽埠）在腳本結束後沒有
   任何行程在 LISTENING。

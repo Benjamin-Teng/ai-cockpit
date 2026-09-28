@@ -1,0 +1,11 @@
+/* file-review task 3.4 fixture：page.html 同目錄引用的樣式表，驗證同目錄相對資源能載入。 */
+body {
+  font-family: sans-serif;
+  background: #f0f0f0;
+  color: #202020;
+  padding: 16px;
+}
+
+h1 {
+  color: #1a5276;
+}

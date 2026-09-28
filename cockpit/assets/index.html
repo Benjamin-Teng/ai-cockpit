@@ -9,11 +9,27 @@
   </head>
   <body>
     <!-- 外框（direction-01-visual task 2.1；design D2）：`.shell` 是一個 CSS grid 容器，包住
-         `#app` 與 `#output`。`#app` 設 `display: contents`，所以 render.js 的 renderState()
+         `#files`、`#app` 與 `#review`。`#app` 設 `display: contents`，所以 render.js 的 renderState()
          畫出的各區塊（帶 data-region）直接成為 `.shell` 的 grid item，用 grid-area 就位；
-         `#output`（Live Output）同樣是 `.shell` 的 grid item，DOM 上仍是 `#app` 的兄弟節點，
-         不在 render.js 的 replaceChildren 範圍內（design D2：DOM 歸屬與版面位置分開）。 -->
+         `#files` 與 `#review` 同樣是 `.shell` 的 grid item，DOM 上是 `#app` 的兄弟節點，
+         不在 render.js 的 replaceChildren 範圍內（design D2：DOM 歸屬與版面位置分開；file-review
+         design D6）。 -->
     <div class="shell">
+      <!-- 左欄分頁（file-review task 4.1；design D6）：「Project」「檔案」分頁列＋檔案分頁的內容。
+           跟 #app 內的 Project 清單（[data-region="projects"]）疊在同一個 grid area：分頁列在上，
+           Project 清單以 margin-top 讓出分頁列的高度；目前分頁是 files.js 的模組狀態，render.js
+           每次重畫讀它決定 Project 清單是否 hidden。放在 #app 之前，鍵盤 Tab 順序先到分頁列。 -->
+      <div id="files">
+        <div class="tabbar files-tabbar" role="tablist" aria-label="左欄">
+          <button type="button" class="tabbar-tab" role="tab" id="files-tab-projects" data-left-tab="projects" aria-selected="true" tabindex="0">Project</button>
+          <button type="button" class="tabbar-tab" role="tab" id="files-tab-files" data-left-tab="files" aria-selected="false" aria-controls="files-panel" tabindex="-1">檔案</button>
+        </div>
+        <!-- 「檔案」分頁的內容（檔案樹由 file-review task 4.2 填入）。Project 分頁的內容是 #app 內的
+             Project 清單，不在這裡，所以「Project」分頁沒有 aria-controls。 -->
+        <div class="files-panel" id="files-panel" role="tabpanel" aria-labelledby="files-tab-files" hidden>
+          <p class="files-empty">先在 Factory Floor 或 runtime 清單選一個 pane</p>
+        </div>
+      </div>
       <!-- app 容器：初始內容是跟 renderState() 輸出同一組 data-region 的靜態占位（首份投影
            到達前顯示），讓 grid 從第一幀就照 design D3 的欄位就位，避免真正投影抵達、
            replaceChildren 換掉這些占位節點時版面跳動。之後每次都整頁重畫（換掉這裡全部
@@ -58,17 +74,31 @@
           <span id="version" class="version"></span>
         </div>
       </div>
-      <!-- Live Output 面板：內容由 output.js 在載入時自己建出來，這裡只留一個空殼容器＋
-           data-region="output"（design D2）。 -->
-      <section id="output" data-region="output"></section>
+      <!-- 中欄下半部分頁區（file-review task 4.1；design D6）：分頁列（role="tablist"，只有 Live Output
+           時也顯示）＋各分頁內容。第一個分頁固定是 Live Output、不可關閉；檔案分頁由 files.js 加在它
+           後面（file-review task 4.3）。切換分頁用 hidden 屬性。 -->
+      <section id="review" data-region="review">
+        <div class="tabbar review-tabbar" role="tablist" aria-label="分頁">
+          <button type="button" class="tabbar-tab" role="tab" id="review-tab-live" aria-selected="true" aria-controls="review-panel-live" tabindex="0">Live Output</button>
+        </div>
+        <div class="review-panel" id="review-panel-live" role="tabpanel" aria-labelledby="review-tab-live">
+          <!-- Live Output 面板：內容由 output.js 在載入時自己建出來，這裡只留一個空殼容器＋
+               data-region="output"（design D2）。 -->
+          <section id="output" data-region="output"></section>
+        </div>
+      </section>
     </div>
-    <!-- 載入順序：output.js → render.js → actions.js → channel.js。output.js 放最前面，
-         因為 render.js 每次重畫後會呼叫 window.liveOutput.setKnownPanes(...)（design D8；
-         接線在 live-output task 5.3），必須先存在。channel.js 最後，收到第一則訊息時
+    <!-- 載入順序：output.js → viewers.js → files.js → render.js → actions.js → channel.js。output.js
+         放最前面，因為 render.js 每次重畫後會呼叫 window.liveOutput.setKnownPanes(...)（design D8；
+         接線在 live-output task 5.3），必須先存在。files.js 在 output.js 之後（它切換分頁時呼叫
+         window.liveOutput 的可見性入口）、render.js 之前（render.js 第一次重畫就要讀左欄目前分頁）；
+         viewers.js 在 files.js 之前（file-review task 4.4 起 files.js 用它畫檔案內容）。channel.js 最後，收到第一則訊息時
          window.onState／window.onChannel 一定已經綁好，不需要暫存訊息等 render.js 補齊；
          actions.js 在第一次重畫前就把 UI 狀態（window.cockpitActions）與 #app 上的事件委派
          準備好。 -->
     <script src="/app/output.js"></script>
+    <script src="/app/viewers.js"></script>
+    <script src="/app/files.js"></script>
     <script src="/app/render.js"></script>
     <script src="/app/actions.js"></script>
     <script src="/app/channel.js"></script>

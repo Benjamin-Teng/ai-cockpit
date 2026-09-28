@@ -1,7 +1,8 @@
 // output.js：Live Output 面板與輪詢（spec live-output「輪詢與顯示」「失敗與消失的呈現」；
 // design D8）。這個檔案擁有 `<section id="output">`——它自己在載入時把面板的子節點建出來，
 // 不靠 index.html 內嵌骨架，也不會被 render.js 的 `replaceChildren` 換掉（那只作用在
-// `#app`）。對外只暴露 `window.liveOutput = { select(runtime, paneId), clear(), setKnownPanes(panes) }`；
+// `#app`）。對外只暴露 `window.liveOutput = { select(runtime, paneId), clear(), setKnownPanes(panes),
+// tabHidden(change), tabShown(change) }`（後兩者見下方「分頁可見性」）；
 // 「誰被選」這個 UI 狀態放在 actions.js（design D8），這裡只記自己輪詢需要的最小狀態。
 //
 // 輪詢核心（live-output task 5.2 逐字要求；G4 fix wave Finding 1／R20 加 AbortController）：
@@ -70,6 +71,19 @@
 // 都呼叫 `window.cockpitActions.clearSelected()`（若存在）。這個回呼只在 output.js **自己**
 // 決定要停止時才觸發；外部呼叫 `window.liveOutput.clear()`（例如 actions.js 自己已經在處理
 // `ui.selected` 的改變時）不會再呼叫回去，避免來回互叫。
+//
+// 分頁可見性（file-review task 4.1；design D6；spec live-output「輪詢與顯示」）：`#output` 現在是中欄
+// 下半部分頁區第一個分頁（Live Output）的內容，由 files.js 切換分頁。對 files.js 多兩個入口：
+//   - `tabHidden(change)`：分頁變為不可見。先記下內容框是否貼底與捲動位置，再執行 `change()`（呼叫端
+//     把 tabpanel 設 hidden）；之後不再發新的輸出請求——已經發出的那一個照常完成（不 abort），但它
+//     settle 後排的下一次輪詢在不可見期間一律不發。
+//   - `tabShown(change)`：分頁變為可見。執行 `change()`（拿掉 hidden）後寫回切走時記下的捲動狀態——
+//     切走前貼底就捲到底、否則回到原本的 scrollTop（被 hidden 的捲動容器 scrollTop 不保證保留）；
+//     有選取時立即請求一次（切回時還沒完成的舊請求先 abort 並遞增世代序號淘汰，fix round 1）。之後到達的新內容照 writeText() 的貼底判定跟著走（spec「切回時保持貼底」
+//     含切回後立即到達的新內容）。記下／寫回沿用 keepPinnedAcross() 同一組 capturePin()／restorePin()，
+//     只是跨越一段時間（memory stick-to-bottom-lost-when-container-resizes）。
+// 以任何方式選定 pane（select()）時通知 files.js（`window.cockpitFiles.paneSelected`），由它切到 Live
+// Output 分頁；選取被清掉（取消選取、外部 clear()、pane 已不存在）時通知 `paneCleared`，不切換分頁。
 
 (function () {
   "use strict";
@@ -107,6 +121,12 @@
       select: function () {},
       clear: function () {},
       setKnownPanes: function () {},
+      tabHidden: function (change) {
+        change();
+      },
+      tabShown: function (change) {
+        change();
+      },
     };
     return;
   }
@@ -210,6 +230,10 @@
   // 目前追蹤的那個進行中請求的 AbortController；null 表示沒有請求在飛（G4 fix wave R20）。
   // 用它（而不是單一布林值）當「這次 settle 是不是我要的那個請求」的身分識別，見 runPoll()。
   var inFlightController = null;
+  // Live Output 分頁是否為目前分頁（file-review task 4.1）：false 時 runPoll() 不發新請求。
+  var visible = true;
+  // 切走時記下的內容框捲動狀態（capturePin() 的結果）；切回時寫回後清成 null。
+  var savedPin = null;
 
   function keyOf(runtime, paneId) {
     return runtime + "\u0000" + paneId;
@@ -278,12 +302,22 @@
   // 幾行會被擠出可視範圍、最後一行被切一半，之後也不再被判定為貼底（direction-01-visual task
   // 5.1，4.2 觀察）。切換前原本貼底，切換後就重新捲到底；使用者往上捲（不貼底）時不動，不把人
   // 拉回去（spec live-output「往上捲不被拉回」）。
-  function keepPinnedAcross(change) {
-    var pinned = isPinnedToBottom();
-    change();
-    if (pinned) {
+  // 記下與寫回拆成兩半（file-review task 4.1）：keepPinnedAcross() 在同一個同步區段裡前後呼叫；
+  // 分頁切走／切回（tabHidden()／tabShown()）則跨越一段時間，切走時記下、切回時寫回。
+  function capturePin() {
+    return { pinned: isPinnedToBottom(), top: preEl.scrollTop };
+  }
+
+  function restorePin(saved) {
+    if (saved.pinned) {
       preEl.scrollTop = preEl.scrollHeight;
     }
+  }
+
+  function keepPinnedAcross(change) {
+    var saved = capturePin();
+    change();
+    restorePin(saved);
   }
 
   function setTruncated(isTruncated) {
@@ -359,6 +393,21 @@
     }
   }
 
+  // file-review task 4.1（design D6）：選取改變時通知 files.js——選定時由它切到 Live Output 分頁
+  // （spec live-output「選定一個 pane」：以任何方式選定 pane 時切換；取消選取不切換），檔案樹也
+  // 依選取換根目錄（file-review task 4.2）。
+  function notifyFilesSelected(runtime, paneId) {
+    if (window.cockpitFiles && typeof window.cockpitFiles.paneSelected === "function") {
+      window.cockpitFiles.paneSelected(runtime, paneId);
+    }
+  }
+
+  function notifyFilesCleared() {
+    if (window.cockpitFiles && typeof window.cockpitFiles.paneCleared === "function") {
+      window.cockpitFiles.paneCleared();
+    }
+  }
+
   // --- 輪詢排程 ---
 
   function cancelScheduledPoll() {
@@ -389,7 +438,9 @@
 
   function runPoll() {
     pollTimer = null;
-    if (current === null || gone || inFlightController !== null) {
+    // !visible：Live Output 不是目前分頁時不發新請求（file-review task 4.1；spec live-output「檔案
+    // 分頁期間不請求輸出」）。切回時 tabShown() 會立即重新排一次。
+    if (current === null || gone || !visible || inFlightController !== null) {
       return;
     }
     var gen = generation;
@@ -513,6 +564,7 @@
     hideReason(); // 「pane 已不存在」是完整訊息，不疊加上一輪 503 可能留下的原因文字。
     setStale(true); // 保留最後一份文字（不清空 <pre>），但標為過期。
     notifyClosedExternally();
+    notifyFilesCleared();
   }
 
   // --- 對外 API ---
@@ -527,6 +579,10 @@
     gone = false;
     resetPanelForSelection(runtime, paneId);
     showPanel();
+    // 上一個選取在切走時記下的捲動狀態不適用新選取（內容框剛清空，從貼底開始）。
+    savedPin = null;
+    // 先通知 files.js 切到 Live Output 分頁（會同步呼叫 tabShown()，visible 變回 true），再排輪詢。
+    notifyFilesSelected(runtime, paneId);
     schedulePoll(0);
   }
 
@@ -537,6 +593,49 @@
     gone = false;
     cancelScheduledPoll();
     showEmptyState();
+    notifyFilesCleared();
+  }
+
+  // Live Output 分頁變為不可見（file-review task 4.1；見檔頭「分頁可見性」）：先記下貼底狀態再執行
+  // change()（被 hidden 之後量不到捲動尺寸）；不 abort 已經發出的請求（spec「切走後至多再完成一個
+  // 先前已發出的請求」），只取消排定中的下一次。
+  function tabHidden(change) {
+    if (!visible) {
+      change();
+      return;
+    }
+    savedPin = capturePin();
+    visible = false;
+    cancelScheduledPoll();
+    change();
+  }
+
+  // Live Output 分頁變為可見：change() 之後寫回捲動狀態，有選取時立即請求一次（spec「切回 Live
+  // Output 分頁且有選取時立即請求一次」）。file-review task 4.1 fix round 1（Codex medium）：切走前
+  // 發出、到切回時還沒完成的請求（慢或卡住）會讓 runPoll() 因 inFlightController 非 null 直接略過，
+  // 新請求要等舊的完成（卡住時等到 6 秒逾時）再加 1 秒——所以切回時比照 select() 先 abortInFlight()
+  // 淘汰它、遞增世代序號（之後才到的舊回應與它的逾時回呼都被 onPollSettled 的世代檢查丟棄，不改
+  // 面板、不多排輪詢），再立即排新請求。
+  function tabShown(change) {
+    if (visible) {
+      change();
+      return;
+    }
+    visible = true;
+    change();
+    if (savedPin !== null) {
+      if (savedPin.pinned) {
+        restorePin(savedPin);
+      } else {
+        preEl.scrollTop = savedPin.top;
+      }
+      savedPin = null;
+    }
+    if (current !== null && !gone) {
+      abortInFlight();
+      generation += 1;
+      schedulePoll(0);
+    }
   }
 
   function handleDeselectClick() {
@@ -551,6 +650,7 @@
     cancelScheduledPoll();
     showEmptyState();
     notifyClosedExternally(); // actions.js clearSelected() 會同步整頁重畫
+    notifyFilesCleared();
     restoreFocusAfterDeselect(previous);
   }
 
@@ -589,5 +689,7 @@
     select: select,
     clear: clear,
     setKnownPanes: setKnownPanes,
+    tabHidden: tabHidden,
+    tabShown: tabShown,
   };
 })();

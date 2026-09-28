@@ -7,6 +7,15 @@
     "MD024": { "siblings_only": true }
   },
   // .claude/ 與 .agents/ 內是 openspec init 產生的 skill 檔，不由本 repo 維護；
-  // .superpowers/ 是 SDD 的本地 scratch（git exclude），不進 lint
-  "ignores": ["target/**", "node_modules/**", ".claude/**", ".agents/**", ".superpowers/**"]
+  // .superpowers/ 是 SDD 的本地 scratch（git exclude），不進 lint；
+  // cockpit/examples/fixtures/ 是 file-review task 3.4 的假 repo（ui_preview 用），內容故意
+  // 不照散文排版規矩（測試用的標題結構、長度等），不進 lint
+  "ignores": [
+    "target/**",
+    "node_modules/**",
+    ".claude/**",
+    ".agents/**",
+    ".superpowers/**",
+    "cockpit/examples/fixtures/**"
+  ]
 }

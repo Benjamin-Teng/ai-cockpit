@@ -434,9 +434,20 @@ async function partPreview() {
       `改綁提示應該指出目標 workstream Backend（實際 ${JSON.stringify(mode.banner)}）`
     );
     check(mode.cancel, '改綁提示裡應該有「取消」');
+    // file-review task 3.4（design D12）：fixture 多了兩個未 exited 的 pane（wJ:p4／wJ:p5，掛在
+    // 新增的 tab wJ:t2，供瀏覽器驗收腳本測檔案瀏覽——必須是未 exited 才選得到，見
+    // ui_preview.rs 的 add_review_fixture_panes 文件），DOM 順序（tab wJ:t1 在前、wJ:t2 在後）
+    // 下它們也會出現在「綁定到這裡」候選清單裡；候選清單本身仍是「只有 connected runtime 未
+    // exited 的 pane」這條規則算出來的，只是筆數隨 fixture 資料變動。
     check(
-      JSON.stringify(mode.bind) === JSON.stringify(['win/wJ:p1:綁定到這裡', 'win/wJ:p3:綁定到這裡']),
-      `只有 connected runtime（win）未 exited 的 pane（wJ:p1、wJ:p3）有「綁定到這裡」（實際 ${JSON.stringify(mode.bind)}）`
+      JSON.stringify(mode.bind) ===
+        JSON.stringify([
+          'win/wJ:p1:綁定到這裡',
+          'win/wJ:p3:綁定到這裡',
+          'win/wJ:p4:綁定到這裡',
+          'win/wJ:p5:綁定到這裡',
+        ]),
+      `只有 connected runtime（win）未 exited 的 pane（wJ:p1、wJ:p3、wJ:p4、wJ:p5）有「綁定到這裡」（實際 ${JSON.stringify(mode.bind)}）`
     );
     check(requests.length === 0, `進入改綁模式本身不送請求（實際 ${JSON.stringify(requests)}）`);
     await cdp.click('[data-action="bind-here"][data-runtime="win"][data-pane="wJ:p3"]');

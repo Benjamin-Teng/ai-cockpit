@@ -138,6 +138,8 @@ fn build(fake: Arc<FakeOutputRuntime>) -> AppState {
         progress: None,
         port: Arc::new(AtomicU16::new(0)),
         runtimes: Arc::new(runtimes),
+        path_mappings: Arc::new(HashMap::new()),
+        files: Arc::new(cockpit::files::FileSettings::embedded()),
     }
 }
 

@@ -65,6 +65,24 @@
 //! 200／404／503／504、405 fallback、`Path` rejection）都經過 [`error_response`] 或
 //! [`output_response`]，統一帶兩個安全標頭與 JSON `error` 本體；沒有第三種來源（`State`
 //! extractor 不會失敗）。
+//!
+//! 根目錄查詢端點（file-review task 3.1；spec `file-review`「根目錄查詢端點」「檔案端點的共同
+//! 規則」）：`GET /api/runtimes/{runtime}/panes/{pane}/root`，處理常式與允許清單在
+//! [`crate::files`]。路由掛法與輸出端點完全相同（`get` → `.fallback(405)` →
+//! `.route_layer(source_check)` → `.head(405)`，理由同上）；錯誤本體多一個 `code` 欄位
+//! （[`coded_error_response`]），同樣經 [`with_no_store_headers`] 帶兩個安全標頭。
+//!
+//! 檔案端點（file-review task 3.2；spec `file-review`「檔案端點的共同規則」與四個端點各自的
+//! requirement）：`GET /api/files/{runtime}/{root_id}/list`（根目錄本身）、`.../list/{*path}`、
+//! `.../meta/{*path}`、`.../render/{*path}`、`.../raw/{*path}`，處理常式在 [`crate::files`]；掛法同上。
+//! design D10 同時把 `source_check` 的 403 與套用它的端點（輸出、寫入）的 405 本體改成帶 `code`
+//! （`forbidden_source`、`method_not_allowed`），403 本體不再帶出請求的 `Host`／`Origin`。
+//!
+//! vendored 資源（file-review task 3.3；spec `cockpit-dashboard`「路由與內嵌資源」；design D9）：
+//! `GET /vendor/{*path}`，處理常式與內嵌目錄在 [`crate::vendor`]。不套用 `source_check`（跟
+//! `/app/`、`/icons/` 一樣是公開靜態資源），也不覆寫 `HEAD`／其他 method 的處理——未註冊的 method
+//! 落回 axum 內建的 405、`HEAD` 落回 axum 內建的「轉發到 `GET` 再清空本體」，理由見
+//! [`crate::vendor`] 模組文件。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -85,6 +103,7 @@ use cockpit_core::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
+use crate::files;
 use crate::progress_service::{ProgressService, WriteError};
 use crate::source_check::source_check;
 
@@ -116,6 +135,15 @@ pub struct AppState {
     /// 不受影響（table 不持有任何會阻塞停止流程的資源，見 `cockpit::app` 的 `shutdown_all`
     /// 文件）。表在啟動時建立後不再變動，不需要鎖。
     pub runtimes: Arc<HashMap<RuntimeId, Arc<dyn AgentRuntime>>>,
+    /// 檔案端點用：每個設定中的 runtime 怎麼把 pane 回報的 `cwd` 轉成服務所在主機的路徑
+    /// （file-review task 3.1；spec「檔案根目錄與允許清單」；design D2）。`cockpit::app::build_components`
+    /// 依 `config.runtimes` 逐筆建立（見 [`crate::files::PathMapping::from_endpoint`]），啟動後不再變動。
+    /// 檔案端點判斷「runtime 是不是設定中的 id」只看這張表：不在表內一律 `runtime_unknown`
+    /// ——沒有登記對應方式的 runtime 不會被猜成「原樣當主機路徑」（fail-closed）。
+    pub path_mappings: Arc<HashMap<RuntimeId, crate::files::PathMapping>>,
+    /// 檔案端點啟動時就決定的設定（file-review task 3.2；design D9）：解析一次的 icon 對照表與原始
+    /// 內容大小上限（正式值 [`crate::files::RAW_SIZE_LIMIT`]，測試可注入較小值）。
+    pub files: Arc<crate::files::FileSettings>,
 }
 
 impl AppState {
@@ -133,6 +161,8 @@ impl AppState {
             progress: None,
             port: Arc::new(AtomicU16::new(0)),
             runtimes: Arc::new(HashMap::new()),
+            path_mappings: Arc::new(HashMap::new()),
+            files: Arc::new(crate::files::FileSettings::embedded()),
         }
     }
 }
@@ -145,30 +175,83 @@ impl AppState {
 /// [`crate::source_check`] 模組文件對 `route_layer` 範圍的說明）。
 pub fn router(app: AppState) -> Router {
     let source_check_layer = axum::middleware::from_fn_with_state(app.clone(), source_check);
+    // 檔案端點的共同掛法（`get` → `.fallback(405)` → `.route_layer(source_check)` → `.head(405)`，
+    // 理由見模組文件）。
+    macro_rules! file_route {
+        ($handler:expr) => {
+            get($handler)
+                .fallback(files::method_not_allowed)
+                .route_layer(source_check_layer.clone())
+                .head(files::method_not_allowed)
+        };
+    }
     Router::new()
         .route("/", get(index))
         .route("/app/{file}", get(app_asset))
         .route("/manifest.webmanifest", get(manifest))
         .route("/icons/{file}", get(icon))
+        // vendored 資源（file-review task 3.3；design D9）：公開靜態資源，不套用 source_check，
+        // 掛法同 `/app/`、`/icons/`——只註冊 `get`，其餘 method 與 `HEAD` 交給 axum 內建行為。
+        .route("/vendor/{*path}", get(crate::vendor::vendor_asset))
         .route("/api/state", get(api_state))
         .route("/ws", get(ws_handler))
         .route(
             "/api/projects/{project}/tasks/{task}/{op}",
-            post(progress_op).route_layer(source_check_layer.clone()),
+            post(progress_op)
+                .fallback(write_method_not_allowed)
+                .route_layer(source_check_layer.clone()),
         )
         .route(
             "/api/projects/{project}/workstreams/{workstream}/override",
             put(set_override)
                 .delete(clear_override)
+                .fallback(write_method_not_allowed)
                 .route_layer(source_check_layer.clone()),
         )
         .route(
             "/api/runtimes/{runtime}/panes/{pane}/output",
             get(read_pane_output)
                 .fallback(output_method_not_allowed)
-                .route_layer(source_check_layer)
+                .route_layer(source_check_layer.clone())
                 .head(output_method_not_allowed),
         )
+        // 根目錄查詢端點（file-review task 3.1）：與輸出端點同一個掛法、同一個順序——`get` →
+        // `.fallback(405)` → `.route_layer(source_check)`（只包到當下已註冊的 `get`）→
+        // `.head(405)`（在 route_layer 之後註冊，不經 source_check）。結果：`GET` 先過來源檢查
+        // （403），`POST` 等與 `HEAD` 不論 Host／Origin 一律 405。
+        .route(
+            "/api/runtimes/{runtime}/panes/{pane}/root",
+            get(files::pane_root)
+                .fallback(files::method_not_allowed)
+                .route_layer(source_check_layer.clone())
+                .head(files::method_not_allowed),
+        )
+        // 檔案端點（file-review task 3.2）：同一個掛法。`list` 有兩條（根目錄本身、子路徑）；
+        // 處理常式一律從原始請求 URI 取相對路徑（見 `crate::files` 的 `parse_target`），`{*path}`
+        // 只負責讓路由比對得到，其解碼值不被使用。
+        .route(
+            "/api/files/{runtime}/{root_id}/list",
+            file_route!(files::list),
+        )
+        .route(
+            "/api/files/{runtime}/{root_id}/list/{*path}",
+            file_route!(files::list),
+        )
+        .route(
+            "/api/files/{runtime}/{root_id}/meta/{*path}",
+            file_route!(files::meta),
+        )
+        .route(
+            "/api/files/{runtime}/{root_id}/render/{*path}",
+            file_route!(files::render),
+        )
+        .route(
+            "/api/files/{runtime}/{root_id}/raw/{*path}",
+            file_route!(files::raw),
+        )
+        // `/api/files/` 底下其餘形狀（`.../list/` 這種空的 `{*path}`——matchit 的 catch-all 不收空值、
+        // `.../raw` 少了路徑、不認得的端點名）不命中任何路由，落到 axum 預設的 404（空本體）。想用
+        // `/api/files/{*rest}` 接住它們會與上面的 `{*path}` 路由衝突（matchit 插入時 panic）。
         .with_state(app)
 }
 
@@ -206,6 +289,17 @@ async fn app_asset(Path(file): Path<String>) -> Response {
         "output.js" => (
             [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
             include_str!("../assets/app/output.js"),
+        )
+            .into_response(),
+        // file-review task 4.1（design D6）：左欄分頁／檔案樹／分頁區（files.js）與檢視器（viewers.js）。
+        "files.js" => (
+            [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+            include_str!("../assets/app/files.js"),
+        )
+            .into_response(),
+        "viewers.js" => (
+            [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+            include_str!("../assets/app/viewers.js"),
         )
             .into_response(),
         _ => StatusCode::NOT_FOUND.into_response(),
@@ -475,7 +569,24 @@ async fn read_pane_output(
 /// `source_check`、也不會呼叫 `read_output`。用它取代 axum 內建的 405 fallback（本體是空的，
 /// 不符合 spec 逐字要求的 `{"error": ...}`）。
 async fn output_method_not_allowed() -> Response {
-    error_response(StatusCode::METHOD_NOT_ALLOWED, "這個端點只接受 GET")
+    // file-review task 3.2（design D10）：套用 source_check 的端點，405 本體一律帶 `code`。
+    coded_error_response(
+        StatusCode::METHOD_NOT_ALLOWED,
+        "method_not_allowed",
+        "這個端點只接受 GET",
+    )
+}
+
+/// 寫入端點的 405（file-review task 3.2；design D10：套用 source_check 的端點，405 本體一律是
+/// `{"error": ..., "code": "method_not_allowed"}`）。掛在 `.fallback(...)`，跟輸出端點一樣不被
+/// `route_layer` 包住：未註冊的 method 不經來源檢查、也不進寫入服務。先前這裡是 axum 內建的 405
+/// （空本體），只有狀態碼被測試斷言，改成帶本體不影響那些斷言。
+async fn write_method_not_allowed() -> Response {
+    coded_error_response(
+        StatusCode::METHOD_NOT_ALLOWED,
+        "method_not_allowed",
+        "這個端點不接受這個 method",
+    )
 }
 
 /// 200 回應本體（spec 逐字欄位名：`runtime`、`pane_id`、`format`、`text`、`truncated`；
@@ -520,7 +631,7 @@ fn output_response(runtime: &str, pane_id: &str, output: cockpit_core::PaneOutpu
 /// 副作用是寫入端點（`progress_op`／`set_override`／`clear_override`）的錯誤回應也會多這兩個
 /// 標頭，這是刻意接受的：多兩個標頭對它們無害，換成只套輸出端點的獨立 wrapper 反而要多維護
 /// 一條分支，且更容易在新增錯誤分支時漏掛。
-fn with_no_store_headers(mut response: Response) -> Response {
+pub(crate) fn with_no_store_headers(mut response: Response) -> Response {
     let headers = response.headers_mut();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(
@@ -550,10 +661,13 @@ fn write_error_response(error: WriteError) -> Response {
     }
 }
 
-/// 錯誤回應本體 `{"error": "<reason>"}`（spec 多處要求的形狀）。
+/// 錯誤回應本體 `{"error": "<reason>"}`（spec 多處要求的形狀）；檔案端點（file-review design
+/// D10）多一個 `code` 欄位，其餘端點沒有 `code` 時整個欄位省略，本體與先前逐字相同。
 #[derive(Serialize)]
 struct ErrorBody<'a> {
     error: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'a str>,
 }
 
 /// 全 crate 共用的錯誤回應：本體 `{"error": "<reason>"}`，並帶上
@@ -561,8 +675,22 @@ struct ErrorBody<'a> {
 /// 要帶這兩個標頭，這裡是唯一、不會漏掉任何分支的掛點——見 [`with_no_store_headers`] 的文件
 /// 說明為什麼連寫入端點的錯誤回應也一起帶）。
 pub(crate) fn error_response(status: StatusCode, reason: &str) -> Response {
-    let body = serde_json::to_string(&ErrorBody { error: reason })
-        .expect("ErrorBody 只含字串，序列化不會失敗");
+    error_body_response(status, reason, None)
+}
+
+/// 同 [`error_response`]，本體多帶 `code`：`{"error": "<reason>", "code": "<code>"}`（file-review
+/// spec「檔案端點的共同規則」；design D10）。檔案端點的錯誤一律走這裡（經
+/// [`crate::files::FileApiError`] 的 `IntoResponse`）。
+pub(crate) fn coded_error_response(status: StatusCode, code: &str, reason: &str) -> Response {
+    error_body_response(status, reason, Some(code))
+}
+
+fn error_body_response(status: StatusCode, reason: &str, code: Option<&str>) -> Response {
+    let body = serde_json::to_string(&ErrorBody {
+        error: reason,
+        code,
+    })
+    .expect("ErrorBody 只含字串，序列化不會失敗");
     with_no_store_headers(
         (status, [(header::CONTENT_TYPE, "application/json")], body).into_response(),
     )

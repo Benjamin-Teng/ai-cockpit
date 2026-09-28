@@ -187,6 +187,88 @@ runtime id、或該 pane 不存在 → 404；runtime 無法連線或讀取失敗
 內容，回應本體只有本機同源頁面與本機命令列（如 `curl`）讀得到。端點唯讀、無副作用，被觸發也沒有
 傷害；所有回應一律帶 `Cache-Control: no-store`，不會被任何地方快取。
 
+## 檔案瀏覽與 Review（change 5a `file-review`）
+
+Cockpit 依每個 pane 的 `cwd` 推算「檔案根目錄」（往上找到的第一個 `.git`，找不到就用 `cwd` 本身），
+提供一組唯讀端點在安全邊界內列目錄、渲染 Markdown 與讀取原始檔案內容，並在下半部分頁區顯示。詳細
+行為契約見 `openspec/specs/file-review/spec.md`；本節只講服務端點與安全邊界。
+
+### 端點
+
+- `GET /api/runtimes/<runtime>/panes/<pane>/root`：查詢該 pane 的檔案根目錄，回傳 `root_id`（之後
+  所有檔案端點用它指定根目錄）與 `root_path`、`name`、`is_git` 等顯示用欄位。
+- `GET /api/files/<runtime>/<root_id>/list`（根目錄本身）與 `.../list/<相對路徑>`：列出一層目錄的
+  直接子項目（不遞迴），依 `.gitignore` 過濾、隱藏 `.git`。
+- `GET /api/files/<runtime>/<root_id>/meta/<相對路徑>`：檔案大小、修改時間、`viewer` 分類
+  （`markdown`／`pdf`／`html`／`text`／`unsupported`）、icon、`vscode_uri`。
+- `GET /api/files/<runtime>/<root_id>/render/<相對路徑>`：只對 Markdown 檔案有效，伺服器用 `comrak`
+  渲染成 HTML 片段（GFM 表格／任務清單／刪除線／自動連結），原始 HTML 與危險連結一律被清掉。
+- `GET /api/files/<runtime>/<root_id>/raw/<相對路徑>`：檔案原始位元組，`Content-Type` 依副檔名決定。
+- `GET /vendor/<路徑>`：內嵌的第三方前端資源（pdf.js、Material Icon Theme 的 icon 與對照表），公開
+  靜態資源，不套用下方的來源檢查與允許清單。
+
+非 200 回應本體固定為 `{"error": "<中文原因>", "code": "<代碼>"}`；完整代碼與狀態碼對照見
+`openspec/specs/file-review/spec.md`「檔案端點的共同規則」。
+
+### 安全邊界
+
+- **允許清單＝目前所有 pane 的根目錄**：每個請求當下重新對最新投影中該 runtime 的每個 pane（含
+  `exited`）推算根目錄，找到相符的才放行；不在清單內（含先前曾經可用、pane 已消失的根目錄）一律
+  `404 root_unavailable`。不快取，沒有伺服器端 session 或 token。
+- **相對路徑從原始 URI 取得，逐段檢查**：HTTP 層直接切原始請求路徑（仍是 percent-encoded 的字面
+  字串），不使用 axum 已解碼過的 `Path` 擷取值——後者的一次性解碼會讓 `..%2F..` 這類多重編碼在到
+  達邊界檢查前就被還原成字面的 `/`、`..`，形同繞過逐段檢查。空片段、`.`、`..`、含 `/`、`\`、`:`、
+  NUL、以 `.` 或空白結尾、或是 Windows 保留裝置名（`CON`、`PRN`、`NUL`、`COM1`–`COM9`、`LPT1`–
+  `LPT9` 等）一律 `400 bad_request`，在碰檔案系統之前就擋掉。
+- **實體路徑必須在根目錄內**：根目錄與目標各自 `canonicalize` 後以 `Path::starts_with` 比對；
+  **符號連結、junction、懸空連結（reparse point 指到根外或已不存在）一律視為跳出根目錄**，回
+  `403 path_outside_root`，不區分「根外存在」與「根外不存在」（避免以錯誤碼種類探測根外檔案系統
+  是否存在）。列目錄時的 `.gitignore` 過濾只影響「列出哪些項目」，不是存取控制——被過濾掉的檔案
+  仍可用 `raw`／`meta` 直接讀到；規則檔本身（`.gitignore`、`.git`、`.git/info/exclude`）若是連結一律
+  略過（同 git 對 `.gitignore` 是連結時的行為），祖先目錄被忽略時該層列表回空清單（非錯誤），不會
+  重新套用其內規則。
+- **WSL runtime 的 repo 內符號連結一律讀不到**：Windows 經 `\\wsl.localhost` 看到的 Linux 符號連結是無法
+  跟隨的 reparse point（解不出目標、直接開檔也失敗），所以不論連結指向根目錄外或 repo 內部，都依上一條
+  一律 `403 path_outside_root`；列目錄時這類連結一律顯示為檔案（Windows 端無法得知它指向資料夾），點開
+  得到同一個錯誤。這是 fail-closed 的功能限制，不是安全問題（task 5.2 實測，見
+  `docs/research/2026-09-27/file-review-probe.md` 第 6 節）。
+- **只接受 `GET`**：其他 method（含 `HEAD`）一律 `405 method_not_allowed`，且不對檔案系統或 runtime
+  發出任何存取。未命中任何本節路由形狀的請求（例如 `list/` 空尾、缺相對路徑、未知端點名）落到
+  axum 預設的空本體 404，不帶 `no-store`／`nosniff` 標頭——這些不是本節定義的端點。
+- **Host／Origin 檢查**：與寫入端點、輸出讀取端點同一套本機同源檢查（見上方「寫入 API」），不符合
+  回 `403 forbidden_source`。
+- **根目錄判定 fail-closed**：非 WSL runtime 的 pane，其 `cwd` 不是絕對路徑或含 `..` 時一律視為沒有
+  根目錄（`404 no_root`），不嘗試猜測；請求路徑先解碼 `root_id`（400）再查 runtime 是否存在
+  （404），順序固定。
+- **回應標頭**：所有回應（含錯誤）帶 `Cache-Control: no-store` 與 `X-Content-Type-Options: nosniff`；
+  `render`／`raw` 另帶 `Content-Security-Policy: sandbox`，讓直接開啟該網址時 HTML／SVG 內容裡的
+  腳本不會在 Cockpit 的來源下執行（`source_check` 擋下的 403／405 本身不含檔案內容，不加這個標頭）。
+  中繼資料的 `icon` 依請求字面檔名決定、原始內容的 `Content-Type` 依實體路徑（`canonicalize` 後）的
+  副檔名決定，8.3 短檔名或連結情境下兩者可能不一致，只影響顯示，不影響安全邊界。
+- **大小上限**：中繼資料端點只讀前 8192 位元組判斷 `viewer` 種類，不受上限限制；Markdown 渲染上限
+  2 MiB（超過回 `413 too_large`）；原始內容上限 50 MiB。不支援 HTTP Range，pdf.js 以整檔讀取。
+- **不寫入、不執行**：這組端點沒有任何寫入、建立、刪除檔案或執行外部程式的路徑，純讀取。
+
+**已知風險與裁決（設計文件與控制端裁決已記錄、刻意不額外限制）**：
+
+- 允許清單的範圍是「目前有 pane 的整個 repo」而不是單一檔案；若某個 shell pane 的 `cwd` 不在 git
+  repo 內（例如停在使用者家目錄或 `C:\`），該 pane 的檔案根目錄就是 `cwd` 本身，會讓整個家目錄或
+  整顆磁碟進入允許清單。這仍只對本機同源請求開放、且只讀，等同使用者在那個 pane 裡本來就能讀到的
+  範圍，因此不另設限制；使用者若在意，避免讓 shell pane 停在家目錄或磁碟根目錄即可。
+- PDF 檢視器把「檔案能讀到但 pdf.js 無法解析」視為成功讀取後的一種顯示內容（顯示「PDF 無法解析」），
+  不算讀取失敗，不會加上過期標示；過期標示只套用在讀取本身失敗（檔案消失、逾時等）的情況。
+- HTML 檢視器以 iframe 的 `src` 直接載入原始內容端點（不改寫使用者的 HTML，相對路徑的樣式表與圖片
+  才載得到）。iframe 的 `load` 事件分不出 HTTP 成功與否、sandbox 文件的內容也讀不到，所以新版本先在
+  隱藏的新 iframe 載入（網址加一個唯一的 `?_cv=<序號>`，服務端忽略 query），再從父頁的 Resource Timing
+  取這次導覽的 `responseStatus`：是 200 才換掉舊 iframe；不是 200、取不到或 10 秒內沒有結果就丟掉新
+  iframe、保留舊內容並標過期，同一個版本下一輪輪詢重試。狀態碼只能對應到大致的錯誤原因（例如 404 一律
+  顯示「檔案已不存在」），取不到狀態碼（連線失敗等）時顯示「讀取時發生錯誤」。
+
+### vendored 資源升版
+
+`cockpit/assets/vendor/` 下的 pdfjs-dist 與 Material Icon Theme 版本、下載來源、SHA-256 與升版步驟
+記在 `cockpit/assets/vendor/README.md`，升版時照該檔案的步驟重做。
+
 ## 單一執行檔
 
 所有靜態資源（HTML、JS、CSS、manifest、PNG 圖示）都用 `include_str!`／`include_bytes!` 內嵌進

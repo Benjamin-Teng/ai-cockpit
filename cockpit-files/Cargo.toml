@@ -1,0 +1,11 @@
+[package]
+name = "cockpit-files"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+comrak = "0.55.0"
+ignore = "0.4.33"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"

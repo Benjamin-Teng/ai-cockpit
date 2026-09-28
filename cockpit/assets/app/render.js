@@ -983,9 +983,12 @@
   // `renderState()` 算好的「實際生效的選取」（已經套用過「找不到就用第一個」的退回規則，見
   // `resolveSelectedProject()`）——這裡只負責標示哪一項該顯示 `.selected`，不重算退回規則，
   // 避免兩處各自判斷、彼此不一致。投影沒有任何 Project 時顯示空狀態（spec「沒有 Project」）。
-  function renderProjectsRegion(state, selectedProjectId) {
+  function renderProjectsRegion(state, selectedProjectId, hidden) {
     var region = el("nav", "region-projects");
     region.setAttribute("data-region", "projects");
+    // file-review task 4.1（design D6）：左欄目前分頁不是「Project」時整塊 hidden；左欄目前分頁是
+    // files.js 的狀態，由 paint() 讀出後傳進來（見 renderState() 的第三參數）。
+    region.hidden = hidden === true;
 
     if (state.projects.length === 0) {
       region.appendChild(renderProjectsEmptyState());
@@ -1078,7 +1081,10 @@
   // fragment，不接受陣列，呼叫端不用因此改參數型態。不讀寫 document 上既有的節點、不留任何
   // 全域狀態（`document.createDocumentFragment()`／`el()` 內的 `document.createElement()` 都只
   // 是節點工廠呼叫，不是讀寫既有 DOM）。
-  function renderState(state, ui) {
+  // 第三參數 leftTab（file-review task 4.1；design D6）：左欄目前分頁（"projects" | "files"，缺省＝
+  // "projects"），決定 Project 清單是否 hidden。由 paint() 從 files.js 讀出後傳入，renderState()
+  // 本身仍不讀任何全域。
+  function renderState(state, ui, leftTab) {
     var rebind = ui && ui.rebind ? ui.rebind : null;
     var error = ui && ui.error ? ui.error : null;
     var selected = ui && ui.selected ? ui.selected : null;
@@ -1095,7 +1101,9 @@
     // DOM 順序跟著 M7 裁決的視覺順序走（topbar→Project→banner→Floor→runtime→…），雖然
     // grid-template-areas 決定的是視覺位置、不是 DOM 順序（direction-01-visual task 2.1），
     // 但兩者一致比較好理解、鍵盤 Tab 順序也比較合理。
-    frag.appendChild(renderProjectsRegion(state, selectedProject !== null ? selectedProject.id : null));
+    frag.appendChild(
+      renderProjectsRegion(state, selectedProject !== null ? selectedProject.id : null, leftTab === "files")
+    );
 
     var banner = renderBannerRegion(state, error, rebind);
     if (banner !== null) {
@@ -1150,7 +1158,8 @@
   // Live Output（spec live-output「選定一個 pane」；design D8；task 5.3）：交出目前投影裡還
   // 存在的所有 pane（跨 runtime、含 exited——exited 只是不可選，不是不存在），讓 output.js
   // 判斷被選定的 pane 是否已經從投影裡消失。同一個 pane id 可能出現在不同 runtime，所以一定
-  // 要帶 runtime。
+  // 要帶 runtime。每筆另帶 pane 的 cwd（null 表示沒有回報），給 files.js 判斷選定 pane 的根目錄是否該
+  // 重查（file-review 最終修正波 F1；output.js 只看 runtime／paneId）。
   function collectKnownPanes(state) {
     var panes = [];
     for (var r = 0; r < state.runtimes.length; r += 1) {
@@ -1160,7 +1169,8 @@
         for (var t = 0; t < workspace.tabs.length; t += 1) {
           var tab = workspace.tabs[t];
           for (var p = 0; p < tab.panes.length; p += 1) {
-            panes.push({ runtime: runtime.id, paneId: tab.panes[p].id });
+            var cwd = tab.panes[p].cwd;
+            panes.push({ runtime: runtime.id, paneId: tab.panes[p].id, cwd: typeof cwd === "string" ? cwd : null });
           }
         }
       }
@@ -1408,12 +1418,23 @@
     // consumePendingFocusIdentity 註解），沒有才照舊看 document.activeElement。
     var focusIdentity = consumePendingFocusIdentity() || captureFocusIdentity(appEl);
     var savedScroll = captureScroll(appEl);
-    appEl.replaceChildren(renderState(latestState, ui));
+    // file-review task 4.1（design D6）：左欄目前分頁是 files.js 的模組狀態，每次重畫都重新讀。
+    var leftTab =
+      window.cockpitFiles && typeof window.cockpitFiles.leftTab === "function"
+        ? window.cockpitFiles.leftTab()
+        : "projects";
+    appEl.replaceChildren(renderState(latestState, ui, leftTab));
     restoreScroll(appEl, savedScroll);
     // #output 不在 #app 底下、不被上面這行換掉（design D8）；每次重畫後仍要交出最新的 pane
     // 集合，讓 output.js 判斷被選的 pane 是否已經消失。
+    var knownPanes = collectKnownPanes(latestState);
     if (window.liveOutput && typeof window.liveOutput.setKnownPanes === "function") {
-      window.liveOutput.setKnownPanes(collectKnownPanes(latestState));
+      window.liveOutput.setKnownPanes(knownPanes);
+    }
+    // 檔案樹（#files）同樣不在 #app 底下：交出同一份 pane 集合（含 cwd），選定 pane 的 cwd 改變時由
+    // files.js 重查根目錄（spec file-review「左欄檔案樹」：根目錄改變時讀取；最終修正波 F1）。
+    if (window.cockpitFiles && typeof window.cockpitFiles.setKnownPanes === "function") {
+      window.cockpitFiles.setKnownPanes(knownPanes);
     }
     restoringFocus = true;
     try {

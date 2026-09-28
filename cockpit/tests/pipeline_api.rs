@@ -309,6 +309,8 @@ fn build_with_projects(
         progress: Some(service),
         port: Arc::new(AtomicU16::new(0)),
         runtimes: Arc::new(HashMap::new()),
+        path_mappings: Arc::new(HashMap::new()),
+        files: Arc::new(cockpit::files::FileSettings::embedded()),
     };
     (handle, state)
 }
