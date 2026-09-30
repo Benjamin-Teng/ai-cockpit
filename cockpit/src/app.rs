@@ -186,6 +186,7 @@ pub fn build_components(config: &Config) -> anyhow::Result<Components> {
         runtimes: Arc::clone(&runtimes),
         path_mappings: Arc::new(path_mappings(config)),
         files: Arc::new(crate::files::FileSettings::embedded()),
+        git_runner: Arc::new(cockpit_git::GitRunner::new()),
     });
 
     Ok(Components {

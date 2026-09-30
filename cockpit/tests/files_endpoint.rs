@@ -155,6 +155,7 @@ fn build(
         runtimes: Arc::new(HashMap::new()),
         path_mappings: Arc::new(path_mappings),
         files: Arc::new(FileSettings::embedded()),
+        git_runner: Arc::new(cockpit_git::GitRunner::new()),
     };
     (tx, app)
 }

@@ -1081,9 +1081,12 @@
   // fragment，不接受陣列，呼叫端不用因此改參數型態。不讀寫 document 上既有的節點、不留任何
   // 全域狀態（`document.createDocumentFragment()`／`el()` 內的 `document.createElement()` 都只
   // 是節點工廠呼叫，不是讀寫既有 DOM）。
-  // 第三參數 leftTab（file-review task 4.1；design D6）：左欄目前分頁（"projects" | "files"，缺省＝
-  // "projects"），決定 Project 清單是否 hidden。由 paint() 從 files.js 讀出後傳入，renderState()
-  // 本身仍不讀任何全域。
+  // 第三參數 leftTab（file-review task 4.1／4.2；design D6）：左欄目前分頁（"projects" | "files" |
+  // "changes"，缺省＝"projects"），決定 Project 清單是否 hidden——只有目前分頁**是**"projects"
+  // 才顯示，其餘（含「檔案」與「變更」，以及未來任何新分頁）一律 hidden（fix round 2：4.2 加
+  // 「變更」分頁時，這裡沿用了 file-review 4.1 時的二選一判斷 `leftTab === "files"`，讓「變更」
+  // 分頁被誤判為「不是 files 所以顯示」，導致整頁重畫後 Project 清單在「變更」分頁時跑出來）。
+  // 由 paint() 從 files.js 讀出後傳入，renderState() 本身仍不讀任何全域。
   function renderState(state, ui, leftTab) {
     var rebind = ui && ui.rebind ? ui.rebind : null;
     var error = ui && ui.error ? ui.error : null;
@@ -1102,7 +1105,7 @@
     // grid-template-areas 決定的是視覺位置、不是 DOM 順序（direction-01-visual task 2.1），
     // 但兩者一致比較好理解、鍵盤 Tab 順序也比較合理。
     frag.appendChild(
-      renderProjectsRegion(state, selectedProject !== null ? selectedProject.id : null, leftTab === "files")
+      renderProjectsRegion(state, selectedProject !== null ? selectedProject.id : null, leftTab !== "projects")
     );
 
     var banner = renderBannerRegion(state, error, rebind);
@@ -1435,6 +1438,11 @@
     // files.js 重查根目錄（spec file-review「左欄檔案樹」：根目錄改變時讀取；最終修正波 F1）。
     if (window.cockpitFiles && typeof window.cockpitFiles.setKnownPanes === "function") {
       window.cockpitFiles.setKnownPanes(knownPanes);
+    }
+    // 左欄「變更」面板（#changes-panel；git-review task 4.2）同樣不在 #app 底下、同一份 pane 集合：
+    // 選定 pane 的 cwd 改變、且「變更」分頁目前可見時，git.js 重查根目錄。
+    if (window.cockpitGit && typeof window.cockpitGit.setKnownPanes === "function") {
+      window.cockpitGit.setKnownPanes(knownPanes);
     }
     restoringFocus = true;
     try {

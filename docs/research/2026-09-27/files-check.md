@@ -56,6 +56,7 @@ node docs/research/2026-09-27/files-check.js --scratch=D:\tmp\shots             
 | --- | --- | --- |
 | `self/鷹架` | 腳本自我測試 | 啟動 ui_preview 並讀到暫存副本路徑；CDP 連上並等到首份投影；網路請求依 URL 分類；Fetch 攔截改寫中繼資料；message 監聽器；改寫暫存副本再還原；以 vendored pdf.js 校準 PDF 像素偵測器（正負對照）；以合成 DOM 驗前端契約的定位規則；以合成 DOM 驗檔案樹「節點沒被換掉」偵測器（重設某列 innerHTML、換掉捲動容器都必須轉紅）；`analyzeOutputAcrossSwitch` 六個純函式案例，以及在目前前端改真的 Live Output tab 的 `aria-selected` 做 (a)–(d) 正負對照（見「請求分類方式」）；收尾衛生（行程、埠、暫存目錄、repo 內 fixture 雜湊不變） |
 | `self/段落代號` | 腳本自我測試 | `parseSegmentArg` 對合法、拼錯、大小寫不符、未知前綴、空字串、只有逗號各驗一次；實際以錯的代號與空字串執行本檔，必須 exit 2、不啟動行程 |
+| `file-review/左欄三個分頁` | file-review／左欄檔案樹（git-review task 4.2） | 載入頁面：左欄頂端依序「Project」「檔案」「變更」，目前為「Project」；聚焦「Project」後按右方向鍵兩次、鍵盤焦點在「變更」；按 Enter 後目前分頁為「變更」 |
 | `file-review/切到檔案分頁` | file-review／左欄檔案樹 | 選定 `wJ:p4` 後點「檔案」：頂端顯示 `review-repo`、`win` 與「重新整理」；第一層列＝列目錄端點回傳的子項目（集合） |
 | `file-review/沒有選定 pane` | file-review／左欄檔案樹 | 不選 pane 就切到「檔案」：顯示空狀態文案；從導覽起沒有任何檔案端點（含根目錄查詢）的請求 |
 | `file-review/展開狀態跨根目錄保留` | file-review／左欄檔案樹 | 展開 `src` → 改選 `wJ:p5`（other-repo）→ 改選回 `wJ:p4`：`src` 仍展開 |
@@ -76,6 +77,7 @@ node docs/research/2026-09-27/files-check.js --scratch=D:\tmp\shots             
 | `file-review/檔案被刪掉後又出現` | file-review／自動更新 | 暫存副本加 `plan.md`；刪除後可見文字含「過期」「檔案已不存在」且保留舊內容；5 秒後重建，3 秒內顯示新內容、兩者消失 |
 | `file-review/重新整理後還原` | file-review／分頁還原 | 開 README、`docs/a.md`（目前）、左欄「檔案」後 `Page.reload`：順序、目前分頁、內容、左欄分頁都還原 |
 | `file-review/儲存內容損毀` | file-review／分頁還原 | 先讓前端寫入，把當下所有 localStorage 值改成 `{not json` 後重載：只有 Live Output 分頁；pane 列、Factory Floor、左欄分頁、Live Output 面板正常；console 有警告、沒有未捕捉例外 |
+| `file-review/舊格式照常還原` | file-review／分頁還原（git-review task 4.1：`v:1` 相容） | 導覽前直接寫入 `v:1`（無 `kind` 欄位）格式的 localStorage，記錄 README.md 與 docs/a.md 兩個檔案分頁、目前分頁 docs/a.md：載入後兩個分頁依原順序還原、目前分頁為 docs/a.md 並顯示內容，切到 README.md 後也顯示內容 |
 | `file-review/Windows 檔案` | file-review／在 VS Code 開啟 | 暫存副本加 `docs/a b.md`：中繼資料 `vscode_uri`＝由暫存副本路徑算出的 `vscode://file/<磁碟>:/…/docs/a%20b.md`，連結 `href` 等於它 |
 | `file-review/WSL 檔案` | file-review／在 VS Code 開啟 | 暫存副本加 `a.md`；以 CDP Fetch 把其中繼資料回應的 `vscode_uri` 改成 spec 的 WSL 形狀；連結 `href` 照原值顯示 |
 | `live-output/選定 pane 時切回 Live Output 分頁` | live-output／選定一個 pane | 已選 `wJ:p4`、目前為 README 分頁時點 `wJ:p1` 列：Live Output 成為目前分頁、面板可見並顯示 `wJ:p1`、README 分頁仍在 |

@@ -53,6 +53,10 @@ Cockpit 刻意把「HERDR 說的」與「Cockpit 自己認定的」分成兩層�
 | Live Output | 選定 pane 的輸出投影，來自 HERDR `pane.read`，不是 terminal。由頁面輪詢（每秒一次）、純文字、最多最近 200 行；選取只存在於單一瀏覽器頁面，不送到服務、不跨分頁共享。中欄下半部分頁化（change 5a）後，是下半部分頁區固定的第一個分頁、不可關閉。 |
 | 檔案根目錄 | change 5a `file-review` 起：由選定 pane 的 `cwd` 往上找到的第一個 git repo 根目錄（`.git` 為資料夾或檔案）；找不到就以 `cwd` 本身為根目錄。`root_id` 是根目錄主機路徑的不透明編碼，不是秘密也不是授權憑證——授權來自「目前所有 pane 的根目錄」這份允許清單，每個請求當下重新驗證。 |
 | 檔案分頁 | change 5a 起，Cockpit 中欄下半部分頁區裡「已開啟檔案」對應的分頁，開啟後顯示該檔案的 Markdown／PDF／HTML／純文字檢視器內容。**與 HERDR 的 Tab 是兩回事，不要混用**：HERDR 的 Tab 是某個 workspace 內的終端機分頁（id 形如 `wJ:t1`），檔案分頁是 Cockpit 自己畫面上的概念，跟任何 HERDR 物件無對應關係，只存在於瀏覽器本機（可還原）。 |
+| 變更分頁 | change 5b `git-review` 起，Cockpit 左欄三個分頁之一（與「Project」「檔案」並列），顯示目前選定 pane 之檔案根目錄的 git 狀態（已暫存、變更、未追蹤等分組）。與 HERDR 的 Tab 無關，寫法同「檔案分頁」。 |
+| diff 分頁 | change 5b 起，中欄下半部分頁區裡顯示單一檔案兩個版本之間差異的分頁，左右並排呈現舊版與新版。與 HERDR 的 Tab 無關，寫法同「檔案分頁」。 |
+| Git Graph 分頁 | change 5b 起，中欄下半部分頁區裡顯示某個 git repo 的 commit 圖與清單的分頁，每個 repo 一個；可在其中選取 commit 展開詳情與版本比較。與 HERDR 的 Tab 無關，寫法同「檔案分頁」。 |
+| 某版本檔案分頁 | change 5b 起，中欄下半部分頁區裡顯示某個 commit（或暫存區）版本之檔案內容的分頁，以既有的檔案檢視器呈現。與 HERDR 的 Tab 無關，寫法同「檔案分頁」。 |
 
 ## 禁用與改稱
 

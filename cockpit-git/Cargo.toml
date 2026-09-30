@@ -1,0 +1,30 @@
+[package]
+name = "cockpit-git"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+# design D1：執行器（task 2.2）要用 tokio 啟動子程序；task 2.1 尚未啟動任何子程序，
+# 但依 brief「本 task 若用不到 tokio 也先加上」先加在這裡，避免 2.2 再改一次依賴清單。
+tokio = { version = "1.53.1", features = ["process", "io-util", "time", "sync", "rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+# 開自己的 test-support feature，讓 `cargo test` 建置假程式 `cockpit-git-test-fake`
+# （task 2.2，照 `herdr-client/Cargo.toml` 的既有寫法）；edition 2024 預設 resolver 會隔離
+# 這個 feature，不進正常建置（同 `herdr-client/README.md`「假對端」節的實測結果——本 task
+# 沒有另外重測，沿用同一個已驗證的機制）。
+cockpit-git = { path = ".", features = ["test-support"] }
+
+# task 2.2 測試專用假程式：不呼叫真正的 git 或 shell，依 argv 模擬逾時、輸出上限、exit
+# code／stderr（`src/bin/git_fake.rs` 的模組文件有完整用法）。只給
+# `cockpit-git/tests/runner.rs` 用；`required-features` 讓一般 `cargo build -p cockpit-git`
+# 不會編出這支執行檔。
+[[bin]]
+name = "cockpit-git-test-fake"
+path = "src/bin/git_fake.rs"
+required-features = ["test-support"]
+
+[features]
+test-support = []

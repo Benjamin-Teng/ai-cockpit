@@ -78,6 +78,13 @@
 //! design D10 同時把 `source_check` 的 403 與套用它的端點（輸出、寫入）的 405 本體改成帶 `code`
 //! （`forbidden_source`、`method_not_allowed`），403 本體不再帶出請求的 `Host`／`Origin`。
 //!
+//! git 端點（git-review task 3.2；spec `git-review`「git 端點的共同規則」與各端點的
+//! requirement；design D6）：`GET /api/git/{runtime}/{root_id}/status`／`refs`／`log`／
+//! `commit/{hash}`／`changes`／`merge-base`，處理常式在 [`crate::git`]；掛法同檔案端點
+//! （`get` → `.fallback(405)` → `.route_layer(source_check)` → `.head(405)`）。405 直接重用
+//! [`crate::files::method_not_allowed`]——本體與理由都通用，不必為 git 端點另開一份。執行 git
+//! 只經 [`crate::http::AppState::git_runner`]（全程序共用一個 [`cockpit_git::GitRunner`]）。
+//!
 //! vendored 資源（file-review task 3.3；spec `cockpit-dashboard`「路由與內嵌資源」；design D9）：
 //! `GET /vendor/{*path}`，處理常式與內嵌目錄在 [`crate::vendor`]。不套用 `source_check`（跟
 //! `/app/`、`/icons/` 一樣是公開靜態資源），也不覆寫 `HEAD`／其他 method 的處理——未註冊的 method
@@ -144,6 +151,10 @@ pub struct AppState {
     /// 檔案端點啟動時就決定的設定（file-review task 3.2；design D9）：解析一次的 icon 對照表與原始
     /// 內容大小上限（正式值 [`crate::files::RAW_SIZE_LIMIT`]，測試可注入較小值）。
     pub files: Arc<crate::files::FileSettings>,
+    /// git 端點共用的執行器（git-review task 3.2；design D3）：全程序只有一個，讓「同時最多 4 支
+    /// git 子程序」的並行上限對所有請求生效，而不是每個請求各自一個。`GitRunner` 本身不是
+    /// `Clone`，用 `Arc` 讓 `AppState`（`derive(Clone)`）可以便宜複製。
+    pub git_runner: Arc<cockpit_git::GitRunner>,
 }
 
 impl AppState {
@@ -163,6 +174,7 @@ impl AppState {
             runtimes: Arc::new(HashMap::new()),
             path_mappings: Arc::new(HashMap::new()),
             files: Arc::new(crate::files::FileSettings::embedded()),
+            git_runner: Arc::new(cockpit_git::GitRunner::new()),
         }
     }
 }
@@ -249,6 +261,52 @@ pub fn router(app: AppState) -> Router {
             "/api/files/{runtime}/{root_id}/raw/{*path}",
             file_route!(files::raw),
         )
+        // git 端點（git-review task 3.2；design D6）：同一個掛法，405 fallback 重用檔案端點的
+        // `files::method_not_allowed`（本體與理由都通用，不必另開一份）。
+        .route(
+            "/api/git/{runtime}/{root_id}/status",
+            file_route!(crate::git::status),
+        )
+        .route(
+            "/api/git/{runtime}/{root_id}/refs",
+            file_route!(crate::git::refs),
+        )
+        .route(
+            "/api/git/{runtime}/{root_id}/log",
+            file_route!(crate::git::log),
+        )
+        .route(
+            "/api/git/{runtime}/{root_id}/commit/{hash}",
+            file_route!(crate::git::commit),
+        )
+        .route(
+            "/api/git/{runtime}/{root_id}/changes",
+            file_route!(crate::git::changes),
+        )
+        .route(
+            "/api/git/{runtime}/{root_id}/merge-base",
+            file_route!(crate::git::merge_base),
+        )
+        // git 端點第二批（git-review task 3.3；design D6、D7）：`diff` 的相對路徑放在
+        // query string，不需要路由層的 `{*path}`；`meta`／`blob`／`render` 以
+        // `/<rev>/<相對路徑>` 放在網址路徑（同檔案端點的 `{*path}` catch-all，處理常式一律
+        // 從原始請求 URI 自行解析，見 `crate::git::parse_rev_target`）。
+        .route(
+            "/api/git/{runtime}/{root_id}/diff",
+            file_route!(crate::git::diff),
+        )
+        .route(
+            "/api/git/{runtime}/{root_id}/meta/{*path}",
+            file_route!(crate::git::meta),
+        )
+        .route(
+            "/api/git/{runtime}/{root_id}/blob/{*path}",
+            file_route!(crate::git::blob),
+        )
+        .route(
+            "/api/git/{runtime}/{root_id}/render/{*path}",
+            file_route!(crate::git::render),
+        )
         // `/api/files/` 底下其餘形狀（`.../list/` 這種空的 `{*path}`——matchit 的 catch-all 不收空值、
         // `.../raw` 少了路徑、不認得的端點名）不命中任何路由，落到 axum 預設的 404（空本體）。想用
         // `/api/files/{*rest}` 接住它們會與上面的 `{*path}` 路由衝突（matchit 插入時 panic）。
@@ -300,6 +358,14 @@ async fn app_asset(Path(file): Path<String>) -> Response {
         "viewers.js" => (
             [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
             include_str!("../assets/app/viewers.js"),
+        )
+            .into_response(),
+        // git-review task 3.3：空殼檔案，內容由 task 4.x 填入（design D9「變更」面板／diff／
+        // Graph／某版本分頁）；先掛路由與內嵌資源，讓 cockpit-dashboard「路由與 content-type」
+        // 情境現在就能全綠。
+        "git.js" => (
+            [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+            include_str!("../assets/app/git.js"),
         )
             .into_response(),
         _ => StatusCode::NOT_FOUND.into_response(),

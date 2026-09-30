@@ -395,16 +395,24 @@
 
   // file-review task 4.1（design D6）：選取改變時通知 files.js——選定時由它切到 Live Output 分頁
   // （spec live-output「選定一個 pane」：以任何方式選定 pane 時切換；取消選取不切換），檔案樹也
-  // 依選取換根目錄（file-review task 4.2）。
+  // 依選取換根目錄（file-review task 4.2）。git-review task 4.2：同時通知 git.js（左欄「變更」
+  // 面板的根目錄來源同一個選取），它只在自己的「變更」分頁可見時才會真的發請求（見 git.js
+  // 檔頭「變更面板」）。
   function notifyFilesSelected(runtime, paneId) {
     if (window.cockpitFiles && typeof window.cockpitFiles.paneSelected === "function") {
       window.cockpitFiles.paneSelected(runtime, paneId);
+    }
+    if (window.cockpitGit && typeof window.cockpitGit.paneSelected === "function") {
+      window.cockpitGit.paneSelected(runtime, paneId);
     }
   }
 
   function notifyFilesCleared() {
     if (window.cockpitFiles && typeof window.cockpitFiles.paneCleared === "function") {
       window.cockpitFiles.paneCleared();
+    }
+    if (window.cockpitGit && typeof window.cockpitGit.paneCleared === "function") {
+      window.cockpitGit.paneCleared();
     }
   }
 

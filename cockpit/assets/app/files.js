@@ -1,4 +1,4 @@
-// files.js：左欄「Project／檔案」分頁、檔案樹與中欄下半部分頁區（spec file-review「左欄檔案樹」
+// files.js：左欄「Project／檔案／變更」分頁、檔案樹與中欄下半部分頁區（spec file-review「左欄檔案樹」
 // 「檔案分頁」；spec cockpit-dashboard「版面與窄視窗」；design D6）。
 //
 // file-review task 4.1 只做分頁骨架：
@@ -16,6 +16,12 @@
 //   - 以任何方式選定 pane 時切到 Live Output 分頁（spec live-output「選定一個 pane」）：output.js 的
 //     select() 呼叫 `window.cockpitFiles.paneSelected(runtime, paneId)`；取消選取（`paneCleared()`）
 //     不切換分頁。
+//
+// git-review task 4.1（design D9）：下半部分頁（Live Output 除外）一般化為帶 `kind` 的物件（目前有內建的
+// "file"，以及 `/app/git.js` 未來會提供的 "diff"／"graph"／"rev"），本機儲存升到 v2（每筆帶 `kind`，讀到
+// change 之前的 v1 時每筆視為 "file"）。分頁 kind 的完整介面（`identity`／`create`／`activate`／
+// `deactivate`／`dispose`／`serialize`／`deserialize`）與框架提供的 `openTab()` 寫在下方「分頁 kind 框架」
+// 區塊開頭的註解——4.2–4.5 要掛新 kind 時看那裡，不是這段（這段只講已經固定不變的既有機制）。
 //
 // 狀態只存在模組變數（memory full-repaint-discards-state-held-only-in-dom）：DOM 只是呈現。
 // 兩個分頁列共用同一套鍵盤操作（WAI-ARIA tabs，手動啟用）：方向鍵／Home／End 在分頁間移動焦點，
@@ -44,10 +50,12 @@
 //   - icon 以 `<img src="/vendor/material-icons/icons/<檔名>" alt="">` 顯示（design D11；裝飾性）。
 //   - 點檔案列（或 Enter）呼叫 `openFile()`（見下方「檔案分頁」）。
 //
-// 檔案分頁（file-review task 4.3；spec file-review「檔案分頁」「分頁還原」「在 VS Code 開啟」「檔案 icon」；
-// spec cockpit-dashboard「版面與窄視窗」；design D6、D10）：
-//   - 狀態是模組變數 `fileTabs`（依分頁順序）與 `currentReviewTabId`；分頁以 runtime＋root_id＋相對路徑
-//     識別，重複開啟切到既有分頁。每個檔案分頁一個 `.review-tab` 包裝元素（role="presentation"），內含
+// 檔案分頁（file-review task 4.3；git-review task 4.1 起是分頁 kind 框架下的 "file" kind，行為不變；
+// spec file-review「檔案分頁」「分頁還原」「在 VS Code 開啟」「檔案 icon」；spec cockpit-dashboard「版面與
+// 窄視窗」；design D6、D10）：
+//   - 狀態是模組變數 `reviewTabs`（依分頁順序，含全部 kind）與 `currentReviewTabId`；檔案分頁以
+//     runtime＋root_id＋相對路徑識別，重複開啟切到既有分頁。每個檔案分頁一個 `.review-tab` 包裝元素
+//     （role="presentation"），內含
 //     分頁本身（`<button role="tab" data-path>`，icon＋檔名，title＝完整相對路徑與根目錄名稱）與關閉按鈕
 //     （`aria-label="關閉 <檔名>"`），加在分頁列的 Live Output 之後；內容是 `#review` 內自己的 tabpanel：
 //     工具列（相對路徑、最後一次成功讀取的時間、「在 VS Code 開啟」）、狀態列（讀取中／失敗原因）、檢視器
@@ -80,14 +88,20 @@
 //     成功（或中繼資料顯示畫面上已是最新版本）時過期標示與原因消失。還原的根目錄不可用（root_unavailable）
 //     也走這條：沒有內容可保留時只顯示原因，恢復後正常顯示。
 //
-// 對外：`window.cockpitFiles = { leftTab(), paneSelected(runtime, paneId), paneCleared(), setKnownPanes(panes) }`（沿用
-// `window.liveOutput`／`window.cockpitActions` 的全域掛勾慣例）。
+// 對外：`window.cockpitFiles = { leftTab(), paneSelected(runtime, paneId), paneCleared(), setKnownPanes(panes),
+// openTab(kind, fields) }`（沿用 `window.liveOutput`／`window.cockpitActions` 的全域掛勾慣例；`openTab` 是
+// git-review task 4.1 新增，見「分頁 kind 框架」）。
 
 (function () {
   "use strict";
 
   var LEFT_PROJECTS = "projects";
   var LEFT_FILES = "files";
+  // git-review task 4.2（design D9）：左欄「變更」分頁——內容（分支資訊、四組變更清單）由 git.js 填入
+  // `#changes-panel`；本模組只負責分頁列的通用機制（跟「Project」「檔案」共用同一個 tablist）與
+  // `#changes-panel` 的 hidden 切換，進出這個分頁時呼叫 `window.cockpitGit.changesTabEntered()`／
+  // `changesTabLeft()` 讓 git.js 自己決定要不要查詢、要不要輪詢（見 setLeftTab()）。
+  var LEFT_CHANGES = "changes";
   var LIVE_TAB_ID = "review-tab-live";
 
   var filesRoot = document.getElementById("files");
@@ -158,6 +172,8 @@
   var leftTablist = filesRoot ? filesRoot.querySelector('[role="tablist"]') : null;
   var filesPanel = document.getElementById("files-panel");
   var filesEmpty = filesPanel ? filesPanel.querySelector(".files-empty") : null;
+  // git-review task 4.2：內容由 git.js 建立，這裡只切換 hidden（同 filesPanel 的做法）。
+  var changesPanel = document.getElementById("changes-panel");
 
   // --- 檔案樹（file-review task 4.2；見檔頭「檔案樹」）---
 
@@ -780,10 +796,12 @@
   buildTreeSkeleton();
 
   function setLeftTab(id) {
-    if (id !== LEFT_PROJECTS && id !== LEFT_FILES) {
+    if (id !== LEFT_PROJECTS && id !== LEFT_FILES && id !== LEFT_CHANGES) {
       return;
     }
     var enteringFiles = id === LEFT_FILES && leftTab !== LEFT_FILES;
+    var enteringChanges = id === LEFT_CHANGES && leftTab !== LEFT_CHANGES;
+    var leavingChanges = leftTab === LEFT_CHANGES && id !== LEFT_CHANGES;
     leftTab = id;
     if (leftTablist !== null) {
       var tabs = tabsOf(leftTablist);
@@ -798,6 +816,9 @@
     if (filesPanel !== null) {
       filesPanel.hidden = id !== LEFT_FILES;
     }
+    if (changesPanel !== null) {
+      changesPanel.hidden = id !== LEFT_CHANGES;
+    }
     // 切到「檔案」分頁：有選取就查根目錄（spec：根目錄的子項目在切到此分頁時讀取）；樹的捲動位置寫回
     // 模組變數記下的值（被 hidden 的捲動容器 scrollTop 不保證保留，design D6）。
     if (enteringFiles) {
@@ -805,6 +826,14 @@
         lookupRoot();
       }
       restoreTreeScroll();
+    }
+    // 切到／離開「變更」分頁（git-review task 4.2）：內容與是否查詢／輪詢完全交給 git.js 自己決定
+    // （它自己知道有沒有選定 pane、根目錄是不是 git repo），這裡只是進出這個分頁的通知。
+    if (enteringChanges && window.cockpitGit && typeof window.cockpitGit.changesTabEntered === "function") {
+      window.cockpitGit.changesTabEntered();
+    }
+    if (leavingChanges && window.cockpitGit && typeof window.cockpitGit.changesTabLeft === "function") {
+      window.cockpitGit.changesTabLeft();
     }
     // Project 清單在 #app 內，交給 render.js 重畫時依 leftTab() 決定 hidden（design D6）。首份投影
     // 到達前 repaint() 什麼都不做，靜態占位的 Project 區塊直接跟著切換；首份投影之後的每次重畫
@@ -832,7 +861,9 @@
 
   var DEFAULT_FILE_ICON = "file.svg"; // 對照表的預設檔案 icon（material-icons.json 的 "file"）
   var STORAGE_KEY = "cockpit.fileTabs";
-  var STORAGE_VERSION = 1;
+  // git-review task 4.1（design D9）：v1（本 change 之前）只有檔案分頁、每筆沒有 kind 欄位；v2 每筆帶
+  // kind，讀到 v1 時每筆視為 kind:"file"（見 restoreTabs()）。
+  var STORAGE_VERSION = 2;
   var LOADING_FILE_TEXT = "正在讀取…";
   var NOT_READ_TEXT = "尚未讀取";
   var NEAR_BOTTOM_PX = 6; // 同 output.js 的貼底門檻
@@ -873,41 +904,132 @@
     return two(d.getHours()) + ":" + two(d.getMinutes()) + ":" + two(d.getSeconds());
   }
 
-  // 已打開的檔案分頁，依分頁列上的順序（Live Output 不在其中，永遠在最前面）。每個分頁：
-  //   { key, runtime, rootId, rootName, path,
-  //     meta: 最近一次成功的中繼資料｜null, status: "idle"|"loading"|"ok"|"error", code,
-  //     gen: 內容讀取的世代（檢視器 ctx.isCurrent() 用；見檔頭「自動更新」）,
-  //     shown: 畫面上內容的版本（`size:modified_ms`）｜null, viewing: 檢視器是否正在讀,
-  //     readingSig: 正在讀的版本｜null, lastReadAt: 最後一次成功讀取的 epoch 毫秒｜null,
-  //     scroll: { top, pinned }（切走時記下）, pendingAnchor, closed,
-  //     els: { wrap, tab, icon, close, panel, pathEl, staleLabel, timeEl, vscode, status, host } }
-  var fileTabs = [];
-  var fileTabSeq = 0;
+  // --- 分頁 kind 框架（git-review task 4.1；design D9）---
+  //
+  // 下半部分頁（Live Output 除外）一般化為帶 `kind` 的物件：目前只有內建的 "file"（本檔），
+  // 未來 "diff"／"graph"／"rev" 由 `/app/git.js` 以 `window.cockpitGit.kinds[kind]` 提供（見下方
+  // kindModuleFor()）。每個 kind 是一個「模組」，形狀：
+  //
+  //   {
+  //     identity(fields) -> string
+  //       // fields 是呼叫 openTab(kind, fields) 時給的資料（例如 file 的
+  //       // { runtime, rootId, rootName, path }）；回傳這個分頁的身分鍵（design D9「分頁身分」），
+  //       // 同一組邏輯上算同一個分頁的 fields 任何時候呼叫都要得到同一個字串。純函式，不能建立 DOM
+  //       // 或有副作用——框架在「已打開就切換、不新增」判斷與「還原時找到已建立的分頁」都會呼叫它，
+  //       // 也可能直接傳未經 deserialize() 驗證過的原始物件（只讀取自己需要的欄位）。
+  //     create(fields) -> tab
+  //       // 建立這個分頁的完整 DOM：包裝元素（分頁列裡的 .review-tab，含分頁本身與關閉鈕）與內容
+  //       // tabpanel，自己 appendChild 進分頁列（`#review [role="tablist"]`）與 `#review`（design D6：
+  //       // 這些 DOM 在 `#app` 之外，不受整頁重畫影響）。回傳的 tab 物件至少要有
+  //       // `els: { wrap, tab, close, panel }`（tab 是 role="tab" 的 <button>，close 是關閉鈕，
+  //       // panel 是 role="tabpanel"）；框架呼叫後才會補上 `kind`／`key`，kind 自己不用設。分頁建立
+  //       // 時還不是目前分頁（不會自動選定）。其餘欄位（中繼資料、輪詢狀態……）由 kind 自己決定、自己
+  //       // 讀寫，框架不碰。file kind 的完整實作見下方 FILE_KIND／createFileTab()，可直接照抄。
+  //     activate(tab)   // 選填。這個分頁成為目前分頁時呼叫（framework 的 selectTab()）：開始輪詢、
+  //                     // 寫回捲動位置等。沒有提供就當作沒事可做。
+  //     deactivate(tab) // 選填。這個分頁被切走時呼叫：記下捲動位置、停止輪詢、作廢進行中的讀取。
+  //                     // 每個 kind 要自己在這裡停掉自己的輪詢——框架不會因為「切去別的 kind」就
+  //                     // 自動幫忙停（file kind 的教訓：舊版只有 file／Live Output 兩種分頁時，
+  //                     // 「切到別的東西」＝「切到 Live Output」＝唯一需要 stopPolling() 的時機；
+  //                     // 多了 kind 之後這個等價關係不成立了，所以 stopPolling() 現在收在
+  //                     // FILE_KIND.deactivate() 裡，不再依賴「entering 是不是 null」）。
+  //     dispose(tab)    // 選填。分頁被關閉時呼叫（在從陣列移除、DOM 移除之前）：釋放檢視器等資源。
+  //     serialize(tab) -> object|null
+  //       // 選填。存檔用（見「分頁還原」）：回傳可以存進 localStorage、之後能原封不動傳給
+  //       // deserialize() 再傳給 openTab() 重建這個分頁的欄位（不含 `kind`，框架會補上）。省略這個
+  //       // 方法、或回傳 null，代表這個分頁不支援還原（重新整理後就不見了）——git.js 骨架階段的三個
+  //       // kind 現在就是這樣。
+  //     deserialize(stored) -> fields|null
+  //       // 選填。讀檔用：驗證 `stored`（persistTabs() 存的那個物件，框架呼叫時只傳除了 `kind`
+  //       // 以外的部分）形狀是否合法，回傳可以傳給 openTab() 的 fields；形狀不對
+  //       // 回 null（框架會 console.warn 並略過這一筆，其餘分頁照常還原，不會整份放棄）。
+  //   }
+  //
+  // 框架提供（見下方實作）：
+  //   - `openTab(kind, fields)`：已存在同身分的分頁就切過去，否則建立並切過去（掛在
+  //     `window.cockpitFiles.openTab`，4.2–4.5 的「點一列開一個 diff／graph／rev 分頁」都呼叫這個）。
+  //   - 分頁列共用的關閉、鍵盤、還原、持久化都是 kind-agnostic，只在需要 kind 私有行為時才呼叫上面的
+  //     callback（activate／deactivate／dispose／serialize／deserialize）。
+  //
+  // file kind 是唯一「不透過 openTab() 開啟」的例外：openFile()（見下方，file-review task 4.4 起也給
+  // Markdown 相對連結用）在 openTab() 的邏輯之上多做兩件事——已是目前分頁但上次讀取失敗時立即重試、
+  // 處理 Markdown 錨點——這兩個都是 file 專屬的既有行為（不是分頁 kind 框架的一部分），所以 file kind
+  // 保留自己的開啟入口，不強塞進通用的 openTab()。
+
+  var reviewTabs = []; // 下半部全部分頁（不含 Live Output），依分頁列順序；每筆共同欄位見上方
+  var fileTabSeq = 0; // file kind 分頁 DOM id 用的序號（createFileTab()；其餘 kind 各自管自己的序號）
   var restoring = false; // 還原期間不寫回 localStorage（還原完成後寫一次）
 
-  function fileTabById(id) {
-    for (var i = 0; i < fileTabs.length; i += 1) {
-      if (fileTabs[i].els.tab.id === id) {
-        return fileTabs[i];
+  function tabById(id) {
+    for (var i = 0; i < reviewTabs.length; i += 1) {
+      if (reviewTabs[i].els.tab.id === id) {
+        return reviewTabs[i];
       }
     }
     return null;
   }
 
-  function fileTabByKey(key) {
-    for (var i = 0; i < fileTabs.length; i += 1) {
-      if (fileTabs[i].key === key) {
-        return fileTabs[i];
+  function tabByKindKey(kind, key) {
+    for (var i = 0; i < reviewTabs.length; i += 1) {
+      if (reviewTabs[i].kind === kind && reviewTabs[i].key === key) {
+        return reviewTabs[i];
       }
     }
     return null;
+  }
+
+  function currentTab() {
+    return tabById(currentReviewTabId);
+  }
+
+  // kind → 模組（見上方框架說明）。"file" 內建；其餘每次都向 `window.cockpitGit` 查，不在載入時快取，
+  // 所以不要求 git.js 一定比 files.js 早跑完——只要求在真的用到某個 kind（打開、還原）之前 git.js 的
+  // top-level 程式碼已經執行過（index.html 仍把 git.js 排在 files.js 之前，兩者都在使用者能操作頁面
+  // 之前執行完，足夠早）。
+  function kindModuleFor(kind) {
+    if (kind === "file") {
+      return FILE_KIND;
+    }
+    var git = window.cockpitGit;
+    var module = git && git.kinds ? git.kinds[kind] : null;
+    return module && typeof module.create === "function" && typeof module.identity === "function" ? module : null;
+  }
+
+  // 找到既有分頁或建立新分頁（不切換選定）；kind 不認得（模組不存在或形狀不對）時回 null。
+  function ensureTab(kind, fields) {
+    var module = kindModuleFor(kind);
+    if (module === null) {
+      return null;
+    }
+    var key = module.identity(fields);
+    var tab = tabByKindKey(kind, key);
+    if (tab === null || tab === undefined) {
+      tab = module.create(fields);
+      if (!tab) {
+        return null;
+      }
+      tab.kind = kind;
+      tab.key = key;
+      reviewTabs.push(tab);
+    }
+    return tab;
+  }
+
+  // 對外（見上方框架說明與檔尾「對外」）：找到或建立後切換過去成為目前分頁。
+  function openTab(kind, fields) {
+    var tab = ensureTab(kind, fields);
+    if (tab !== null && tab.els.tab.id !== currentReviewTabId) {
+      selectTab(tab.els.tab);
+    }
+    return tab;
   }
 
   function fileOf(ft) {
     return { runtime: ft.runtime, rootId: ft.rootId, rootName: ft.rootName, path: ft.path };
   }
 
-  // 建一個檔案分頁的 DOM（分頁＋tabpanel），加在分頁列最後面；不選定。
+  // file kind 的 create(fields)（見上方「分頁 kind 框架」）：建一個檔案分頁的 DOM（分頁＋tabpanel），
+  // 加在分頁列最後面；不選定，也不加進 reviewTabs（呼叫端 ensureTab() 加）。
   // 分頁的包裝元素（.review-tab）放分頁本身（role="tab" 的 <button>）與關閉按鈕：互動元素不能巢狀
   // （button 裡不能再有 button），所以關閉按鈕是分頁的手足（files-check 契約 C4 允許的位置）。
   function createFileTab(file) {
@@ -1025,10 +1147,46 @@
     reviewRoot.appendChild(panel);
 
     ft.els = { wrap: wrap, tab: tab, icon: icon, close: close, panel: panel, pathEl: pathEl, staleLabel: staleLabel, timeEl: timeEl, vscode: vscode, status: status, host: host };
-    fileTabs.push(ft);
     renderFilePanel(ft);
     return ft;
   }
+
+  // file kind 模組（見上方「分頁 kind 框架」）：把既有的檔案分頁邏輯接上框架的介面，行為與 git-review
+  // 之前完全相同——只是原本寫死在 selectReviewTab()／closeFileTab() 裡的輪詢啟停與資源釋放，現在收進
+  // activate()／deactivate()／dispose()，讓框架不必知道「檔案」這個 kind 的任何細節。
+  var FILE_KIND = {
+    identity: function (fields) {
+      return fileKey(fields.runtime, fields.rootId, fields.path);
+    },
+    create: createFileTab,
+    // 成為目前分頁：捲動位置寫回（design D6）、立即查一次中繼資料（見下方「自動更新」）。
+    activate: function (tab) {
+      restoreFileScroll(tab);
+      startPolling(tab); // 內部一定先 stopPolling()，所以不管上一個目前分頁是哪個 kind 都會先收掉
+    },
+    // 被切走：記下捲動位置、作廢進行中的內容讀取、停止輪詢（不管接下來要換去哪個 kind——這裡是唯一
+    // 一處會停掉 file kind 自己的輪詢，框架不會替它停，見上方「分頁 kind 框架」deactivate 的說明）。
+    deactivate: function (tab) {
+      captureFileScroll(tab);
+      abandonRead(tab);
+      stopPolling();
+    },
+    // 分頁被關閉：釋放檢視器資源（PDF 的文件、worker、render task）。
+    dispose: function (tab) {
+      tab.closed = true;
+      tab.gen += 1; // 之後才讀完的內容一律丟棄
+      var viewerHost = window.cockpitViewerHost;
+      if (viewerHost && typeof viewerHost.release === "function") {
+        viewerHost.release(tab.els.host);
+      }
+    },
+    serialize: function (tab) {
+      return { runtime: tab.runtime, rootId: tab.rootId, path: tab.path, rootName: tab.rootName };
+    },
+    deserialize: function (obj) {
+      return isStoredFileTab(obj) ? { runtime: obj.runtime, rootId: obj.rootId, path: obj.path, rootName: obj.rootName } : null;
+    },
+  };
 
   // 工具列、狀態列與過期標示（只在值改變時寫 DOM：自動更新每 2 秒都會呼叫，內容沒變時不得動到節點）。
   function renderFilePanel(ft) {
@@ -1079,10 +1237,6 @@
     return String(meta.size) + ":" + String(meta.modified_ms);
   }
 
-  function currentFileTab() {
-    return fileTabById(currentReviewTabId);
-  }
-
   // 停掉目前的輪詢鏈：清掉排好的下一次、中止進行中的那一筆、世代加一。
   function stopPolling() {
     poll.gen += 1;
@@ -1103,7 +1257,7 @@
   }
 
   function pollMeta(ft, gen) {
-    if (gen !== poll.gen || ft.closed || currentFileTab() !== ft) {
+    if (gen !== poll.gen || ft.closed || currentTab() !== ft) {
       return;
     }
     var controller = new AbortController();
@@ -1152,7 +1306,7 @@
     renderFilePanel(ft);
   }
 
-  // 作廢正在進行的內容讀取（分頁被切走時；關閉時由 closeFileTab 直接加 gen）。
+  // 作廢正在進行的內容讀取（分頁被切走時；關閉時由 FILE_KIND.dispose() 直接加 gen）。
   function abandonRead(ft) {
     if (ft.viewing) {
       ft.gen += 1;
@@ -1272,38 +1426,44 @@
     }
   }
 
-  function selectReviewTab(tab) {
-    if (reviewTablist === null || tab.id === currentReviewTabId) {
+  // 切換目前分頁（framework，取代原本的 selectReviewTab；見上方「分頁 kind 框架」）：leaving／entering 可能
+  // 是任何 kind（或 Live Output，這時對應的 tab 物件是 null，繼續由 output.js 的 tabHidden／tabShown 管）。
+  // 各 kind 自己的 activate()／deactivate() 負責自己的輪詢與狀態，框架不需要知道細節（也不需要知道
+  // 「切去的是不是同一種 kind」——每個 kind 的 deactivate 在被切走時就該把自己收乾淨）。
+  function selectTab(tabEl) {
+    if (reviewTablist === null || tabEl.id === currentReviewTabId) {
       return;
     }
     var tabs = tabsOf(reviewTablist);
-    var leaving = fileTabById(currentReviewTabId);
-    var entering = fileTabById(tab.id);
+    var leaving = tabById(currentReviewTabId);
+    var entering = tabById(tabEl.id);
     if (leaving !== null) {
-      captureFileScroll(leaving);
-      abandonRead(leaving); // 切走之後才讀完的內容一律丟棄（spec「自動更新」）；切回時立即重查、重讀
+      var leavingModule = kindModuleFor(leaving.kind);
+      if (leavingModule && typeof leavingModule.deactivate === "function") {
+        leavingModule.deactivate(leaving);
+      }
     }
-    // 契約 C3：先更新 aria-selected 與 hidden，再開始／停止輪詢（Live Output 經由 output.js 的入口；檔案
-    // 分頁的中繼資料輪詢在下面 apply() 之後才 stopPolling()／startPolling()）。
+    // 契約 C3：先更新 aria-selected 與 hidden，再開始／停止輪詢（Live Output 經由 output.js 的入口；其餘
+    // kind 的輪詢在下面 apply() 之後才由 activate()／deactivate() 啟停）。
     var apply = function () {
-      markSelected(tabs, tab);
+      markSelected(tabs, tabEl);
       for (var i = 0; i < tabs.length; i += 1) {
         var panel = panelOf(tabs[i]);
         if (panel !== null) {
-          panel.hidden = tabs[i] !== tab;
+          panel.hidden = tabs[i] !== tabEl;
         }
       }
       // 目前分頁的包裝元素（外觀：同 Live Output 分頁的目前分頁標示）與關閉按鈕的 tabindex：只有目前
       // 分頁的關閉按鈕在 Tab 順序中（分頁列本身是 roving tabindex）。
-      fileTabs.forEach(function (ft) {
-        var current = ft.els.tab === tab;
-        ft.els.wrap.classList.toggle("is-current", current);
-        ft.els.close.tabIndex = current ? 0 : -1;
+      reviewTabs.forEach(function (t) {
+        var current = t.els.tab === tabEl;
+        t.els.wrap.classList.toggle("is-current", current);
+        t.els.close.tabIndex = current ? 0 : -1;
       });
     };
     var fromLive = currentReviewTabId === LIVE_TAB_ID;
-    var toLive = tab.id === LIVE_TAB_ID;
-    currentReviewTabId = tab.id;
+    var toLive = tabEl.id === LIVE_TAB_ID;
+    currentReviewTabId = tabEl.id;
     var live = window.liveOutput;
     if (fromLive && live && typeof live.tabHidden === "function") {
       live.tabHidden(apply);
@@ -1313,12 +1473,12 @@
       apply();
     }
     if (entering !== null) {
-      restoreFileScroll(entering);
-      startPolling(entering); // 先停掉上一條輪詢鏈，再立即查一次
-    } else {
-      stopPolling(); // 切到 Live Output：不再查任何中繼資料
+      var enteringModule = kindModuleFor(entering.kind);
+      if (enteringModule && typeof enteringModule.activate === "function") {
+        enteringModule.activate(entering);
+      }
     }
-    revealTab(entering !== null ? entering.els.wrap : tab);
+    revealTab(entering !== null ? entering.els.wrap : tabEl);
     persistTabs();
   }
 
@@ -1330,9 +1490,9 @@
     if (reviewTablist === null || reviewRoot === null) {
       return;
     }
-    var ft = fileTabByKey(fileKey(file.runtime, file.rootId, file.path));
+    var ft = ensureTab("file", file);
     if (ft === null) {
-      ft = createFileTab(file);
+      return;
     }
     ft.pendingAnchor = typeof anchor === "string" && anchor !== "" ? anchor : null;
     if (ft.els.tab.id === currentReviewTabId) {
@@ -1340,7 +1500,7 @@
         startPolling(ft); // 已是目前分頁但上次讀取失敗：再點一次就立即重試（不等下一次輪詢）
       }
     } else {
-      selectReviewTab(ft.els.tab);
+      selectTab(ft.els.tab);
     }
     if (!applyPendingAnchor(ft) && !ft.viewing && ft.shown !== null) {
       ft.pendingAnchor = null; // 內容已畫好卻找不到該標題：不留到之後的重讀才突然捲動
@@ -1348,28 +1508,25 @@
     persistTabs();
   }
 
-  // 關閉檔案分頁：關的是目前分頁時改顯示右側的分頁，沒有右側時顯示左側（第一個檔案分頁的左側是
-  // Live Output）。焦點在被關掉的分頁上時移到接手的分頁。
-  function closeFileTab(ft) {
-    var index = fileTabs.indexOf(ft);
+  // 關閉分頁（framework，取代原本的 closeFileTab；任何 kind 皆適用）：關的是目前分頁時改顯示右側的分頁，
+  // 沒有右側時顯示左側（第一個分頁的左側是 Live Output）。焦點在被關掉的分頁上時移到接手的分頁。
+  function closeTab(tab) {
+    var index = reviewTabs.indexOf(tab);
     if (index < 0) {
       return;
     }
-    var neighbor = index + 1 < fileTabs.length ? fileTabs[index + 1].els.tab : index > 0 ? fileTabs[index - 1].els.tab : liveTabEl;
-    var hadFocus = ft.els.wrap.contains(document.activeElement);
-    if (ft.els.tab.id === currentReviewTabId && neighbor !== null) {
-      selectReviewTab(neighbor);
+    var neighbor = index + 1 < reviewTabs.length ? reviewTabs[index + 1].els.tab : index > 0 ? reviewTabs[index - 1].els.tab : liveTabEl;
+    var hadFocus = tab.els.wrap.contains(document.activeElement);
+    if (tab.els.tab.id === currentReviewTabId && neighbor !== null) {
+      selectTab(neighbor); // 切走的過程會呼叫 tab 所屬 kind 的 deactivate()，輪詢等資源已在那裡停掉
     }
-    ft.closed = true;
-    ft.gen += 1; // 之後才讀完的內容一律丟棄（中繼資料輪詢已在切走時由 selectReviewTab 停掉）
-    // 檢視器資源（PDF 的文件、worker、render task 與還在讀的載入）隨分頁一起釋放（file-review task 4.5）。
-    var viewerHost = window.cockpitViewerHost;
-    if (viewerHost && typeof viewerHost.release === "function") {
-      viewerHost.release(ft.els.host);
+    var module = kindModuleFor(tab.kind);
+    if (module && typeof module.dispose === "function") {
+      module.dispose(tab);
     }
-    fileTabs.splice(index, 1);
-    ft.els.wrap.remove();
-    ft.els.panel.remove();
+    reviewTabs.splice(index, 1);
+    tab.els.wrap.remove();
+    tab.els.panel.remove();
     if (hadFocus && neighbor !== null) {
       neighbor.focus();
     }
@@ -1377,57 +1534,60 @@
   }
 
   if (reviewTablist !== null) {
-    wireTablist(reviewTablist, selectReviewTab);
+    wireTablist(reviewTablist, selectTab);
     reviewTablist.addEventListener("click", function (event) {
       var close = event.target instanceof Element ? event.target.closest(".review-tab-close") : null;
       if (close === null) {
         return;
       }
-      for (var i = 0; i < fileTabs.length; i += 1) {
-        if (fileTabs[i].els.close === close) {
-          closeFileTab(fileTabs[i]);
+      for (var i = 0; i < reviewTabs.length; i += 1) {
+        if (reviewTabs[i].els.close === close) {
+          closeTab(reviewTabs[i]);
           return;
         }
       }
     });
-    // 鍵盤：方向鍵／Home／End／Enter／Space 見 wireTablist；焦點在檔案分頁上時 Delete 關閉它（關閉按鈕
+    // 鍵盤：方向鍵／Home／End／Enter／Space 見 wireTablist；焦點在分頁上時 Delete 關閉它（關閉按鈕
     // 本身也可用 Tab 到達、以 Enter／Space 操作）。
     reviewTablist.addEventListener("keydown", function (event) {
       if (event.key !== "Delete") {
         return;
       }
-      var ft = fileTabById(document.activeElement ? document.activeElement.id : "");
-      if (ft !== null) {
+      var tab = tabById(document.activeElement ? document.activeElement.id : "");
+      if (tab !== null) {
         event.preventDefault();
-        closeFileTab(ft);
+        closeTab(tab);
       }
     });
   }
 
   function showLiveOutputTab() {
     if (liveTabEl !== null) {
-      selectReviewTab(liveTabEl);
+      selectTab(liveTabEl);
     }
   }
 
-  // --- 分頁還原（spec「分頁還原」；files-check 契約 C8）---
+  // --- 分頁還原（spec file-review「分頁還原」；files-check 契約 C8；git-review task 4.1 升級到 v2）---
   //
-  // 存在 localStorage（鍵 STORAGE_KEY），讀寫都包 try/catch（不可用時照常運作、只是不還原）。格式：
-  //   { v: 1, tabs: [{ runtime, rootId, path, rootName }, …]（依分頁順序）,
-  //     current: { runtime, rootId, path } | null（null＝Live Output）, left: "projects" | "files" }
-  // Live Output 的 pane 選取不存（spec：不還原）。讀到不是合法 JSON 或形狀不對時 console.warn，
-  // 以沒有已打開分頁的狀態開始；下一次寫入時覆蓋掉損毀的值。
+  // 存在 localStorage（鍵 STORAGE_KEY），讀寫都包 try/catch（不可用時照常運作、只是不還原）。v2 格式：
+  //   { v: 2, tabs: [{ kind, ...該 kind 的 serialize() 結果 }, …]（依分頁順序）,
+  //     current: { kind, ...serialize() 結果 } | null（null＝Live Output）,
+  //     left: "projects" | "files" | "changes" }
+  // v1（本 change 之前，只有檔案分頁）沒有 `kind` 欄位：`tabs`／`current` 每筆視為 `kind: "file"`，
+  // 形狀跟 FILE_KIND.serialize() 的輸出相同（少了 rootName 的 current 例外，見 resolveCurrent()）。
+  // Live Output 的 pane 選取不存（spec：不還原）。讀到不是合法 JSON、或整體形狀不對（版本無法辨識、
+  // `tabs` 不是陣列、`left` 不是認得的值）時 console.warn，以沒有已打開分頁的狀態開始；單筆分頁的
+  // kind 無法辨識或欄位不合法時只略過那一筆並 console.warn，其餘分頁照常還原（控制端裁決，file-review
+  // 4.1 之前是整份放棄，這裡放寬——多個 kind 之後，一筆壞資料不該連累其他 kind 的分頁）。
   function persistTabs() {
     if (restoring) {
       return;
     }
-    var current = fileTabById(currentReviewTabId);
+    var current = tabById(currentReviewTabId);
     var data = {
       v: STORAGE_VERSION,
-      tabs: fileTabs.map(function (ft) {
-        return { runtime: ft.runtime, rootId: ft.rootId, path: ft.path, rootName: ft.rootName };
-      }),
-      current: current === null ? null : { runtime: current.runtime, rootId: current.rootId, path: current.path },
+      tabs: serializeTabList(),
+      current: current === null ? null : serializeTabEntry(current),
       left: leftTab,
     };
     try {
@@ -1435,6 +1595,37 @@
     } catch (e) {
       // 本機儲存不可用（隱私模式、配額、被停用）：不還原，其餘功能不受影響。
     }
+  }
+
+  // 一筆分頁存檔用的形狀：`{ kind, ...module.serialize(tab) }`；kind 沒有 serialize()、或它回傳非物件
+  // （含 null，代表「這個分頁不支援還原」）時回傳 null（呼叫端略過，不存進 tabs 清單）。
+  function serializeTabEntry(tab) {
+    var module = kindModuleFor(tab.kind);
+    if (!module || typeof module.serialize !== "function") {
+      return null;
+    }
+    var fields = module.serialize(tab);
+    if (fields === null || typeof fields !== "object") {
+      return null;
+    }
+    var out = { kind: tab.kind };
+    for (var k in fields) {
+      if (Object.prototype.hasOwnProperty.call(fields, k)) {
+        out[k] = fields[k];
+      }
+    }
+    return out;
+  }
+
+  function serializeTabList() {
+    var out = [];
+    reviewTabs.forEach(function (tab) {
+      var entry = serializeTabEntry(tab);
+      if (entry !== null) {
+        out.push(entry);
+      }
+    });
+    return out;
   }
 
   function isNonEmptyString(value) {
@@ -1451,22 +1642,26 @@
     );
   }
 
-  function isStoredTab(t) {
+  function isStoredFileTab(t) {
     return t !== null && typeof t === "object" && isNonEmptyString(t.runtime) && isNonEmptyString(t.rootId) && isRelPath(t.path) && typeof t.rootName === "string";
   }
 
+  // 只驗整體骨架（版本、`tabs` 是不是陣列、`left` 是不是認得的值、`current` 是不是 null 或物件）；單筆
+  // 分頁的形狀留到 restoreTabs() 逐筆驗證並可各自略過（見上方段落開頭的說明）。
   function isStoredState(data) {
-    if (data === null || typeof data !== "object" || data.v !== STORAGE_VERSION || !Array.isArray(data.tabs)) {
+    if (data === null || typeof data !== "object") {
       return false;
     }
-    if (!data.tabs.every(isStoredTab)) {
+    if (data.v !== 1 && data.v !== STORAGE_VERSION) {
       return false;
     }
-    if (data.left !== LEFT_PROJECTS && data.left !== LEFT_FILES) {
+    if (!Array.isArray(data.tabs)) {
       return false;
     }
-    var c = data.current;
-    return c === null || (c !== null && typeof c === "object" && isNonEmptyString(c.runtime) && isNonEmptyString(c.rootId) && isRelPath(c.path));
+    if (data.left !== LEFT_PROJECTS && data.left !== LEFT_FILES && data.left !== LEFT_CHANGES) {
+      return false;
+    }
+    return data.current === null || typeof data.current === "object";
   }
 
   function readStoredTabs() {
@@ -1474,7 +1669,7 @@
     try {
       raw = window.localStorage.getItem(STORAGE_KEY);
     } catch (e) {
-      console.warn("檔案分頁：瀏覽器本機儲存不可用，不還原分頁", e);
+      console.warn("分頁還原：瀏覽器本機儲存不可用，不還原分頁", e);
       return null;
     }
     if (raw === null) {
@@ -1484,14 +1679,38 @@
     try {
       data = JSON.parse(raw);
     } catch (e) {
-      console.warn("檔案分頁：本機儲存的分頁資料不是合法 JSON，以沒有已打開分頁的狀態開始");
+      console.warn("分頁還原：本機儲存的分頁資料不是合法 JSON，以沒有已打開分頁的狀態開始");
       return null;
     }
     if (!isStoredState(data)) {
-      console.warn("檔案分頁：本機儲存的分頁資料形狀不對，以沒有已打開分頁的狀態開始");
+      console.warn("分頁還原：本機儲存的分頁資料形狀不對，以沒有已打開分頁的狀態開始");
       return null;
     }
     return data;
+  }
+
+  // 找出 `current`／v1 的 `current`（或任何一筆 `tabs` 紀錄）對應的既有分頁：identity() 是純函式，只讀取
+  // 自己需要的欄位，所以可以直接對「未經 deserialize() 完整驗證」的原始物件呼叫（例如 v1 的 current 沒有
+  // rootName，FILE_KIND.identity() 用不到這個欄位，一樣算得出來）；kind 或 identity() 本身有問題就回 null。
+  function resolveCurrent(entry, fallbackKind) {
+    if (entry === null || typeof entry !== "object") {
+      return null;
+    }
+    var kind = typeof entry.kind === "string" ? entry.kind : fallbackKind;
+    if (typeof kind !== "string") {
+      return null;
+    }
+    var module = kindModuleFor(kind);
+    if (module === null) {
+      return null;
+    }
+    var key;
+    try {
+      key = module.identity(entry);
+    } catch (e) {
+      return null;
+    }
+    return typeof key === "string" ? tabByKindKey(kind, key) : null;
   }
 
   // 載入頁面時還原。還原的分頁一律保留；目前分頁是檔案分頁時開始它的自動更新（根目錄不可用時顯示
@@ -1505,21 +1724,43 @@
     if (data === null) {
       return;
     }
+    // v1 沒有 `kind` 欄位：每一筆（含 current）都視為 "file"；v2 一定要有 `kind`，缺了就是壞資料，略過。
+    var fallbackKind = data.v === 1 ? "file" : null;
     restoring = true;
     try {
-      data.tabs.forEach(function (t) {
-        if (fileTabByKey(fileKey(t.runtime, t.rootId, t.path)) === null) {
-          createFileTab(t);
+      data.tabs.forEach(function (entry) {
+        if (entry === null || typeof entry !== "object") {
+          console.warn("分頁還原：略過形狀不對的分頁紀錄", entry);
+          return;
         }
+        var kind = typeof entry.kind === "string" ? entry.kind : fallbackKind;
+        if (typeof kind !== "string") {
+          console.warn("分頁還原：這筆分頁紀錄沒有可辨識的 kind，略過", entry);
+          return;
+        }
+        var module = kindModuleFor(kind);
+        if (module === null) {
+          console.warn('分頁還原：無法辨識的分頁種類「' + kind + '」，略過', entry);
+          return;
+        }
+        if (typeof module.deserialize !== "function") {
+          console.warn('分頁還原：「' + kind + '」不支援還原，略過', entry);
+          return;
+        }
+        var fields = module.deserialize(entry);
+        if (fields === null) {
+          console.warn('分頁還原：「' + kind + '」分頁紀錄欄位不合法，略過', entry);
+          return;
+        }
+        ensureTab(kind, fields);
       });
-      if (data.left === LEFT_FILES) {
-        setLeftTab(LEFT_FILES);
+      // git-review task 4.2：「變更」分頁現在是真的分頁，還原成它自己（不再視同「檔案」）。
+      if (data.left === LEFT_FILES || data.left === LEFT_CHANGES) {
+        setLeftTab(data.left);
       }
-      if (data.current !== null) {
-        var ft = fileTabByKey(fileKey(data.current.runtime, data.current.rootId, data.current.path));
-        if (ft !== null) {
-          selectReviewTab(ft.els.tab);
-        }
+      var cur = resolveCurrent(data.current, fallbackKind);
+      if (cur !== null) {
+        selectTab(cur.els.tab);
       }
     } finally {
       restoring = false;
@@ -1572,6 +1813,11 @@
         lookupRoot(true);
       }
     },
+    // git-review task 4.1（design D9）：找到或建立指定 kind 的分頁並切過去。4.2–4.5 的「變更」面板／diff／
+    // Git Graph／某版本分頁由 `/app/git.js` 的 kind 模組（`window.cockpitGit.kinds`）實作，透過這個入口開啟
+    // （見檔頭與上方「分頁 kind 框架」的介面說明）；"file" 也認得，但 file 專屬的開檔行為（Markdown 錨點、
+    // 已是目前分頁時的重試）走 openFile()，不是這個入口。kind 不認得或建立失敗時回 null。
+    openTab: openTab,
   };
 
   restoreTabs();

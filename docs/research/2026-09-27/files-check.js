@@ -25,6 +25,7 @@
 // 段落代號（每段對應 spec 的一個 scenario；capability 前綴＋spec 的 scenario 名稱）：
 //   self/鷹架                                    腳本鷹架自我測試（見 segSelfScaffold 註解）
 //   self/段落代號                                命令列段落代號驗證
+//   file-review/左欄三個分頁                     左欄檔案樹（git-review task 4.2：三分頁 tablist）
 //   file-review/切到檔案分頁                     左欄檔案樹
 //   file-review/沒有選定 pane                    左欄檔案樹
 //   file-review/展開狀態跨根目錄保留             左欄檔案樹
@@ -45,6 +46,7 @@
 //   file-review/檔案被刪掉後又出現               自動更新
 //   file-review/重新整理後還原                   分頁還原
 //   file-review/儲存內容損毀                     分頁還原
+//   file-review/舊格式照常還原                   分頁還原（git-review task 4.1：v1 格式相容）
 //   file-review/Windows 檔案                     在 VS Code 開啟
 //   file-review/WSL 檔案                         在 VS Code 開啟
 //   live-output/選定 pane 時切回 Live Output 分頁  選定一個 pane
@@ -405,6 +407,12 @@ class CDP {
     await this.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...base });
     await this.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base });
     return true;
+  }
+  // 沿用 visual-check.js 的 pressKey（file-review/左欄三個分頁 段：真的鍵盤事件，讓頁面的
+  // keydown 監聽器（files.js handleTablistKeydown）判斷 event.key 時走到）。
+  async pressKey(key, code, windowsVirtualKeyCode, text) {
+    await this.send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode, text });
+    await this.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode });
   }
 }
 
@@ -1455,6 +1463,33 @@ async function segSelfSegmentArg() {
 // file-review：左欄檔案樹
 // ---------------------------------------------------------------------------
 
+// git-review task 4.2：WHEN 載入頁面 THEN 左欄頂端依序為「Project」「檔案」「變更」三個分頁，目前為
+// 「Project」；在分頁上按右方向鍵兩次再按 Enter，目前分頁為「變更」。放在這裡（不放
+// git-check.js）：這一段只驗左欄 tablist 本身的通用機制（三個分頁按 DOM 順序排列、方向鍵移動焦點、
+// Enter 選定），跟 git 後端或「變更」面板的內容完全無關，files-check.js 已經有現成的左欄分頁夾具
+// （leftSelected()、switchLeftTab() 的鍵盤變體），不必為了這一段另外啟動 git-check.js 的機器。
+async function segLeftThreeTabs() {
+  await withCockpit('left-three-tabs', {}, async (ctx) => {
+    const initial = await ctx.cdp.run(() => Array.from(document.querySelectorAll('#files [role="tablist"] [role="tab"]')).map((t) => t.textContent.trim()));
+    check(JSON.stringify(initial) === JSON.stringify(['Project', '檔案', '變更']), `左欄頂端依序為「Project」「檔案」「變更」三個分頁（實際 ${JSON.stringify(initial)}）`);
+    const currentInitial = await ctx.cdp.run(() => window.__fc.leftSelected());
+    check(currentInitial === 'Project', `載入頁面時目前分頁為「Project」（實際「${currentInitial}」）`);
+    const focused = await ctx.cdp.run(() => {
+      const el = document.getElementById('files-tab-projects');
+      el.focus();
+      return document.activeElement === el;
+    });
+    need(focused, '前置：鍵盤焦點可以移到「Project」分頁');
+    await ctx.cdp.pressKey('ArrowRight', 'ArrowRight', 39);
+    await ctx.cdp.pressKey('ArrowRight', 'ArrowRight', 39);
+    const focusedName = await ctx.cdp.run(() => (document.activeElement ? document.activeElement.textContent.trim() : null));
+    check(focusedName === '變更', `按右方向鍵兩次後鍵盤焦點在「變更」分頁（實際「${focusedName}」）`);
+    await ctx.cdp.pressKey('Enter', 'Enter', 13, '\r');
+    const sel = await ctx.cdp.poll(() => window.__fc.leftSelected(), [], UI_TIMEOUT_MS);
+    check(sel === '變更', `按 Enter 後目前分頁為「變更」（實際「${sel}」）`);
+  });
+}
+
 // GIVEN 已選定 w1:p1（wJ:p4，根目錄 review-repo）WHEN 點左欄「檔案」THEN 顯示 repo 的檔案樹，第一層為
 // 根目錄的子項目。第一層以列目錄端點（服務端）的回應為準，比對集合。
 async function segSwitchToFilesTab() {
@@ -2176,6 +2211,48 @@ async function segCorruptStorage() {
   });
 }
 
+// git-review task 4.1：GIVEN 瀏覽器本機儲存中是本 change 之前的格式（v1，記錄了 README.md 與 docs/a.md
+// 兩個檔案分頁，沒有 `kind` 欄位）WHEN 載入頁面 THEN 兩個檔案分頁依原順序還原並顯示內容。在導覽前用
+// `Page.addScriptToEvaluateOnNewDocument` 直接寫入 v1 格式的 localStorage 值（早於 files.js 的
+// restoreTabs()），模擬「使用者在 git-review 之前就打開過這兩個分頁」；不透過 UI 操作開啟，才是真的在測
+// 「讀到舊格式」而不是「這次執行期間自己寫入又讀回」。
+async function segRestoreOldFormat() {
+  await withCockpit(
+    'restore-v1',
+    {
+      beforeNavigate: async (ctx) => {
+        const root = await rootInfo(ctx, PANE_REVIEW);
+        const v1 = {
+          v: 1,
+          tabs: [
+            { runtime: RUNTIME, rootId: root.root_id, path: 'README.md', rootName: root.name },
+            { runtime: RUNTIME, rootId: root.root_id, path: 'docs/a.md', rootName: root.name },
+          ],
+          current: { runtime: RUNTIME, rootId: root.root_id, path: 'docs/a.md' },
+          left: 'files',
+        };
+        await ctx.cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+          source: `try { localStorage.setItem('cockpit.fileTabs', ${JSON.stringify(JSON.stringify(v1))}); } catch (e) {}`,
+        });
+        log(`已在導覽前寫入 v1 格式的 localStorage（root_id=${root.root_id}）`);
+      },
+    },
+    async (ctx) => {
+      const restored = await ctx.cdp.poll(() => window.__fc.tabsInfo().filter((t) => !t.live).length >= 2, [], UI_TIMEOUT_MS);
+      const tabs = await tabsInfo(ctx);
+      check(
+        !!restored && JSON.stringify(tabs.map((t) => (t.live ? 'LIVE' : t.path))) === JSON.stringify(['LIVE', 'README.md', 'docs/a.md']),
+        `舊格式（v1，無 kind 欄位）的兩個檔案分頁依原順序還原（實際 ${JSON.stringify(tabs)}）`
+      );
+      const cur = tabs.find((t) => t.selected);
+      check(!!cur && cur.path === 'docs/a.md', `目前分頁為 docs/a.md（實際 ${JSON.stringify(cur)}）`);
+      check(!!(await waitPanelText(ctx, '一個很短的 Markdown 檔案')), '目前分頁（docs/a.md）顯示內容');
+      await clickTab(ctx, 'README.md');
+      check(!!(await waitPanelText(ctx, 'review-repo')), 'README.md 分頁切過去後也顯示內容');
+    }
+  );
+}
+
 // ---------------------------------------------------------------------------
 // file-review：在 VS Code 開啟
 // ---------------------------------------------------------------------------
@@ -2367,6 +2444,7 @@ async function segStickToBottomAcrossTabs() {
 const SEGMENTS = [
   { code: 'self/鷹架', fn: segSelfScaffold, self: true },
   { code: 'self/段落代號', fn: segSelfSegmentArg, self: true },
+  { code: 'file-review/左欄三個分頁', fn: segLeftThreeTabs },
   { code: 'file-review/切到檔案分頁', fn: segSwitchToFilesTab },
   { code: 'file-review/沒有選定 pane', fn: segNoPaneSelected },
   { code: 'file-review/展開狀態跨根目錄保留', fn: segExpandStatePerRoot },
@@ -2387,6 +2465,7 @@ const SEGMENTS = [
   { code: 'file-review/檔案被刪掉後又出現', fn: segDeletedThenRecreated },
   { code: 'file-review/重新整理後還原', fn: segRestoreAfterReload },
   { code: 'file-review/儲存內容損毀', fn: segCorruptStorage },
+  { code: 'file-review/舊格式照常還原', fn: segRestoreOldFormat },
   { code: 'file-review/Windows 檔案', fn: segVscodeWindows },
   { code: 'file-review/WSL 檔案', fn: segVscodeWsl },
   { code: 'live-output/選定 pane 時切回 Live Output 分頁', fn: segSelectSwitchesToLive },

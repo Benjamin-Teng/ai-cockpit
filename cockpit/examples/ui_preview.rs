@@ -69,7 +69,9 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 use std::time::{Duration, SystemTime};
@@ -208,6 +210,7 @@ async fn main() -> anyhow::Result<()> {
         runtimes: Arc::new(runtimes),
         path_mappings: Arc::new(path_mappings),
         files: Arc::new(cockpit::files::FileSettings::embedded()),
+        git_runner: Arc::new(cockpit_git::GitRunner::new()),
     };
 
     // 寫入路由放外層、其餘交給真正的 dashboard router 當 fallback：`Router::merge` 遇到同一
@@ -269,23 +272,30 @@ struct ReviewFixture {
     /// 暫存父目錄（`review-repo`／`other-repo` 的共同上層），結束時整個刪除
     /// （[`cleanup_review_fixture`]）。
     temp_root: PathBuf,
-    /// `review-repo` 副本的根目錄（含 `.git/`、`.gitignore`、`target/`、`.env`）。
+    /// `review-repo` 副本的根目錄（含真正的 git 歷史——260 個以上 commit、分支與 merge、tag、
+    /// 遠端追蹤分支、改名、刪除、二進位檔、中文檔名，以及工作區的已暫存／未暫存／未追蹤／
+    /// 已刪除情境，見 [`build_review_repo_repo`]；另有 `.gitignore`、`target/`、`.env`；
+    /// git-review task 3.1，design D10）。
     review_repo: PathBuf,
-    /// `other-repo` 的根目錄（`.git/`、`README.md`、`lib/`）。
+    /// `other-repo` 的根目錄（真正的 git 歷史，含一個進行中且有衝突的 merge，見
+    /// [`build_other_repo_repo`]；另有 `README.md`、`lib/`；git-review task 3.1，design D10）。
     other_repo: PathBuf,
 }
 
 /// 把 [`REVIEW_REPO_SOURCE`] 複製到系統暫存目錄下一個唯一名稱的資料夾，並在副本內建立
-/// `.git/`、`.gitignore`、`target/`、`.env`（design D12：這幾項會被 git 拒絕追蹤、或影響到
-/// 本 repo 自己的忽略規則／建置產物，只能在複製之後動態建立，不能靜態存在於進版控的 fixture
-/// 目錄裡）；另建第二個根目錄 `other-repo`（`.git/`、`README.md`、`lib/`）。
+/// `.gitignore`、`target/`、`.env`（design D12：這幾項會被 git 拒絕追蹤、或影響到本 repo 自己的
+/// 忽略規則／建置產物，只能在複製之後動態建立，不能靜態存在於進版控的 fixture 目錄裡）；另建
+/// 第二個根目錄 `other-repo`（`README.md`、`lib/`）。兩者都以本機 `git` 建立真正的歷史
+/// （[`build_review_repo_repo`]／[`build_other_repo_repo`]；git-review task 3.1，design D10）
+/// ——取代先前的空 `.git/` 資料夾；找不到 `git`、或任何一步 git 操作失敗，都視為啟動失敗（不靜默
+/// 退化），因為 fixture 的內容是之後所有前端驗收腳本與人工測試的前提。
 ///
 /// 啟動時先呼叫 [`cleanup_stale_review_fixtures`]，清掉前一次執行沒能正常結束（例如被強制關閉）
 /// 而留下的舊暫存目錄。
 ///
 /// # Errors
 ///
-/// 複製或建立檔案系統項目失敗時回傳錯誤（例如暫存目錄不可寫）。
+/// 複製或建立檔案系統項目失敗、或建立 git 歷史的任何一步失敗（含找不到 `git`）時回傳錯誤。
 fn setup_review_fixture() -> anyhow::Result<ReviewFixture> {
     cleanup_stale_review_fixtures();
 
@@ -310,7 +320,6 @@ fn setup_review_fixture() -> anyhow::Result<ReviewFixture> {
         )
     })?;
 
-    fs::create_dir_all(review_repo.join(".git")).context("建立 review-repo/.git 失敗")?;
     fs::write(review_repo.join(".gitignore"), "target/\n.env\n")
         .context("寫入 review-repo/.gitignore 失敗")?;
     fs::create_dir_all(review_repo.join("target")).context("建立 review-repo/target 失敗")?;
@@ -323,7 +332,6 @@ fn setup_review_fixture() -> anyhow::Result<ReviewFixture> {
         .context("寫入 review-repo/.env 失敗")?;
 
     let other_repo = temp_root.join("other-repo");
-    fs::create_dir_all(other_repo.join(".git")).context("建立 other-repo/.git 失敗")?;
     fs::create_dir_all(other_repo.join("lib")).context("建立 other-repo/lib 失敗")?;
     fs::write(
         other_repo.join("README.md"),
@@ -332,11 +340,656 @@ runtime 底下所有 pane 的 cwd 為界，而不是只有一個根目錄。\n",
     )
     .context("寫入 other-repo/README.md 失敗")?;
 
+    // git-review task 3.1（design D10）：以本機 git 建立真正的歷史，取代先前的空 `.git/`
+    // 資料夾。兩個 repo 共用同一份隔離設定（[`GitIsolation`]），確保 HEAD hash 不受使用者的
+    // 全域／系統 git 設定影響、可重現。
+    let isolation = GitIsolation::new(&temp_root).context("建立 git 隔離用的空全域設定檔失敗")?;
+    build_review_repo_repo(&review_repo, &isolation)
+        .context("git-review task 3.1：建立 review-repo 的真實 git 歷史失敗")?;
+    build_other_repo_repo(&other_repo, &isolation).context(
+        "git-review task 3.1：建立 other-repo 的真實 git 歷史（含一個進行中的合併衝突）失敗",
+    )?;
+
     Ok(ReviewFixture {
         temp_root,
         review_repo,
         other_repo,
     })
+}
+
+// ---------------------------------------------------------------------------
+// git-review task 3.1（design D10）：review-repo／other-repo 的真實 git 歷史
+// ---------------------------------------------------------------------------
+
+/// 固定作者身分，跟 [`GIT_FIXTURE_CONFIG`] 的 `user.name`／`user.email` 一致（fast-import 的
+/// `author`／`committer`／`tagger` 行也用它）。
+const GIT_FIXTURE_AUTHOR: &str = "cockpit-ui-preview <ui-preview@cockpit.invalid>";
+
+/// 固定基準時間：2026-01-01T00:00:00Z 的 Unix 秒數。每個 fixture commit 依序遞增 60 秒
+/// （[`git_fixture_date`]），讓歷史時間順序合理、且與時區無關。
+const GIT_FIXTURE_BASE_EPOCH: i64 = 1_767_225_600;
+
+/// 每次呼叫 git 都帶的固定前綴設定（`-c`）：身分、關掉 commit／tag 簽章、固定
+/// `init.defaultBranch=main`，以及控制端裁決另外要求的 `core.autocrlf=false`／
+/// `core.safecrlf=false`（避免這台機器的全域設定影響 fixture 內容與 HEAD hash 的可重現性）。
+const GIT_FIXTURE_CONFIG: &[&str] = &[
+    "-c",
+    "user.name=cockpit-ui-preview",
+    "-c",
+    "user.email=ui-preview@cockpit.invalid",
+    "-c",
+    "commit.gpgsign=false",
+    "-c",
+    "tag.gpgsign=false",
+    "-c",
+    "core.autocrlf=false",
+    "-c",
+    "core.safecrlf=false",
+    "-c",
+    "init.defaultBranch=main",
+];
+
+/// 讓 fixture 建置不受使用者的全域／系統 git 設定影響（否則 HEAD hash 在不同機器、不同使用者
+/// 設定下不可重現：例如全域設定了 `core.autocrlf=true` 或自訂的 `user.name`）。做法（控制端
+/// 裁決，report 附實測）：`GIT_CONFIG_GLOBAL` 指向一個空檔案，完全蓋過 `~/.gitconfig`；
+/// `GIT_CONFIG_NOSYSTEM=1` 另外關掉系統層設定（Windows 的機器層設定、`/etc/gitconfig`）。兩者
+/// 合併後，[`GIT_FIXTURE_CONFIG`] 這組 `-c` 旗標就是 git 唯一讀得到的設定來源。
+struct GitIsolation {
+    empty_global_config: PathBuf,
+}
+
+impl GitIsolation {
+    /// 在 `temp_root`（fixture 的暫存父目錄，結束時整個刪除）底下建立空的全域設定檔。
+    fn new(temp_root: &Path) -> anyhow::Result<Self> {
+        let empty_global_config = temp_root.join("git-empty-global-config");
+        fs::write(&empty_global_config, "").context("建立空的全域 git 設定檔失敗")?;
+        Ok(Self {
+            empty_global_config,
+        })
+    }
+
+    fn apply(&self, cmd: &mut Command) {
+        cmd.env("GIT_CONFIG_NOSYSTEM", "1");
+        cmd.env("GIT_CONFIG_GLOBAL", &self.empty_global_config);
+    }
+}
+
+/// 組一個 `git -C <dir> <GIT_FIXTURE_CONFIG> <args>` 的 [`Command`]，套用 `isolation`。
+fn git_cmd(dir: &Path, isolation: &GitIsolation, args: &[&str]) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(dir);
+    cmd.args(GIT_FIXTURE_CONFIG);
+    cmd.args(args);
+    isolation.apply(&mut cmd);
+    cmd
+}
+
+/// 執行一次 git，回傳 `Output`（不檢查結束狀態）。啟動失敗（找不到 `git`）時回傳清楚的錯誤，
+/// 供呼叫端的 `.context(...)` 往外疊出「fixture 啟動失敗」的原因（brief：找不到 git 時 `ui_preview`
+/// 啟動失敗並印出原因，不靜默降級）。
+fn run_git(
+    dir: &Path,
+    isolation: &GitIsolation,
+    args: &[&str],
+) -> anyhow::Result<std::process::Output> {
+    git_cmd(dir, isolation, args).output().with_context(|| {
+        format!(
+            "啟動 git 失敗（args={args:?}）：找不到 git，或無法執行——請安裝 git 並確認在 PATH 中"
+        )
+    })
+}
+
+/// [`run_git`] 再檢查結束狀態；失敗時把 stderr 一併附在錯誤訊息裡（這裡只用於建 fixture，不是
+/// 對外的查詢路徑，附 stderr 有助於除錯，不受 spec「錯誤本體不得包含 git 的 stderr 原文」約束
+/// ——那條規則管的是 git-review 端點的 HTTP 回應，不是這裡的啟動期診斷輸出）。
+fn run_git_ok(
+    dir: &Path,
+    isolation: &GitIsolation,
+    args: &[&str],
+) -> anyhow::Result<std::process::Output> {
+    let out = run_git(dir, isolation, args)?;
+    anyhow::ensure!(
+        out.status.success(),
+        "git {args:?} 失敗（exit={:?}）：{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(out)
+}
+
+/// [`run_git_ok`] 再帶固定的 `GIT_AUTHOR_DATE`／`GIT_COMMITTER_DATE`（[`git_fixture_date`]）
+/// ——只有 `commit`／`merge` 這類會建立 commit 的呼叫需要。
+fn run_git_ok_with_dates(
+    dir: &Path,
+    isolation: &GitIsolation,
+    date_index: u32,
+    args: &[&str],
+) -> anyhow::Result<std::process::Output> {
+    let date = git_fixture_date(date_index);
+    let mut cmd = git_cmd(dir, isolation, args);
+    cmd.env("GIT_AUTHOR_DATE", &date);
+    cmd.env("GIT_COMMITTER_DATE", &date);
+    let out = cmd.output().with_context(|| {
+        format!(
+            "啟動 git 失敗（args={args:?}）：找不到 git，或無法執行——請安裝 git 並確認在 PATH 中"
+        )
+    })?;
+    anyhow::ensure!(
+        out.status.success(),
+        "git {args:?} 失敗（exit={:?}）：{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(out)
+}
+
+/// 控制端裁決：`git init` 之後先驗證 `rev-parse --show-toplevel` 真的等於 `dir`，不符就中止——
+/// 防止 `git init` 沒有如預期在 `dir` 內生效（例如 `dir` 其實在另一個既有 repo 底下）時，後續的
+/// `commit`／`fast-import`／`reset --hard` 誤操作到別的 repo。兩側都先 `canonicalize`：Windows
+/// git 印出的路徑可能用正斜線與短路徑，直接比對字串不可靠。
+fn verify_repo_toplevel(dir: &Path, isolation: &GitIsolation) -> anyhow::Result<()> {
+    let out = run_git_ok(dir, isolation, &["rev-parse", "--show-toplevel"])?;
+    let printed = String::from_utf8(out.stdout)
+        .context("git rev-parse --show-toplevel 輸出不是合法 UTF-8")?;
+    let printed_path = PathBuf::from(printed.trim());
+    let expected = fs::canonicalize(dir)
+        .with_context(|| format!("無法正規化 fixture 目錄路徑：{}", dir.display()))?;
+    let actual = fs::canonicalize(&printed_path).with_context(|| {
+        format!("git rev-parse --show-toplevel 印出的路徑無法正規化：{printed_path:?}")
+    })?;
+    anyhow::ensure!(
+        expected == actual,
+        "git init 之後 rev-parse --show-toplevel 回傳 {actual:?}，與 fixture 目錄 {expected:?} \
+         不符，中止啟動以避免對其他 repo 誤操作"
+    );
+    Ok(())
+}
+
+/// 把 `stream` 餵給 `git fast-import --quiet`（design D10：260 個以上 commit 用一次 fast-import
+/// 建立，不逐筆 `git commit`）。
+fn run_fast_import(dir: &Path, isolation: &GitIsolation, stream: &[u8]) -> anyhow::Result<()> {
+    let mut cmd = git_cmd(dir, isolation, &["fast-import", "--quiet"]);
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    let mut child = cmd.spawn().with_context(
+        || "啟動 git fast-import 失敗：找不到 git，或無法執行——請安裝 git 並確認在 PATH 中",
+    )?;
+    child
+        .stdin
+        .take()
+        .expect("已設定 Stdio::piped，spawn 成功後 stdin 一定存在")
+        .write_all(stream)
+        .context("寫入 git fast-import 的 stdin 失敗")?;
+    let output = child
+        .wait_with_output()
+        .context("等待 git fast-import 結束失敗")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "git fast-import 失敗（exit={:?}）：{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+/// `index` 對應的固定時間：`GIT_FIXTURE_BASE_EPOCH + index * 60` 秒，UTC（`+0000`）。
+fn git_fixture_date(index: u32) -> String {
+    format!("{} +0000", GIT_FIXTURE_BASE_EPOCH + i64::from(index) * 60)
+}
+
+/// fast-import 的 `author`／`committer`／`tagger` 行內容（不含開頭的關鍵字）。
+fn author_line(date_index: u32) -> String {
+    format!("{GIT_FIXTURE_AUTHOR} {}", git_fixture_date(date_index))
+}
+
+/// 一段可重現的「二進位內容」：512 個位元組，涵蓋全部位元組值（含 `0x00`），`seed` 讓兩次呼叫的
+/// 內容不同（供「新增二進位檔」與「修改二進位檔」各一次 fast-import commit）。
+fn binary_pattern(seed: u8) -> Vec<u8> {
+    (0u16..512).map(|i| (i as u8).wrapping_add(seed)).collect()
+}
+
+/// 寫入 fast-import 的 `commit` 指令區塊（`commit`／`mark`／`author`／`committer`／`data`），
+/// 不含 `from`／`merge`（呼叫端視情況緊接著自己 `buf.extend_from_slice` 加上）、也不含檔案異動
+/// 指令（[`fi_modify_bytes`] 等）。`message` 需含結尾換行。
+fn fi_commit(buf: &mut Vec<u8>, ref_name: &str, mark: u32, date_index: u32, message: &[u8]) {
+    buf.extend_from_slice(format!("commit {ref_name}\n").as_bytes());
+    buf.extend_from_slice(format!("mark :{mark}\n").as_bytes());
+    let author = author_line(date_index);
+    buf.extend_from_slice(format!("author {author}\n").as_bytes());
+    buf.extend_from_slice(format!("committer {author}\n").as_bytes());
+    buf.extend_from_slice(format!("data {}\n", message.len()).as_bytes());
+    buf.extend_from_slice(message);
+    buf.push(b'\n');
+}
+
+/// 寫入一筆 `M 100644 inline <path>` 指令＋內容（二進位安全：位元組計數框住 `content`，內容本身
+/// 可以含任意位元組，含 `0x00`）。
+fn fi_modify_bytes(buf: &mut Vec<u8>, path: &str, content: &[u8]) {
+    buf.extend_from_slice(format!("M 100644 inline {path}\n").as_bytes());
+    buf.extend_from_slice(format!("data {}\n", content.len()).as_bytes());
+    buf.extend_from_slice(content);
+    buf.push(b'\n');
+}
+
+/// [`fi_modify_bytes`] 的文字版本。
+fn fi_modify_text(buf: &mut Vec<u8>, path: &str, content: &str) {
+    fi_modify_bytes(buf, path, content.as_bytes());
+}
+
+/// 寫入一筆改名指令（`R <from> <to>`）：內容沿用同一個 blob，不需要重新提供資料。
+fn fi_rename(buf: &mut Vec<u8>, from: &str, to: &str) {
+    buf.extend_from_slice(format!("R {from} {to}\n").as_bytes());
+}
+
+/// 寫入一筆刪除指令（`D <path>`）。
+fn fi_delete(buf: &mut Vec<u8>, path: &str) {
+    buf.extend_from_slice(format!("D {path}\n").as_bytes());
+}
+
+/// git-review task 3.1（design D10）：`review-repo` 的合成歷史——260 個以上 commit、兩條分支
+/// （`feature/logging` 不合併回 main、供「依分支篩選」情境；`feature/formatting` 合併回 main）
+/// 與一次 merge、附註 tag（`v0.1.0`）、一個假的遠端追蹤分支（`refs/remotes/origin/main`）、改名、
+/// 刪除、二進位檔（新增與修改各一次）、中文檔名。全部包在新增的 `history/` 目錄底下，不觸碰
+/// `root_sha`（既有 11 個靜態 fixture 檔案）的任何一個路徑。用一次 `git fast-import` 建立
+/// （design D10：避免 260 次個別 `git commit` 的啟動開銷；耗時見報告）。
+fn build_review_history_stream(root_sha: &str) -> Vec<u8> {
+    /// 填充 commit 的數量（歷史主體，內容為遞增的計數器）。
+    const BULK_FILLER: u32 = 250;
+    /// 第幾筆填充 commit 上打附註 tag。
+    const TAG_AT_FILLER: u32 = 100;
+    /// 第幾筆填充 commit 是 `refs/remotes/origin/main` 指向的位置（刻意落後主線末端，模擬
+    /// 「本地領先遠端」）。
+    const REMOTE_AT_FILLER: u32 = 245;
+
+    let mut buf = Vec::new();
+    let mut mark: u32 = 0;
+    let mut date_index: u32 = 1; // 0 給根 commit（在 fast-import 之外，plain `git commit` 建立）
+    let mut tag_mark = 0u32;
+    let mut remote_mark = 0u32;
+
+    for i in 1..=BULK_FILLER {
+        mark += 1;
+        date_index += 1;
+        let message = format!("填充 commit #{i}（git-review task 3.1 fixture）\n");
+        fi_commit(
+            &mut buf,
+            "refs/heads/main",
+            mark,
+            date_index,
+            message.as_bytes(),
+        );
+        if mark == 1 {
+            buf.extend_from_slice(format!("from {root_sha}\n").as_bytes());
+        }
+        fi_modify_text(&mut buf, "history/counter.txt", &format!("{i}\n"));
+        if i == TAG_AT_FILLER {
+            tag_mark = mark;
+        }
+        if i == REMOTE_AT_FILLER {
+            remote_mark = mark;
+        }
+    }
+
+    mark += 1;
+    date_index += 1;
+    fi_commit(
+        &mut buf,
+        "refs/heads/main",
+        mark,
+        date_index,
+        "新增待改名的檔案（git-review task 3.1 fixture）\n".as_bytes(),
+    );
+    fi_modify_text(
+        &mut buf,
+        "history/rename-source.txt",
+        "這個檔案接下來會被改名（git-review task 3.1 fixture）。\n",
+    );
+
+    mark += 1;
+    date_index += 1;
+    fi_commit(
+        &mut buf,
+        "refs/heads/main",
+        mark,
+        date_index,
+        "改名：history/rename-source.txt -> history/renamed-target.txt（git-review task 3.1 fixture）\n"
+            .as_bytes(),
+    );
+    fi_rename(
+        &mut buf,
+        "history/rename-source.txt",
+        "history/renamed-target.txt",
+    );
+
+    mark += 1;
+    date_index += 1;
+    fi_commit(
+        &mut buf,
+        "refs/heads/main",
+        mark,
+        date_index,
+        "新增二進位檔（git-review task 3.1 fixture）\n".as_bytes(),
+    );
+    fi_modify_bytes(&mut buf, "history/binary-asset.bin", &binary_pattern(0));
+
+    mark += 1;
+    date_index += 1;
+    fi_commit(
+        &mut buf,
+        "refs/heads/main",
+        mark,
+        date_index,
+        "修改二進位檔（git-review task 3.1 fixture）\n".as_bytes(),
+    );
+    fi_modify_bytes(&mut buf, "history/binary-asset.bin", &binary_pattern(1));
+
+    mark += 1;
+    date_index += 1;
+    fi_commit(
+        &mut buf,
+        "refs/heads/main",
+        mark,
+        date_index,
+        "新增中文檔名（git-review task 3.1 fixture）\n".as_bytes(),
+    );
+    fi_modify_text(
+        &mut buf,
+        "history/中文檔名.md",
+        "中文檔名測試（git-review task 3.1 fixture）。\n",
+    );
+
+    mark += 1;
+    date_index += 1;
+    fi_commit(
+        &mut buf,
+        "refs/heads/main",
+        mark,
+        date_index,
+        "新增稍後會被刪除的檔案（git-review task 3.1 fixture）\n".as_bytes(),
+    );
+    fi_modify_text(
+        &mut buf,
+        "history/will-be-deleted-in-history.txt",
+        "這個檔案接下來會從歷史中被刪除（git-review task 3.1 fixture）。\n",
+    );
+
+    mark += 1;
+    date_index += 1;
+    fi_commit(
+        &mut buf,
+        "refs/heads/main",
+        mark,
+        date_index,
+        "刪除 history/will-be-deleted-in-history.txt（git-review task 3.1 fixture）\n".as_bytes(),
+    );
+    fi_delete(&mut buf, "history/will-be-deleted-in-history.txt");
+
+    mark += 1;
+    date_index += 1;
+    fi_commit(
+        &mut buf,
+        "refs/heads/main",
+        mark,
+        date_index,
+        "新增工作區情境要用到的追蹤檔案（git-review task 3.1 fixture）\n".as_bytes(),
+    );
+    fi_modify_text(
+        &mut buf,
+        "history/staged-change.txt",
+        "尚未修改（git-review task 3.1 fixture）。\n",
+    );
+    fi_modify_text(
+        &mut buf,
+        "history/unstaged-change.txt",
+        "尚未修改（git-review task 3.1 fixture）。\n",
+    );
+    fi_modify_text(
+        &mut buf,
+        "history/deleted-in-worktree.txt",
+        "稍後會從工作區刪除，但保留在歷史中（git-review task 3.1 fixture）。\n",
+    );
+
+    let branch_point_mark = mark;
+
+    mark += 1;
+    date_index += 1;
+    fi_commit(
+        &mut buf,
+        "refs/heads/feature/logging",
+        mark,
+        date_index,
+        "feature/logging：第一個 commit（git-review task 3.1 fixture）\n".as_bytes(),
+    );
+    buf.extend_from_slice(format!("from :{branch_point_mark}\n").as_bytes());
+    fi_modify_text(
+        &mut buf,
+        "history/feature-logging.txt",
+        "feature/logging 分支的內容，第一版（git-review task 3.1 fixture）。\n",
+    );
+
+    mark += 1;
+    date_index += 1;
+    fi_commit(
+        &mut buf,
+        "refs/heads/feature/logging",
+        mark,
+        date_index,
+        "feature/logging：第二個 commit（git-review task 3.1 fixture）\n".as_bytes(),
+    );
+    fi_modify_text(
+        &mut buf,
+        "history/feature-logging.txt",
+        "feature/logging 分支的內容，第二版（git-review task 3.1 fixture）。\n",
+    );
+
+    mark += 1;
+    date_index += 1;
+    let feature_formatting_mark = mark;
+    fi_commit(
+        &mut buf,
+        "refs/heads/feature/formatting",
+        mark,
+        date_index,
+        "feature/formatting：修改格式化相關檔案（git-review task 3.1 fixture）\n".as_bytes(),
+    );
+    buf.extend_from_slice(format!("from :{branch_point_mark}\n").as_bytes());
+    fi_modify_text(
+        &mut buf,
+        "history/feature-formatting.txt",
+        "feature/formatting 分支的內容（git-review task 3.1 fixture）。\n",
+    );
+
+    mark += 1;
+    date_index += 1;
+    let main_before_merge_mark = mark;
+    fi_commit(
+        &mut buf,
+        "refs/heads/main",
+        mark,
+        date_index,
+        "分支點之後 main 再前進一個 commit（git-review task 3.1 fixture）\n".as_bytes(),
+    );
+    fi_modify_text(&mut buf, "history/counter.txt", "post-branch\n");
+
+    mark += 1;
+    date_index += 1;
+    fi_commit(
+        &mut buf,
+        "refs/heads/main",
+        mark,
+        date_index,
+        "合併 feature/formatting 回 main（git-review task 3.1 fixture）\n".as_bytes(),
+    );
+    buf.extend_from_slice(format!("from :{main_before_merge_mark}\n").as_bytes());
+    buf.extend_from_slice(format!("merge :{feature_formatting_mark}\n").as_bytes());
+    fi_modify_text(
+        &mut buf,
+        "history/feature-formatting.txt",
+        "feature/formatting 分支的內容（git-review task 3.1 fixture）。\n",
+    );
+
+    buf.extend_from_slice(b"tag v0.1.0\n");
+    buf.extend_from_slice(format!("from :{tag_mark}\n").as_bytes());
+    buf.extend_from_slice(format!("tagger {}\n", author_line(date_index)).as_bytes());
+    let tag_message = "release marker（git-review task 3.1 fixture）。\n";
+    buf.extend_from_slice(format!("data {}\n", tag_message.len()).as_bytes());
+    buf.extend_from_slice(tag_message.as_bytes());
+    buf.push(b'\n');
+
+    buf.extend_from_slice(b"reset refs/remotes/origin/main\n");
+    buf.extend_from_slice(format!("from :{remote_mark}\n").as_bytes());
+
+    buf
+}
+
+/// `review-repo`：`git init`、根 commit（既有 11 個靜態 fixture 檔案，逐位元組不變）、合成歷史
+/// （[`build_review_history_stream`]），最後把工作區／index 同步到新的 `main` tip，並疊上
+/// design D10 要求的四種工作區情境（已暫存、未暫存、未追蹤、已刪除；全部落在新增的 `history/`
+/// 檔案上，不動任何一個既有靜態檔案）。
+///
+/// # Errors
+///
+/// 任一步 git 操作失敗（含找不到 `git`）時回傳錯誤。
+fn build_review_repo_repo(review_repo: &Path, isolation: &GitIsolation) -> anyhow::Result<()> {
+    run_git_ok(review_repo, isolation, &["init", "-q", "-b", "main"])?;
+    verify_repo_toplevel(review_repo, isolation)?;
+
+    // 根 commit：`.gitignore` 已在呼叫前寫入，`git add -A` 自然不會追蹤它排除的 `target/`／
+    // `.env`；既有 11 個靜態檔案的內容在這裡逐位元組不變地進版——file-review 既有六支驗收腳本
+    // 對它們的內容有逐字比對。
+    run_git_ok(review_repo, isolation, &["add", "-A"])?;
+    run_git_ok_with_dates(
+        review_repo,
+        isolation,
+        0,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "根 commit：既有 review-repo fixture 靜態內容（git-review task 3.1）",
+        ],
+    )?;
+    let root_sha =
+        String::from_utf8(run_git_ok(review_repo, isolation, &["rev-parse", "HEAD"])?.stdout)
+            .context("git rev-parse HEAD 輸出不是合法 UTF-8")?
+            .trim()
+            .to_string();
+
+    let stream = build_review_history_stream(&root_sha);
+    run_fast_import(review_repo, isolation, &stream)?;
+
+    // fast-import 只建物件與 refs，不動工作區與 index；同步兩者到 main 的新 tip，讓既有 11 個
+    // 靜態檔案（內容不變）與新增的 `history/` 內容一起出現在磁碟上。
+    run_git_ok(review_repo, isolation, &["reset", "-q", "--hard", "main"])?;
+
+    // design D10：工作區的四種未 commit 情境，全部落在 `reset --hard` 剛materialize出來的
+    // `history/` 檔案上，不動任何一個既有靜態檔案。
+    fs::write(
+        review_repo.join("history").join("staged-change.txt"),
+        "已暫存修改（git-review task 3.1 fixture）。\n",
+    )
+    .context("寫入 history/staged-change.txt（已暫存修改）失敗")?;
+    run_git_ok(
+        review_repo,
+        isolation,
+        &["add", "history/staged-change.txt"],
+    )?;
+
+    fs::write(
+        review_repo.join("history").join("unstaged-change.txt"),
+        "未暫存修改（git-review task 3.1 fixture）。\n",
+    )
+    .context("寫入 history/unstaged-change.txt（未暫存修改）失敗")?;
+
+    fs::write(
+        review_repo.join("history").join("untracked-file.md"),
+        "未追蹤檔案（git-review task 3.1 fixture）。\n",
+    )
+    .context("寫入 history/untracked-file.md（未追蹤檔案）失敗")?;
+
+    fs::remove_file(review_repo.join("history").join("deleted-in-worktree.txt"))
+        .context("刪除 history/deleted-in-worktree.txt（已刪除檔案）失敗")?;
+
+    Ok(())
+}
+
+/// `other-repo`：`git init`、加入 `README.md`，然後建立一個進行中且有衝突的 merge（design D10：
+/// 合併衝突放在 `other-repo`，前提是不改變既有驗收腳本依賴的行為——既有腳本只檢查
+/// `README.md` 存在、`lib/` 是一個項目，兩者在這裡都不受影響）。`branch-a`／`branch-b` 各自從
+/// 同一個基底修改 `conflict.txt`，在 `branch-b` 上合併 `branch-a` 預期以非零結束並留下衝突標記
+/// 與 `.git/MERGE_HEAD`——這是本函式需要的前提，不是失敗。
+///
+/// # Errors
+///
+/// 任一步「預期成功」的 git 操作失敗（含找不到 `git`）時回傳錯誤；merge 本身「預期失敗」，若它
+/// 意外成功則視為前提不成立，同樣回傳錯誤。
+fn build_other_repo_repo(other_repo: &Path, isolation: &GitIsolation) -> anyhow::Result<()> {
+    run_git_ok(other_repo, isolation, &["init", "-q", "-b", "main"])?;
+    verify_repo_toplevel(other_repo, isolation)?;
+
+    run_git_ok(other_repo, isolation, &["add", "-A"])?;
+    run_git_ok_with_dates(
+        other_repo,
+        isolation,
+        0,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "other-repo fixture：加入 README.md（git-review task 3.1）",
+        ],
+    )?;
+
+    fs::write(other_repo.join("conflict.txt"), "base\n")
+        .context("寫入 other-repo/conflict.txt 失敗")?;
+    run_git_ok(other_repo, isolation, &["add", "conflict.txt"])?;
+    run_git_ok_with_dates(
+        other_repo,
+        isolation,
+        1,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "加入 conflict.txt 作為合併衝突的共同基底（git-review task 3.1）",
+        ],
+    )?;
+
+    run_git_ok(other_repo, isolation, &["checkout", "-q", "-b", "branch-a"])?;
+    fs::write(other_repo.join("conflict.txt"), "branch-a change\n")
+        .context("寫入 other-repo/conflict.txt（branch-a）失敗")?;
+    run_git_ok(other_repo, isolation, &["add", "conflict.txt"])?;
+    run_git_ok_with_dates(
+        other_repo,
+        isolation,
+        2,
+        &["commit", "-q", "-m", "branch-a：修改 conflict.txt"],
+    )?;
+
+    run_git_ok(other_repo, isolation, &["checkout", "-q", "main"])?;
+    run_git_ok(other_repo, isolation, &["checkout", "-q", "-b", "branch-b"])?;
+    fs::write(other_repo.join("conflict.txt"), "branch-b change\n")
+        .context("寫入 other-repo/conflict.txt（branch-b）失敗")?;
+    run_git_ok(other_repo, isolation, &["add", "conflict.txt"])?;
+    run_git_ok_with_dates(
+        other_repo,
+        isolation,
+        3,
+        &["commit", "-q", "-m", "branch-b：修改 conflict.txt"],
+    )?;
+
+    let merge_out = git_cmd(other_repo, isolation, &["merge", "branch-a"])
+        .output()
+        .with_context(
+            || "啟動 git merge 失敗：找不到 git，或無法執行——請安裝 git 並確認在 PATH 中",
+        )?;
+    anyhow::ensure!(
+        !merge_out.status.success(),
+        "other-repo 的合併應該因內容衝突而失敗（這是本 fixture 需要的前提），實際卻成功了"
+    );
+
+    Ok(())
 }
 
 /// 遞迴複製 `src` 底下的所有檔案與資料夾到 `dst`（`dst` 不存在時建立）。只處理一般檔案與資料夾
@@ -1529,5 +2182,167 @@ mod tests {
         let error = add_review_fixture_panes(&mut state, &fixture)
             .expect_err("runtime 或 workspace 不存在時應該回錯，而不是靜默什麼都不做");
         assert!(format!("{error:#}").contains(OUTPUT_RUNTIME_ID));
+    }
+
+    // -----------------------------------------------------------------------
+    // git-review task 3.1：fast-import stream 產生（純函式，不啟動真正的 git）
+    // -----------------------------------------------------------------------
+
+    fn count_occurrences(haystack: &[u8], needle: &[u8]) -> usize {
+        if needle.is_empty() || haystack.len() < needle.len() {
+            return 0;
+        }
+        haystack
+            .windows(needle.len())
+            .filter(|w| *w == needle)
+            .count()
+    }
+
+    #[test]
+    fn git_fixture_date_is_deterministic_and_increasing() {
+        assert_eq!(git_fixture_date(0), "1767225600 +0000");
+        assert_eq!(git_fixture_date(1), "1767225660 +0000");
+        assert_eq!(git_fixture_date(2), "1767225720 +0000");
+    }
+
+    #[test]
+    fn author_line_combines_fixed_author_and_date() {
+        assert_eq!(
+            author_line(0),
+            "cockpit-ui-preview <ui-preview@cockpit.invalid> 1767225600 +0000"
+        );
+    }
+
+    #[test]
+    fn binary_pattern_is_512_bytes_covers_nul_and_differs_by_seed() {
+        let a = binary_pattern(0);
+        let b = binary_pattern(1);
+        assert_eq!(a.len(), 512);
+        assert_eq!(b.len(), 512);
+        assert!(a.contains(&0u8), "應涵蓋 0x00 這個位元組值");
+        assert_ne!(
+            a, b,
+            "不同 seed 應產生不同內容，才能區分「新增」與「修改」兩次 commit"
+        );
+    }
+
+    #[test]
+    fn fi_modify_bytes_frames_content_by_exact_byte_count() {
+        let mut buf = Vec::new();
+        fi_modify_bytes(&mut buf, "a/b.bin", &[0u8, 1, 2, 255]);
+        assert_eq!(
+            buf,
+            b"M 100644 inline a/b.bin\ndata 4\n\x00\x01\x02\xff\n".to_vec()
+        );
+    }
+
+    #[test]
+    fn fi_rename_and_fi_delete_produce_expected_lines() {
+        let mut buf = Vec::new();
+        fi_rename(&mut buf, "old.txt", "new.txt");
+        fi_delete(&mut buf, "gone.txt");
+        assert_eq!(buf, b"R old.txt new.txt\nD gone.txt\n".to_vec());
+    }
+
+    #[test]
+    fn fi_commit_writes_header_before_any_from_or_file_command() {
+        let mut buf = Vec::new();
+        fi_commit(&mut buf, "refs/heads/main", 7, 3, b"hello\n");
+        let text = String::from_utf8(buf).expect("內容全為 ASCII，應為合法 UTF-8");
+        assert_eq!(
+            text,
+            "commit refs/heads/main\nmark :7\n\
+             author cockpit-ui-preview <ui-preview@cockpit.invalid> 1767225780 +0000\n\
+             committer cockpit-ui-preview <ui-preview@cockpit.invalid> 1767225780 +0000\n\
+             data 6\nhello\n\n"
+        );
+    }
+
+    /// [`build_review_history_stream`] 涵蓋 design D10 的整份清單：260 個以上 commit、兩條分支與
+    /// 一次 merge、附註 tag、遠端追蹤分支、改名、刪除、二進位檔、中文檔名。逐項對生成的位元組流
+    /// 斷言，不啟動真正的 git（那部分由控制端的實跑驗收覆蓋）。
+    #[test]
+    fn build_review_history_stream_covers_design_d10_checklist() {
+        let root_sha = "0123456789abcdef0123456789abcdef01234567";
+        let stream = build_review_history_stream(root_sha);
+
+        let commit_count = count_occurrences(&stream, b"\ncommit refs/heads/")
+            + usize::from(stream.starts_with(b"commit refs/heads/"));
+        assert_eq!(
+            commit_count + 1, // +1：根 commit 在 fast-import 之外、由 build_review_repo_repo 建立
+            264,
+            "根 commit＋fast-import 的 commit 數應為 264（design D10：至少 260 個）"
+        );
+
+        assert_eq!(
+            count_occurrences(&stream, format!("from {root_sha}\n").as_bytes()),
+            1,
+            "只有第一筆 fast-import commit 需要明確 from 根 commit"
+        );
+        assert_eq!(
+            count_occurrences(&stream, b"commit refs/heads/feature/logging\n"),
+            2,
+            "feature/logging 應有 2 個 commit 且不合併回 main（供「依分支篩選」情境）"
+        );
+        assert_eq!(
+            count_occurrences(&stream, b"commit refs/heads/feature/formatting\n"),
+            1
+        );
+        assert_eq!(
+            count_occurrences(&stream, b"\nmerge :"),
+            1,
+            "應恰好一次 merge（design D10：兩條分支與一次 merge）"
+        );
+        assert_eq!(
+            count_occurrences(
+                &stream,
+                b"R history/rename-source.txt history/renamed-target.txt\n"
+            ),
+            1,
+            "應有一筆改名"
+        );
+        assert_eq!(
+            count_occurrences(&stream, b"D history/will-be-deleted-in-history.txt\n"),
+            1,
+            "應有一筆刪除"
+        );
+        assert_eq!(
+            count_occurrences(&stream, "history/中文檔名.md".as_bytes()),
+            1,
+            "應涵蓋中文檔名"
+        );
+        assert_eq!(
+            count_occurrences(&stream, b"M 100644 inline history/binary-asset.bin\n"),
+            2,
+            "二進位檔應新增一次、修改一次"
+        );
+        assert_eq!(
+            count_occurrences(&stream, b"\ntag v0.1.0\n"),
+            1,
+            "應有一個附註 tag"
+        );
+        assert_eq!(
+            count_occurrences(&stream, b"\nreset refs/remotes/origin/main\n"),
+            1,
+            "應有一個假的遠端追蹤分支"
+        );
+        assert!(
+            stream.ends_with(b"reset refs/remotes/origin/main\nfrom :245\n"),
+            "遠端追蹤分支應指到既有的 mark（第 245 筆填充 commit）"
+        );
+
+        // design D10：工作區的四種未 commit 情境要用到的三個追蹤檔案（第四種「已暫存修改」
+        // 直接沿用 staged-change.txt，不需要額外一個檔案），必須先進歷史才能在磁碟上被改寫。
+        for path in [
+            "history/staged-change.txt",
+            "history/unstaged-change.txt",
+            "history/deleted-in-worktree.txt",
+        ] {
+            assert_eq!(
+                count_occurrences(&stream, format!("M 100644 inline {path}\n").as_bytes()),
+                1,
+                "{path} 應在歷史中出現一次，供之後的工作區情境使用"
+            );
+        }
     }
 }

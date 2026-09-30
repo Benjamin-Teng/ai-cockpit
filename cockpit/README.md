@@ -272,6 +272,54 @@ Cockpit 依每個 pane 的 `cwd` 推算「檔案根目錄」（往上找到的�
 `cockpit/assets/vendor/` 下的 pdfjs-dist 與 Material Icon Theme 版本、下載來源、SHA-256 與升版步驟
 記在 `cockpit/assets/vendor/README.md`，升版時照該檔案的步驟重做。
 
+## git 唯讀讀取（change 5b `git-review`）
+
+Cockpit 在檔案根目錄是 git repo 時（`is_git` 為真），另外提供一組唯讀端點讀取 git 狀態、commit
+歷史與檔案在不同版本的內容，供「變更」面板、diff 分頁、Git Graph 分頁與某版本檔案分頁使用。完整
+行為契約見 `openspec/changes/git-review/specs/git-review/spec.md`（尚未 archive 前）與
+`docs/adr/0007-cockpit-git-crate.md`（依賴邊界與執行方式的決策理由）；本節只講服務端點與安全邊界。
+
+### 端點
+
+路徑前綴皆為 `GET /api/git/<runtime>/<root_id>/…`：
+
+- `status`：目前分支、暫存／未暫存／未追蹤／合併衝突的變更清單。
+- `refs`：分支、遠端追蹤分支、tag 清單與 HEAD。
+- `log`：commit 清單（分批載入、Graph 排版）。
+- `commit/<hash>`：單一 commit 的詳情與變更檔案清單。
+- `changes`：兩個版本之間的變更檔案清單。
+- `diff`：單一檔案在兩個版本之間的左右並排差異（含未追蹤檔案）。
+- `merge-base`：兩個 commit 的共同祖先。
+- `meta/<rev>/<相對路徑>`、`blob/<rev>/<相對路徑>`、`render/<rev>/<相對路徑>`：某個版本（commit
+  hash 或 `INDEX`）中檔案的中繼資料、原始內容、Markdown 渲染——不讀取工作區。
+
+非 200 回應本體固定為 `{"error": "<中文原因>", "code": "<代碼>"}`；完整代碼與狀態碼對照見 spec
+「git 端點的共同規則」。
+
+### 安全邊界
+
+- **執行 git 的查詢種類在程式中封閉**：能執行的子命令與引數由 `cockpit-git` crate 的 sealed
+  `GitQuery` 在編譯期限定（清單見 `cockpit-git/src/query.rs`），HTTP 層完全沒有「自訂 argv」的
+  入口；`cockpit` 這一側也沒有任何 `Command::new`，執行子程序一律經同一個
+  `cockpit_git::GitRunner`（同時最多 4 支、逾時 10 秒）。
+- **固定的唯讀前綴**：每次呼叫都帶 `--no-pager --no-optional-locks --literal-pathspecs` 等旗標，
+  不取得 optional lock、不寫 index、不執行 repo 設定指定的 fsmonitor／外部 diff／textconv／簽章
+  驗證程式，路徑一律當字面路徑（不解讀 pathspec 語法）。工作區側的 diff 用 plumbing
+  （`diff-files`／`diff-index`）而不是 `git diff`：後者遇到 stat 變舊的檔案會重寫 `.git/index`，
+  `--no-optional-locks` 擋不住。
+- **WSL repo 在 WSL 內以 `--exec` 執行**：根目錄主機路徑以 `\\wsl.localhost\<distro>\` 開頭時，git
+  改由 `wsl.exe -d <distro> --exec env LC_ALL=C git -C <posix repo 路徑> …` 在該 distro 內執行
+  （不經 shell、引數不被重新解讀），其餘（含 Windows 端看到的其他 UNC 路徑）用 Windows 的 git。
+- **不動 `safe.directory`**：git 對「擁有者不是目前使用者」的 repo（dubious ownership）回報的錯誤
+  一律分類成 502 `git_untrusted` 並直接回報，不加 `-c safe.directory=…` 之類的旗標繞過這個檢查。
+- **需要安裝 git**：Windows 端要能在 `PATH` 找到 `git`；根目錄在 WSL 時，該 distro 內也要能找到
+  `git`（`wsl.exe --exec` 直接呼叫，不經登入 shell 的 `PATH` 設定）。找不到時回 503
+  `git_unavailable`，`ui_preview` 範例在找不到本機 git 時啟動即失敗（不靜默降級）。
+- **其餘規則沿用 5a**：`root_id` 與允許清單、相對路徑片段規則、路徑界限、`Host`／`Origin` 檢查、
+  回應標頭、`GET`-only 皆與「檔案瀏覽與 Review」一節相同（`diff` 的未追蹤檔案分支與
+  `meta`／`blob`／`render` 直接重用同一套 [`resolve`／`read_capped`]／viewer 分類／Markdown 渲染／
+  原始內容 content-type 規則）。
+
 ## 單一執行檔
 
 所有靜態資源（HTML、JS、CSS、manifest、PNG 圖示）都用 `include_str!`／`include_bytes!` 內嵌進

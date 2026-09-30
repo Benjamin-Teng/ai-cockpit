@@ -57,6 +57,9 @@ async fn routes_return_200_with_expected_content_types() {
         // file-review task 4.1：左欄分頁／分頁區（files.js）與檢視器（viewers.js）的路由。
         ("/app/files.js", "text/javascript"),
         ("/app/viewers.js", "text/javascript"),
+        // git-review task 3.3：git.js 先以空殼檔案內嵌（cockpit-dashboard delta「路由與
+        // content-type」）。
+        ("/app/git.js", "text/javascript"),
         ("/manifest.webmanifest", "application/manifest+json"),
         ("/icons/icon-192.png", "image/png"),
         ("/icons/icon-512.png", "image/png"),

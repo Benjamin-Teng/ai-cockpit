@@ -596,7 +596,10 @@ fn parse_target(path: &str, op: FileOp) -> Result<(String, &str, RelPath), Endpo
 }
 
 /// 一段 URL 路徑片段的 percent-decode；`%` 後不是兩位十六進位（大小寫皆可）或結果不是 UTF-8 → `None`。
-fn percent_decode_utf8(raw: &str) -> Option<String> {
+///
+/// `pub(crate)`（git-review task 3.2）：git 端點的 query string 解析（`crate::git`）重用同一套
+/// 規則，不重寫第二份。
+pub(crate) fn percent_decode_utf8(raw: &str) -> Option<String> {
     let bytes = raw.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -793,7 +796,12 @@ const TEXT_PLAIN_UTF8: &str = "text/plain; charset=utf-8";
 /// `.html`／`.htm` 依 `bytes`（**實際要回傳的整份位元組**，不是中繼資料只看的前 8192 位元組）決定：
 /// 合法 UTF-8 → 帶 `charset=utf-8`，否則不帶 charset，交給檔內 `<meta charset>` 或 BOM（design D1、D2）。
 /// 沒帶 charset 又沒宣告時，瀏覽器會用系統舊編碼（繁中 Windows 為 Big5）解碼 UTF-8 而成亂碼。
-fn raw_content_type(path: &Path, viewer: Viewer, bytes: &[u8]) -> &'static str {
+///
+/// `pub(crate)`（git-review task 3.3）：git 端點的 `blob`（某版本的檔案內容端點）重用同一套
+/// content-type 規則（spec「某版本的檔案內容端點」：規則同 file-review「原始內容端點」），
+/// 不重寫第二份對照表；呼叫端傳入的 `path` 只用來取副檔名，不必是磁碟上真實存在的路徑
+/// （git 版本的內容來自 git blob，不一定與工作區檔案一致）。
+pub(crate) fn raw_content_type(path: &Path, viewer: Viewer, bytes: &[u8]) -> &'static str {
     let ext = path
         .extension()
         .and_then(|ext| ext.to_str())

@@ -3,6 +3,7 @@
 pub mod app;
 pub mod config;
 pub mod files;
+pub mod git;
 pub mod http;
 pub mod progress;
 pub mod progress_service;

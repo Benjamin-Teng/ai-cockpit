@@ -67,17 +67,21 @@ Chrome，單獨挑 `TK1` 跑時最快。
 | RM1 | `prefers-reduced-motion: reduce` 時減少動態 | task 2.2 |
 | FN1 | 不為字體發出網路請求 | task 2.2 |
 | TK1 | 唯一色彩／字級 token 契約：純靜態解析 `style.css`，不啟動 preview／Chrome | task 2.2 fix round 1 |
-| CT1 | 文字對比（banner／stale／all；含左緣條家族與 banner 折行時按鈕形狀） | task 3.4／4.2／5.2 |
+| CT1 | 文字對比（banner／stale／all／diff／graph；含左緣條家族與 banner 折行時按鈕形狀） | task 3.4／4.2／5.2；diff／graph 子斷言為 git-review task 4.3／4.4 新增（驗 diff 分頁 change 列與 add／blank 列、Git Graph 分頁 ref 標籤與 commit 列文字，皆 ≥4.5:1） |
 | LO1 | Live Output 常駐面板：空狀態／點列／取消選取／下方內容可操作／鍵盤選定 | task 4.1 |
-| CL1 | 清理：`style.css` 每一條選擇器至少在一種畫面狀態下對得到元素 | task 5.1 |
+| CL1 | 清理：`style.css` 每一條選擇器至少在一種畫面狀態下對得到元素（direction-01-visual 起走訪的畫面狀態清單，git-review task 4.2–4.4 起追加走訪左欄「變更」分頁、diff 分頁（change／add／blank／deleted 列）、Git Graph 分頁（ref 標籤、選取列、commit 詳情、搜尋、分支篩選 popover）） | task 5.1；git-review 追加狀態見 task 4.2／4.3／4.4 |
 | DF1 | task 5.1 帶到後面的延後項目（topbar／statusbar／conn／scrollbar／pretty／cwd／focus／pin） | task 5.1 |
 | FR1 | final review 修正：切換 Project 捲動位置歸零、Floor 邊界焦點框完整可見（真實 Tab 路徑）、文字放大 200% 按鈕不出節點 | task 5.4 final review／Codex F1–F3／Ruling R43 |
 | FT1 | 分頁很多不撐破頁面：1280 寬、20 個 60 字元檔名的檔案分頁，重畫後分頁列內部橫向捲動、頁面沒有橫向捲軸、中欄寬度不變 | file-review task 3.5；`file-review` change 的 cockpit-dashboard delta |
 | FT2 | 頻繁重畫不影響檔案分頁：推送 100 ms、Markdown 分頁往下捲，3 秒後分頁區、檢視器與其下所有內容子節點都不變，捲動容器仍是原本那一個且在頁面上，捲動位置（讀目前的捲動容器）與目前分頁不變；偵測器正負對照先在合成 DOM 上跑（只重設檢視器 innerHTML 必須轉紅），前端落地後另在真頁面跑一次 | file-review task 3.5（fix round 1：Codex finding 2）；同上 |
 | FT3 | Markdown 檢視遵守色彩與對比：README 內容區每個含文字元素對比 ≥4.5:1、文字色與背景色都是 10 個色彩 token（排除 PDF canvas 與 iframe） | file-review task 3.5；同上／design D11 |
+| FT4 | diff 與 Git Graph 不撐破頁面（視窗寬 700）：300 字元長行在 `.diff-text` 儲存格內折行、頁面無橫向捲軸；疊 16 條分支讓 Git Graph 同時出現 16 條車道，車道 SVG 寬度反映車道數、Graph 在分頁內容區內部捲動、頁面仍無橫向捲軸 | git-review task 4.3／4.4；spec cockpit-dashboard「diff 與 Git Graph 不撐破頁面」 |
 
 `FT1`–`FT3` 是 file-review task 3.5 先寫的測試，file-review 4.x 前端落地前預期 RED；它們用的前端契約（`#files`、
 `#review`、`role="tab"`、`data-path`、`data-viewer` 等）見 `docs/research/2026-09-27/files-check.md`「前端契約」。
+`FT4` 是 git-review task 4.3／4.4 隨 diff 分頁、Git Graph 分頁前端一起補的測試（非 file-review 先寫後補型，不預期
+RED），驗證的是同一份 spec Requirement（cockpit-dashboard「diff 與 Git Graph 不撐破頁面」）在窄視窗與多車道下的版面，
+它用的前端契約（`.diff-text`、`.graph-scroll`、車道 SVG 等）見 `docs/research/2026-09-28/git-check.md`。
 
 每個段落開頭都會印一行 `=== <代號>. <段落標題> ===`（例如 `=== V1. 1536x1024：桌面寬度不整頁捲動…
 ===`），要在大量輸出裡定位某一段時可以搜尋這個字串。

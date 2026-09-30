@@ -69,24 +69,43 @@ fn system_time_to_epoch_ms(time: SystemTime) -> i64 {
     }
 }
 
-/// 依副檔名（不分大小寫，只看最後一段）與前 [`CLASSIFY_HEAD_LIMIT`] 位元組的內容分類。
+/// 依副檔名（不分大小寫，只看最後一段）與前 [`CLASSIFY_HEAD_LIMIT`] 位元組的內容分類 viewer
+/// （file-review spec「中繼資料端點」）：讀取判斷所需的位元組後交給 [`classify_viewer_bytes`]
+/// ——那裡才是唯一定義這套分類規則的地方，這裡只負責從磁碟拿到 `name`／`head`。
 fn classify_viewer(path: &Path) -> Result<Viewer, FilesError> {
-    if let Some(ext) = lowercase_extension(path) {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let head = read_head(path, CLASSIFY_HEAD_LIMIT)?;
+    Ok(classify_viewer_bytes(name, &head))
+}
+
+/// 依副檔名（不分大小寫，只看最後一段）與內容前 [`CLASSIFY_HEAD_LIMIT`] 位元組分類 viewer
+/// （file-review spec「中繼資料端點」）：純函式，不碰檔案系統。`name` 只需要是檔名字面（含副
+/// 檔名），不必是磁碟路徑；`head` 是判斷用的內容位元組，超過 [`CLASSIFY_HEAD_LIMIT`] 時只取
+/// 前段（呼叫端傳更多位元組進來也安全，不會多讀出界）。
+///
+/// `pub`（git-review task 3.3 fix round 2；Ruling R10）：git-review 的某版本檔案內容端點
+/// `meta` 重用這個函式分類 git blob 的內容（內容經 `cockpit-git` 的 `BlobHead` 查詢取得前 8192
+/// 位元組，不是磁碟路徑）——這是唯一定義這套分類規則的地方，[`classify_viewer`]（磁碟路徑）與
+/// 跨 crate 的呼叫端都呼叫它，不重寫第二份規則。
+pub fn classify_viewer_bytes(name: &str, head: &[u8]) -> Viewer {
+    if let Some(ext) = lowercase_extension_of_name(name) {
         match ext.as_str() {
-            "md" | "markdown" => return Ok(Viewer::Markdown),
-            "pdf" => return Ok(Viewer::Pdf),
-            "html" | "htm" => return Ok(Viewer::Html),
+            "md" | "markdown" => return Viewer::Markdown,
+            "pdf" => return Viewer::Pdf,
+            "html" | "htm" => return Viewer::Html,
             _ => {}
         }
     }
 
-    let head = read_head(path, CLASSIFY_HEAD_LIMIT)?;
-    Ok(classify_by_content(&head))
+    let capped_len = head.len().min(CLASSIFY_HEAD_LIMIT as usize);
+    classify_by_content(&head[..capped_len])
 }
 
-/// `Path::extension()`（只看最後一段：`a.md.txt` 是 `txt`，`.gitignore` 沒有副檔名）小寫化。
-fn lowercase_extension(path: &Path) -> Option<String> {
-    path.extension()
+/// 檔名字面的副檔名（不分大小寫，只看最後一段：`a.md.txt` 是 `txt`，`.gitignore` 沒有副檔名）
+/// ——對字面操作，不需要是磁碟路徑，同 [`classify_viewer_bytes`] 的用法。
+fn lowercase_extension_of_name(name: &str) -> Option<String> {
+    Path::new(name)
+        .extension()
         .and_then(|ext| ext.to_str())
         .map(str::to_ascii_lowercase)
 }
@@ -116,10 +135,47 @@ fn classify_by_content(head: &[u8]) -> Viewer {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{FilesError, RelPath, Viewer, file_meta};
+    use super::super::{FilesError, RelPath, Viewer, classify_viewer_bytes, file_meta};
     use crate::test_support::TempDir;
     use std::fs;
     use std::path::Path;
+
+    /// git-review task 3.3 fix round 2（Ruling R10）：`classify_viewer_bytes` 是純函式，
+    /// 不需要暫存目錄——與 `scenario_classifies_by_extension_and_content` 用同一組輸入，
+    /// 證明兩者是同一套規則（`file_meta` 內部就是呼叫這個函式）。
+    #[test]
+    fn classify_viewer_bytes_matches_extension_and_content_rules() {
+        assert_eq!(classify_viewer_bytes("a.MD", b"# hi"), Viewer::Markdown);
+        assert_eq!(classify_viewer_bytes("b.pdf", b"%PDF-1.4"), Viewer::Pdf);
+        assert_eq!(classify_viewer_bytes("c.htm", b"<p>hi</p>"), Viewer::Html);
+        assert_eq!(classify_viewer_bytes("d.toml", b"key = 1"), Viewer::Text);
+        assert_eq!(
+            classify_viewer_bytes("e.png", b"\x89PNG\0garbage"),
+            Viewer::Unsupported
+        );
+    }
+
+    /// 沒有可辨識副檔名時退回內容判斷：含 NUL → unsupported，合法 UTF-8 → text。
+    #[test]
+    fn classify_viewer_bytes_without_known_extension_falls_back_to_content() {
+        assert_eq!(
+            classify_viewer_bytes("noext", b"plain text content"),
+            Viewer::Text
+        );
+        assert_eq!(
+            classify_viewer_bytes("noext", b"\x00binary garbage"),
+            Viewer::Unsupported
+        );
+    }
+
+    /// `head` 超過 [`super::CLASSIFY_HEAD_LIMIT`] 時只取前段判斷：超過門檻之後才出現的 NUL
+    /// 不影響結果（同磁碟版本「只讀前 8192 位元組」的既有規則）。
+    #[test]
+    fn classify_viewer_bytes_only_looks_at_head_limit_bytes() {
+        let mut head = vec![b'a'; 8192];
+        head.push(0);
+        assert_eq!(classify_viewer_bytes("noext", &head), Viewer::Text);
+    }
 
     fn rel(raw: &str) -> RelPath {
         RelPath::parse(raw).expect("測試輸入應合法")

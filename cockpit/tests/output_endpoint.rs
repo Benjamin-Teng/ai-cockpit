@@ -140,6 +140,7 @@ fn build(fake: Arc<FakeOutputRuntime>) -> AppState {
         runtimes: Arc::new(runtimes),
         path_mappings: Arc::new(HashMap::new()),
         files: Arc::new(cockpit::files::FileSettings::embedded()),
+        git_runner: Arc::new(cockpit_git::GitRunner::new()),
     }
 }
 

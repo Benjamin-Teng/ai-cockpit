@@ -7747,6 +7747,114 @@ async function partTextContrast() {
       await stopPreview(preview, 'preview-CT1-all');
     }
   }
+
+  // --- diff 子斷言（git-review task 4.3；spec git-review「diff 分頁」；design D7 的底色推導）：
+  // change 列（左 `.diff-row-del`、右 `.diff-row-add`）與 add／blank 列（暫存副本裡在
+  // docs/design.md 插入一行；左側 `.diff-row-blank`）裡的文字對比都要 ≥4.5:1。`walkTextContrast`
+  // 讀 `effectiveBackground()`（合成 `color-mix()` 之後瀏覽器算出的實際 rgb），不需要另外手算
+  // color-mix 的合成結果。 ---
+  {
+    let preview = null;
+    let chrome = null;
+    try {
+      preview = await startPreview({}, 'preview-CT1-diff');
+      const reviewRepo = await ftWaitReviewRepo(preview);
+      const url = `http://127.0.0.1:${preview.port}/`;
+      chrome = await startChrome(pickPort(19150, [preview.port]), url, 'chrome-CT1-diff');
+      const { cdp } = chrome;
+      await waitForFirstProjection(cdp, preview.port);
+      await installTools(cdp);
+
+      const original = fs.readFileSync(path.join(reviewRepo, 'docs', 'design.md'), 'utf8');
+      const lines = original.split('\n');
+      lines.splice(Math.floor(lines.length / 2), 0, 'CT1：diff 對比檢查插入的一行（供驗 add／blank 列）');
+      fs.writeFileSync(path.join(reviewRepo, 'docs', 'design.md'), lines.join('\n'));
+
+      await cdp.click('.pane-row[data-runtime="win"][data-pane="wJ:p4"]');
+      await cdp.waitFor('!!document.querySelector(\'.pane-row[data-pane="wJ:p4"].selected\')', 5000, 'diff 對比：選定 win/wJ:p4');
+      await cdp.click('#files-tab-changes');
+      await cdp.waitFor("document.getElementById('files-tab-changes').getAttribute('aria-selected') === 'true'", 3000, 'diff 對比：切到左欄「變更」分頁');
+      await cdp.waitFor('!!document.querySelector(\'#changes-panel .changes-row[title="history/unstaged-change.txt"]\')', 5000, 'diff 對比：「變更」面板列出 history/unstaged-change.txt');
+      await cdp.click('#changes-panel .changes-row[title="history/unstaged-change.txt"]');
+      await cdp.waitFor(
+        '(() => { var t = document.querySelector(\'#review [role="tab"][data-diff-path="history/unstaged-change.txt"]\'); return !!t && t.getAttribute(\'aria-selected\') === \'true\'; })()',
+        5000,
+        'diff 對比：開啟 history/unstaged-change.txt 的 diff 分頁（change 列）'
+      );
+      const panelId1 = await cdp.eval('document.querySelector(\'#review [role="tab"][data-diff-path="history/unstaged-change.txt"]\').getAttribute(\'aria-controls\')');
+      await cdp.waitFor(`!!document.getElementById(${JSON.stringify(panelId1)}).querySelector('.diff-row-del')`, 5000, 'diff 對比：change 列的內容載入完成');
+
+      const rows1 = await cdp.eval(`window.__cockpitVisualTools.walkTextContrast(${JSON.stringify('#' + panelId1)})`);
+      check(Array.isArray(rows1) && rows1.length > 0, `diff（change 列）：走訪到含文字的元素（實際 ${Array.isArray(rows1) ? rows1.length : 'n/a'} 個）`);
+      const bad1 = rows1.filter((r) => r.ratio < 4.5);
+      check(bad1.length === 0, `diff（change 列）：每一組文字對比都應該 ≥ 4.5:1（實際低於門檻 ${bad1.length} / ${rows1.length} 個；${JSON.stringify(bad1.slice(0, 5))}）`);
+
+      await cdp.click('#files-tab-changes');
+      await cdp.waitFor("document.getElementById('files-tab-changes').getAttribute('aria-selected') === 'true'", 3000, 'diff 對比：切回左欄「變更」分頁（準備開 docs/design.md）');
+      await cdp.waitFor('!!document.querySelector(\'#changes-panel .changes-row[title="docs/design.md"]\')', 5000, 'diff 對比：「變更」面板列出 docs/design.md');
+      await cdp.click('#changes-panel .changes-row[title="docs/design.md"]');
+      await cdp.waitFor(
+        '(() => { var t = document.querySelector(\'#review [role="tab"][data-diff-path="docs/design.md"]\'); return !!t && t.getAttribute(\'aria-selected\') === \'true\'; })()',
+        5000,
+        'diff 對比：開啟 docs/design.md 的 diff 分頁（add／blank 列）'
+      );
+      const panelId2 = await cdp.eval('document.querySelector(\'#review [role="tab"][data-diff-path="docs/design.md"]\').getAttribute(\'aria-controls\')');
+      await cdp.waitFor(`!!document.getElementById(${JSON.stringify(panelId2)}).querySelector('.diff-row-add')`, 5000, 'diff 對比：add 列的內容載入完成');
+
+      const rows2 = await cdp.eval(`window.__cockpitVisualTools.walkTextContrast(${JSON.stringify('#' + panelId2)})`);
+      check(Array.isArray(rows2) && rows2.length > 0, `diff（add／blank 列）：走訪到含文字的元素（實際 ${Array.isArray(rows2) ? rows2.length : 'n/a'} 個）`);
+      const bad2 = rows2.filter((r) => r.ratio < 4.5);
+      check(bad2.length === 0, `diff（add／blank 列）：每一組文字對比都應該 ≥ 4.5:1（實際低於門檻 ${bad2.length} / ${rows2.length} 個；${JSON.stringify(bad2.slice(0, 5))}）`);
+    } finally {
+      await stopChrome(chrome, 'chrome-CT1-diff');
+      await stopPreview(preview, 'preview-CT1-diff');
+    }
+  }
+
+  // --- graph 子斷言（git-review task 4.4；spec git-review「Git Graph 分頁」；design D8 的 ref
+  // 標籤與 HEAD 節點樣式）：預設（不篩選）開啟 review-repo 的 Git Graph 分頁，第一批 200 列裡就
+  // 同時含三種 ref 標籤（本地分支／遠端分支／tag）與 HEAD 指向的分支強調樣式（見 task 4.4 報告
+  // 「開啟並分批載入」段的實測：review-repo fixture 的 origin/main、v0.1.0 tag 都落在第一批範圍
+  // 內），走一次就能覆蓋全部畫面狀態，不需要另外操作。SVG 的線段／節點沒有文字節點，
+  // `walkTextContrast` 自然只會量到 ref 標籤與 commit 列文字。 ---
+  {
+    let preview = null;
+    let chrome = null;
+    try {
+      preview = await startPreview({}, 'preview-CT1-graph');
+      const url = `http://127.0.0.1:${preview.port}/`;
+      chrome = await startChrome(pickPort(19155, [preview.port]), url, 'chrome-CT1-graph');
+      const { cdp } = chrome;
+      await waitForFirstProjection(cdp, preview.port);
+      await installTools(cdp);
+
+      await cdp.click('.pane-row[data-runtime="win"][data-pane="wJ:p4"]');
+      await cdp.waitFor('!!document.querySelector(\'.pane-row[data-pane="wJ:p4"].selected\')', 5000, 'graph 對比：選定 win/wJ:p4');
+      await cdp.click('#files-tab-changes');
+      await cdp.waitFor("document.getElementById('files-tab-changes').getAttribute('aria-selected') === 'true'", 3000, 'graph 對比：切到左欄「變更」分頁');
+      await cdp.waitFor('!!document.querySelector(\'#changes-panel [data-action="open-git-graph"]\')', 5000, 'graph 對比：「Git Graph」按鈕出現');
+      await cdp.click('#changes-panel [data-action="open-git-graph"]');
+      await cdp.waitFor(
+        '(() => { var t = document.querySelector(\'#review [role="tab"][data-graph-root]\'); return !!t && t.getAttribute(\'aria-selected\') === \'true\'; })()',
+        5000,
+        'graph 對比：Git Graph 分頁出現並成為目前分頁'
+      );
+      const panelId = await cdp.eval('document.getElementById(document.querySelector(\'#review [role="tab"][data-graph-root]\').getAttribute(\'aria-controls\')).id');
+      await cdp.waitFor(
+        `(() => { var p = document.getElementById(${JSON.stringify(panelId)}); var kinds = new Set(Array.from(p.querySelectorAll('.graph-ref-badge')).map(function (b) { return b.getAttribute('data-kind'); })); return p.querySelectorAll('.graph-row').length >= 200 && kinds.has('branch') && kinds.has('remote') && kinds.has('tag') && p.querySelectorAll('.graph-ref-badge.is-head-branch').length > 0; })()`,
+        5000,
+        'graph 對比：第一批載入完成，三種 ref 標籤與 HEAD 指向的分支標籤都已畫出'
+      );
+
+      const rows = await cdp.eval(`window.__cockpitVisualTools.walkTextContrast(${JSON.stringify('#' + panelId)})`);
+      check(Array.isArray(rows) && rows.length > 0, `graph: 走訪到含文字的元素（實際 ${Array.isArray(rows) ? rows.length : 'n/a'} 個）`);
+      const bad = rows.filter((r) => r.ratio < 4.5);
+      check(bad.length === 0, `graph: 每一組文字對比都應該 ≥ 4.5:1（實際低於門檻 ${bad.length} / ${rows.length} 個；${JSON.stringify(bad.slice(0, 5))}）`);
+    } finally {
+      await stopChrome(chrome, 'chrome-CT1-graph');
+      await stopPreview(preview, 'preview-CT1-graph');
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -8543,6 +8651,144 @@ async function partCssInventory() {
     await cdp.click('#files [role="treeitem"][title="cl1-gone.md"]');
     await cdp.waitFor("(() => { var t = document.querySelector('#review [role=\"tab\"][data-path=\"cl1-gone.md\"]'); var p = t && document.getElementById(t.getAttribute('aria-controls')); var s = p && p.querySelector('[data-tone=\"warn\"]'); return !!s && !s.hidden; })()", 5000, '[CL1] 開已刪除的 cl1-gone.md：檔案分頁顯示讀取失敗原因');
     await collect('檔案分頁（讀取失敗）');
+
+    // git-review task 4.2：左欄「變更」分頁（spec git-review「左欄變更分頁」新增的畫面狀態；spec
+    // file-review「左欄檔案樹」MODIFIED 的第三個分頁）——分支資訊、已暫存／變更／未追蹤三組（task 3.1
+    // fixture 的 review-repo 工作區既有狀態，合併衝突放在 other-repo，這裡不驗）、點列開 diff 分頁、
+    // 「Git Graph」按鈕開 graph 分頁。只讀既有工作區狀態，不另外寫暫存副本。
+    await cdp.click('#files-tab-changes');
+    await cdp.waitFor("document.getElementById('files-tab-changes').getAttribute('aria-selected') === 'true'", 3000, '[CL1] 切到左欄「變更」分頁');
+    await cdp.waitFor('!!document.querySelector(\'#changes-panel .changes-row[title="history/staged-change.txt"]\')', 5000, '[CL1] 「變更」面板列出 history/staged-change.txt（已暫存組）');
+    await cdp.click('#changes-panel .changes-row[title="history/unstaged-change.txt"]');
+    await cdp.waitFor(
+      '(() => { var t = document.querySelector(\'#review [role="tab"][data-diff-path="history/unstaged-change.txt"]\'); return !!t && t.getAttribute(\'aria-selected\') === \'true\'; })()',
+      5000,
+      '[CL1] 點「變更」列開啟並選定 diff 分頁'
+    );
+    await collect('左欄變更分頁（清單、diff 分頁）');
+
+    // git-review task 4.3：diff 分頁內容的其餘畫面狀態（spec git-review「diff 分頁」；design D7 新增
+    // 的選擇器 `.diff-grid`／`.diff-num`／`.diff-text`／`.diff-gap`／`.diff-row-del`／
+    // `.diff-row-add`／`.diff-row-blank`／`.diff-toolbar` 系列）——上面已經走過 change 列（左
+    // `.diff-row-del`、右 `.diff-row-add`，非 blank）；這裡補兩種還沒出現過的列：deleted-in-
+    // worktree.txt 的 delete 列（右側 `.diff-row-blank`）與暫存副本裡在 docs/design.md 中間插入
+    // 一行造成的 add 列（左側 `.diff-row-blank`）＋`.diff-gap`（前後都留有足夠未變更的行）。
+    await cdp.click('#files-tab-changes');
+    await cdp.waitFor("document.getElementById('files-tab-changes').getAttribute('aria-selected') === 'true'", 3000, '[CL1] 切回左欄「變更」分頁（準備開 deleted-in-worktree.txt 的 diff）');
+    await cdp.click('#changes-panel .changes-row[title="history/deleted-in-worktree.txt"]');
+    await cdp.waitFor(
+      '(() => { var t = document.querySelector(\'#review [role="tab"][data-diff-path="history/deleted-in-worktree.txt"]\'); return !!t && t.getAttribute(\'aria-selected\') === \'true\'; })()',
+      5000,
+      '[CL1] 點「變更」列開啟 deleted-in-worktree.txt 的 diff 分頁'
+    );
+    await cdp.waitFor(
+      '(() => { var t = document.querySelector(\'#review [role="tab"][data-diff-path="history/deleted-in-worktree.txt"]\'); var p = t && document.getElementById(t.getAttribute(\'aria-controls\')); return !!p && !!p.querySelector(\'.diff-row-blank\'); })()',
+      5000,
+      '[CL1] deleted-in-worktree.txt 的 diff 內容含右側空白（.diff-row-blank）'
+    );
+    await collect('diff 分頁（delete 列＋右側空白）');
+
+    const cl1DesignLines = fs.readFileSync(path.join(cl1Repo, 'docs', 'design.md'), 'utf8').split('\n');
+    cl1DesignLines.splice(Math.floor(cl1DesignLines.length / 2), 0, 'CL1：diff add 列與 gap 列（只在暫存副本插入，不動 repo 內的 fixture）');
+    fs.writeFileSync(path.join(cl1Repo, 'docs', 'design.md'), cl1DesignLines.join('\n'));
+    await cdp.click('#files-tab-changes');
+    await cdp.waitFor("document.getElementById('files-tab-changes').getAttribute('aria-selected') === 'true'", 3000, '[CL1] 切回左欄「變更」分頁（準備開 docs/design.md 的 diff）');
+    await cdp.waitFor('!!document.querySelector(\'#changes-panel .changes-row[title="docs/design.md"]\')', 5000, '[CL1] 「變更」面板列出 docs/design.md（輪詢抓到暫存副本的修改）');
+    await cdp.click('#changes-panel .changes-row[title="docs/design.md"]');
+    await cdp.waitFor(
+      '(() => { var t = document.querySelector(\'#review [role="tab"][data-diff-path="docs/design.md"]\'); return !!t && t.getAttribute(\'aria-selected\') === \'true\'; })()',
+      5000,
+      '[CL1] 點「變更」列開啟 docs/design.md 的 diff 分頁'
+    );
+    await cdp.waitFor(
+      '(() => { var t = document.querySelector(\'#review [role="tab"][data-diff-path="docs/design.md"]\'); var p = t && document.getElementById(t.getAttribute(\'aria-controls\')); return !!p && !!p.querySelector(\'.diff-gap\') && !!p.querySelector(\'.diff-row-add\'); })()',
+      5000,
+      '[CL1] docs/design.md 的 diff 內容含 gap 列（.diff-gap）與新增列（.diff-row-add）'
+    );
+    await collect('diff 分頁（add 列＋gap 列）');
+
+    // git-review task 4.4：Git Graph 分頁內容（design D8／D9；spec「Git Graph 分頁」新增的選擇器
+    // `.graph-row`／`.graph-svg`／`.graph-line`／`.graph-node-head-ring`／`.graph-message`／
+    // `.graph-refs`／`.graph-ref-badge` 系列／`.graph-subject`／`.graph-author`／`.graph-time`／
+    // `.graph-hash`／`.graph-load-more`／`.graph-search`／`.graph-filter` 系列）——不篩選開啟時
+    // review-repo 的第一批 200 列就同時含三種 ref 標籤與 HEAD 節點外框（見 task 4.4 報告「開啟並
+    // 分批載入」段的實測），這裡再走選取（`.is-selected`）、搜尋標示（`.is-search-hit`）、分支
+    // 篩選 popover（`.graph-filter-popover`／`.graph-filter-group`／`.graph-filter-group-title`／
+    // `.graph-filter-item`／`.graph-filter-actions`）三個還沒出現過的畫面狀態。git-review task 4.5：
+    // 選取一個 commit 後自動展開詳情（`.commit-detail` 系列，見下方）。
+    await cdp.click('#files-tab-changes');
+    await cdp.waitFor("document.getElementById('files-tab-changes').getAttribute('aria-selected') === 'true'", 3000, '[CL1] 切回左欄「變更」分頁（準備點 Git Graph）');
+    await cdp.click('#changes-panel [data-action="open-git-graph"]');
+    await cdp.waitFor(
+      '(() => { var t = document.querySelector(\'#review [role="tab"][data-graph-root]\'); return !!t && t.getAttribute(\'aria-selected\') === \'true\'; })()',
+      5000,
+      '[CL1] 按「Git Graph」開啟並選定 Git Graph 分頁'
+    );
+    const cl1GraphPanelId = await cdp.eval('document.getElementById(document.querySelector(\'#review [role="tab"][data-graph-root]\').getAttribute(\'aria-controls\')).id');
+    await cdp.waitFor(
+      `(() => { var p = document.getElementById(${JSON.stringify(cl1GraphPanelId)}); var kinds = new Set(Array.from(p.querySelectorAll('.graph-ref-badge')).map(function (b) { return b.getAttribute('data-kind'); })); return p.querySelectorAll('.graph-row').length >= 200 && kinds.has('branch') && kinds.has('remote') && kinds.has('tag') && p.querySelectorAll('.graph-node-head-ring').length > 0; })()`,
+      5000,
+      '[CL1] Git Graph 第一批載入完成，三種 ref 標籤與 HEAD 節點外框都已畫出'
+    );
+    await cdp.eval(`(() => { document.getElementById(${JSON.stringify(cl1GraphPanelId)}).querySelector('.graph-row').click(); return true; })()`);
+    await cdp.waitFor(
+      `!!document.getElementById(${JSON.stringify(cl1GraphPanelId)}).querySelector('.graph-row.is-selected')`,
+      5000,
+      '[CL1] 點第一列：選取樣式出現'
+    );
+    // git-review task 4.5：commit 詳情與比較（design 控制端裁決；spec「commit 詳情與比較」新增的
+    // 選擇器 `.commit-detail`／`.commit-detail-row`／`.commit-detail-label`／`.commit-detail-hash`／
+    // `.commit-detail-message`／`.commit-detail-actions`／`.commit-detail-files`／
+    // `.commit-detail-file-row`）——點第一列（HEAD）選取後就會自動展開詳情，這裡等它出現。parent
+    // 「不在已載入範圍」的純文字分支沒有專屬選擇器（git.js commitParentNode() 的既有裁決：這個狀態
+    // 極難穩定重現——捲到最後一列本身就會觸發自動載入下一批，parent 反而變成已載入——改用行內樣式，
+    // 不受 CL1 死規則限制）。
+    await cdp.waitFor(
+      `!!document.getElementById(${JSON.stringify(cl1GraphPanelId)}).querySelector('.commit-detail')`,
+      5000,
+      '[CL1] 點第一列後 commit 詳情自動展開'
+    );
+    await collect('左欄變更分頁（Git Graph 分頁，清單與選取，commit 詳情）');
+
+    await cdp.eval(`(() => {
+      var input = document.getElementById(${JSON.stringify(cl1GraphPanelId)}).querySelector('.graph-search-input');
+      input.value = 'main';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`);
+    await cdp.waitFor(
+      `document.getElementById(${JSON.stringify(cl1GraphPanelId)}).querySelector('.graph-search-count').textContent.indexOf('共') !== -1`,
+      5000,
+      '[CL1] 搜尋框輸入 main：顯示比對到的總筆數'
+    );
+    await cdp.eval(`(() => {
+      var input = document.getElementById(${JSON.stringify(cl1GraphPanelId)}).querySelector('.graph-search-input');
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      return true;
+    })()`);
+    await cdp.waitFor(
+      `!!document.getElementById(${JSON.stringify(cl1GraphPanelId)}).querySelector('.graph-row.is-search-hit')`,
+      5000,
+      '[CL1] 按 Enter 跳到第一筆：搜尋標示出現'
+    );
+    await collect('左欄變更分頁（Git Graph 分頁，搜尋標示）');
+
+    await cdp.click(`#${cl1GraphPanelId} [data-action="graph-filter-toggle"]`);
+    await cdp.waitFor(
+      `(() => { var pop = document.getElementById(${JSON.stringify(cl1GraphPanelId)}).querySelector('.graph-filter-popover'); return !!pop && !pop.hidden; })()`,
+      5000,
+      '[CL1] 點「分支篩選」按鈕：popover 打開，三組（本地分支／遠端分支／tag）都畫出'
+    );
+    await collect('左欄變更分頁（Git Graph 分頁，分支篩選 popover）');
+    await cdp.eval(`(() => { document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return true; })()`);
+    await cdp.waitFor(
+      `(() => { var pop = document.getElementById(${JSON.stringify(cl1GraphPanelId)}).querySelector('.graph-filter-popover'); return !!pop && pop.hidden; })()`,
+      5000,
+      '[CL1] Esc 關閉分支篩選 popover'
+    );
+    await cdp.click('#files-tab-files');
+    await cdp.waitFor("document.getElementById('files-tab-files').getAttribute('aria-selected') === 'true'", 3000, '[CL1] 切回左欄「檔案」分頁');
+
     await cdp.eval("window.liveOutput.select('win', 'wJ:p1'); true");
     await cdp.waitFor("(() => { var s = document.querySelector('#files .files-status[data-tone=\"warn\"]'); return !!s && !s.hidden; })()", 5000, '[CL1] 選 wJ:p1：根目錄查詢失敗原因出現');
     await collect('左欄檔案樹（根目錄查詢失敗）');
@@ -10118,6 +10364,145 @@ async function partMarkdownColors() {
   }
 }
 
+// FT4：GIVEN 視窗寬 700，已打開一個含 300 個字元長行的 diff 分頁 WHEN 顯示該分頁 THEN 長行在所屬欄內
+// 折行，頁面沒有橫向捲軸（spec cockpit-dashboard「diff 與 Git Graph 不撐破頁面」的 diff 部分；
+// git-review task 4.3）；Git Graph 部分（task 4.4）在同一支 preview／chrome 裡接著做：用
+// `git commit-tree`＋`update-ref`（不碰工作區／索引，安全機制同 git-check.js 的 `gitTemp()`）在
+// review-repo 暫存副本疊 16 個各自獨立的分支（同一個共同祖先），不篩選開啟 Git Graph 時這些分支的
+// tip commit 會是最新的 16 列，同時佔滿 16 條車道（design D8「進行中的車道」：分岔前每一列都有
+// 15 條「與本列節點無關」的車道穿過＋1 條本列新節點，恰好 16 條），驗「Graph 在分頁內容區內部捲動，
+// 頁面沒有橫向捲軸」。互動（選 pane、切「變更」分頁、點列開 diff／Git Graph）在預設寬度（1536）
+// 完成——`cdp.click()` 用 `scrollIntoView({block:'start'})`，700 寬的單欄＋整頁捲動版面下 pane 列
+// 可能被 sticky 底列擋住點不到（同 git-check.js「窄視窗不橫向捲動」段的既有教訓）；只在量測當下才
+// 切到 700 寬。
+function ft4VerifyTempRepoToplevel(repoDir) {
+  const r = spawnSync('git', ['-C', repoDir, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' });
+  const top = (r.stdout || '').trim();
+  if (r.status !== 0 || path.resolve(top).toLowerCase() !== path.resolve(repoDir).toLowerCase()) {
+    throw new Error(`FT4 安全檢查失敗：git rev-parse --show-toplevel（${JSON.stringify(top)}）與預期的暫存副本路徑（${repoDir}）不符，拒絕寫入`);
+  }
+}
+function ft4GitTemp(repoDir, args, env) {
+  ft4VerifyTempRepoToplevel(repoDir);
+  const r = spawnSync('git', ['-C', repoDir, ...args], { encoding: 'utf8', env: env || process.env });
+  if (r.status !== 0) {
+    throw new Error(`FT4：git ${args.join(' ')} 於 ${repoDir} 失敗：${r.stderr}`);
+  }
+  return (r.stdout || '').trim();
+}
+function ft4CreateManyLanes(repoDir, count) {
+  const base = ft4GitTemp(repoDir, ['rev-parse', 'HEAD']);
+  const tree = ft4GitTemp(repoDir, ['rev-parse', `${base}^{tree}`]);
+  const nowSec = Math.floor(Date.now() / 1000);
+  for (let i = 1; i <= count; i += 1) {
+    const env = { ...process.env, GIT_AUTHOR_NAME: 'ft4', GIT_AUTHOR_EMAIL: 'ft4@invalid', GIT_COMMITTER_NAME: 'ft4', GIT_COMMITTER_EMAIL: 'ft4@invalid', GIT_AUTHOR_DATE: `${nowSec + i} +0000`, GIT_COMMITTER_DATE: `${nowSec + i} +0000` };
+    const newOid = ft4GitTemp(repoDir, ['-c', 'user.name=ft4', '-c', 'user.email=ft4@invalid', '-c', 'commit.gpgsign=false', 'commit-tree', tree, '-p', base, '-m', `ft4-lane-${i}`], env);
+    ft4GitTemp(repoDir, ['update-ref', `refs/heads/ft4-lane-${i}`, newOid]);
+  }
+}
+async function partDiffNoOverflow() {
+  log('=== FT4. dashboard/diff 與 Git Graph 不撐破頁面（視窗寬 700）===');
+  let preview = null;
+  let chrome = null;
+  try {
+    preview = await startPreview({}, 'preview-FT4');
+    const reviewRepo = await ftWaitReviewRepo(preview);
+    const longLine = 'x'.repeat(300);
+    fs.writeFileSync(path.join(reviewRepo, 'history', 'ft4-longline.md'), `${longLine}\n`);
+    ft4CreateManyLanes(reviewRepo, 16);
+
+    chrome = await startChrome(pickPort(19440, [preview.port]), `http://127.0.0.1:${preview.port}/`, 'chrome-FT4');
+    const { cdp } = chrome;
+    await waitForFirstProjection(cdp, preview.port);
+
+    ftNeed(await cdp.click('.pane-row[data-runtime="win"][data-pane="wJ:p4"]'), '[FT4] 點 pane 列 win/wJ:p4');
+    ftNeed(await cdp.waitFor('!!document.querySelector(\'.pane-row[data-pane="wJ:p4"].selected\')', 5000, '[FT4] wJ:p4 出現選定標示'), '[FT4] 選定標示');
+    ftNeed(await cdp.click('#files-tab-changes'), '[FT4] 點左欄分頁「變更」');
+    await cdp.waitFor("document.getElementById('files-tab-changes').getAttribute('aria-selected') === 'true'", 3000, '[FT4] 左欄「變更」分頁成為目前分頁');
+    await cdp.waitFor('!!document.querySelector(\'#changes-panel .changes-row[title="history/ft4-longline.md"]\')', 5000, '[FT4] 「變更」面板列出 history/ft4-longline.md（未追蹤）');
+    ftNeed(await cdp.click('#changes-panel .changes-row[title="history/ft4-longline.md"]'), '[FT4] 點「變更」清單的 history/ft4-longline.md 列');
+    await cdp.waitFor(
+      '(() => { var t = document.querySelector(\'#review [role="tab"][data-diff-path="history/ft4-longline.md"]\'); return !!t && t.getAttribute(\'aria-selected\') === \'true\'; })()',
+      5000,
+      '[FT4] diff 分頁出現並成為目前分頁'
+    );
+    await cdp.waitFor(
+      '(() => { var t = document.querySelector(\'#review [role="tab"][data-diff-path="history/ft4-longline.md"]\'); var p = t && document.getElementById(t.getAttribute(\'aria-controls\')); return !!p && !!p.querySelector(\'.diff-text\'); })()',
+      5000,
+      '[FT4] diff 內容載入完成'
+    );
+
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 700, height: 900, deviceScaleFactor: 1, mobile: false });
+    await sleep(300);
+
+    const measured = await cdp.eval(`(() => {
+      var t = document.querySelector('#review [role="tab"][data-diff-path="history/ft4-longline.md"]');
+      var p = t && document.getElementById(t.getAttribute('aria-controls'));
+      var cells = p ? Array.from(p.querySelectorAll('.diff-text')) : [];
+      var cell = cells.find(function (c) { return c.textContent.length >= 300; });
+      var lineHeight = cell ? parseFloat(getComputedStyle(cell).lineHeight) : null;
+      var cellHeight = cell ? cell.getBoundingClientRect().height : null;
+      return {
+        cellFound: !!cell,
+        lineHeight: lineHeight,
+        cellHeight: cellHeight,
+        wrapped: !!cell && !!lineHeight && cellHeight > lineHeight * 1.5,
+        docScrollWidth: document.documentElement.scrollWidth,
+        docClientWidth: document.documentElement.clientWidth,
+      };
+    })()`);
+    check(measured.cellFound, `[FT4] 找到含 300 字元長行的 .diff-text 儲存格（實際 ${JSON.stringify(measured)}）`);
+    check(measured.wrapped, `[FT4] 長行在所屬欄內折行（渲染高度 ${measured.cellHeight} > 1.5 倍行高 ${measured.lineHeight}）`);
+    check(measured.docScrollWidth <= measured.docClientWidth + 1, `[FT4] 頁面沒有橫向捲軸（documentElement scrollWidth ${measured.docScrollWidth} ≤ clientWidth ${measured.docClientWidth}）`);
+
+    // --- Git Graph 部分：回到預設寬度開分頁（同上，避免 700 寬單欄＋整頁捲動下 pane 列被 sticky
+    // 底列擋住），只在量測當下切到 700 寬。---
+    await cdp.send('Emulation.clearDeviceMetricsOverride', {});
+    await sleep(200);
+    ftNeed(await cdp.click('#files-tab-changes'), '[FT4] 點左欄分頁「變更」（準備開 Git Graph）');
+    await cdp.waitFor("document.getElementById('files-tab-changes').getAttribute('aria-selected') === 'true'", 3000, '[FT4] 左欄「變更」分頁成為目前分頁');
+    await cdp.waitFor('!!document.querySelector(\'#changes-panel [data-action="open-git-graph"]\')', 5000, '[FT4] 「Git Graph」按鈕出現');
+    ftNeed(await cdp.click('#changes-panel [data-action="open-git-graph"]'), '[FT4] 點「Git Graph」按鈕');
+    await cdp.waitFor(
+      '(() => { var t = document.querySelector(\'#review [role="tab"][data-graph-root]\'); return !!t && t.getAttribute(\'aria-selected\') === \'true\'; })()',
+      5000,
+      '[FT4] Git Graph 分頁出現並成為目前分頁'
+    );
+    await cdp.waitFor(
+      "(() => { var t = document.querySelector('#review [role=\"tab\"][data-graph-root]'); var p = document.getElementById(t.getAttribute('aria-controls')); var subjects = Array.from(p.querySelectorAll('.graph-subject')).slice(0, 16).map(function (s) { return s.textContent; }); return subjects.filter(function (s) { return /^ft4-lane-/.test(s); }).length >= 16; })()",
+      5000,
+      '[FT4] 16 條車道的 commit 都在最前面 16 列（8 條以上並行車道的前提成立）'
+    );
+
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 700, height: 900, deviceScaleFactor: 1, mobile: false });
+    await sleep(300);
+
+    const graphMeasured = await cdp.eval(`(() => {
+      var t = document.querySelector('#review [role="tab"][data-graph-root]');
+      var p = document.getElementById(t.getAttribute('aria-controls'));
+      var scroller = p.querySelector('.graph-scroll');
+      var svgs = Array.from(p.querySelectorAll('.graph-svg')).slice(0, 16);
+      var maxSvgWidth = svgs.reduce(function (m, s) { return Math.max(m, Number(s.getAttribute('width')) || 0); }, 0);
+      return {
+        maxSvgWidth: maxSvgWidth,
+        scrollerScrollWidth: scroller ? scroller.scrollWidth : null,
+        scrollerClientWidth: scroller ? scroller.clientWidth : null,
+        scrollerCanScrollInternally: !!scroller && scroller.scrollWidth > scroller.clientWidth,
+        docScrollWidth: document.documentElement.scrollWidth,
+        docClientWidth: document.documentElement.clientWidth,
+      };
+    })()`);
+    check(graphMeasured.maxSvgWidth >= 16 * 18, `[FT4] 車道 SVG 寬度反映至少 16 條車道（實際 ${graphMeasured.maxSvgWidth}px）`);
+    check(graphMeasured.scrollerCanScrollInternally, `[FT4] Graph 在分頁內容區內部捲動（.graph-scroll 的 scrollWidth ${graphMeasured.scrollerScrollWidth} > clientWidth ${graphMeasured.scrollerClientWidth}）`);
+    check(graphMeasured.docScrollWidth <= graphMeasured.docClientWidth + 1, `[FT4] 頁面沒有橫向捲軸（documentElement scrollWidth ${graphMeasured.docScrollWidth} ≤ clientWidth ${graphMeasured.docClientWidth}）`);
+
+    await cdp.send('Emulation.clearDeviceMetricsOverride', {});
+  } finally {
+    await stopChrome(chrome, 'chrome-FT4');
+    await stopPreview(preview, 'preview-FT4');
+  }
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -10152,6 +10537,7 @@ const PARTS = [
   ['FT1', partManyFileTabs],
   ['FT2', partRepaintKeepsFileTab],
   ['FT3', partMarkdownColors],
+  ['FT4', partDiffNoOverflow],
 ];
 
 // file-review task 3.5 新增、先寫測試的段落（彙總時與既有段落分開計數）。

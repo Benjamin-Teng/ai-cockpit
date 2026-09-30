@@ -11,6 +11,8 @@ cockpit-core = { version = "0.1.0", path = "../cockpit-core" }
 # file-review task 3.1（design D1；ADR 0006）：檔案瀏覽的純邏輯 crate，依賴方向 cockpit → cockpit-files。
 cockpit-files = { path = "../cockpit-files" }
 cockpit-herdr = { version = "0.1.0", path = "../cockpit-herdr" }
+# git-review task 3.2（design D1；ADR 0007）：git 讀取的封閉查詢層，依賴方向 cockpit → cockpit-git。
+cockpit-git = { path = "../cockpit-git" }
 # file-review task 3.3（design D9）：把 `cockpit/assets/vendor/` 整棵樹內嵌進執行檔，
 # `/vendor/{*path}` 從嵌入目錄查找。只加在 `cockpit`，不影響 `cockpit-files` 等其他 crate。
 include_dir = "0.7.4"

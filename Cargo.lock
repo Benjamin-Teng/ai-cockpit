@@ -430,6 +430,7 @@ dependencies = [
  "axum",
  "cockpit-core",
  "cockpit-files",
+ "cockpit-git",
  "cockpit-herdr",
  "futures-util",
  "http-body-util",
@@ -466,6 +467,15 @@ dependencies = [
  "ignore",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "cockpit-git"
+version = "0.1.0"
+dependencies = [
+ "cockpit-git",
+ "serde",
+ "tokio",
 ]
 
 [[package]]

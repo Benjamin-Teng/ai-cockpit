@@ -32,6 +32,12 @@
   --warn: #e9bc73; /* blocked、connecting */
   --bad: #f47279; /* failed、disconnected */
 
+  /* Git Graph 車道顏色 5／6（git-review task 4.4；design D8：「6 個車道顏色由十個色彩 token
+     推導」）：0–3 直接是 --accent／--ok／--warn／--bad，4／5 用 color-mix 50/50 推導，不新增
+     hex 字面值（同 Ruling R20 的唯一色彩來源限制）。 */
+  --graph-lane-4: color-mix(in oklab, var(--accent), var(--bad));
+  --graph-lane-5: color-mix(in oklab, var(--ok), var(--warn));
+
   /* design D10（字級四階；Ruling R13：刪掉未指派的 16px）：之後各 task 只准取用這四個
      token，不得另開字級（fix round 1／Ruling R20：既有規則的殘留 px 字面值本輪已全部收斂，
      見 .app-name／.project-name／.ff-binding-badge／.task-status-label 旁的註解）。行高留給
@@ -1419,6 +1425,24 @@ body {
   outline-offset: 2px;
 }
 
+/* 目視驗收缺陷 V2、Ruling R12：停用的動作按鈕（diff 分頁「開啟檔案」／指向工作區的「看…版本」
+   在該檔案於工作區不存在時停用）需要可辨識的停用樣式——單靠原生 `disabled` 屬性不夠，因為啟用
+   狀態的 `.action-button` 靜止時本來就是 `--text-dim`（見上方），停用與啟用在靜止畫面上會長得
+   一樣。改用 `color-mix` 從 `--text-dim` 推導出更淡的版本（token 推導，不是新色），且停用時
+   hover 也維持這個淡色（不像啟用按鈕那樣 hover 轉 `--text`）——兩者的 computed style 在任何互動
+   狀態下都能分得開。原生 `disabled` 屬性本身已讓瀏覽器把按鈕排出 tab 序、不可能被鍵盤聚焦或
+   觸發 click，不需要額外的 `pointer-events`。 */
+.action-button:disabled {
+  cursor: default;
+  color: color-mix(in srgb, var(--text-dim) 45%, transparent);
+  border-color: color-mix(in srgb, var(--text-dim) 45%, transparent);
+}
+
+.action-button:disabled:hover {
+  color: color-mix(in srgb, var(--text-dim) 45%, transparent);
+  border-color: color-mix(in srgb, var(--text-dim) 45%, transparent);
+}
+
 /* direction-01-visual task 3.2：2.2 fix round 2／3 為了「節點實底色上按鈕看不見」加的暫時規則
    （`.task-node .action-button` 改用 --bg-deep 文字／外框、焦點外框改 --bg-deep）已刪除——節點
    改成 --surface 底之後，上面 .action-button 的第三層級中性樣式直接生效（--text-dim 對
@@ -2022,6 +2046,22 @@ body {
   gap: 8px;
 }
 
+/* fix round 1（控制端設計審核，git-review task 4.2）：「變更」面板的頭部比「檔案」面板多一顆按鈕
+   與分支資訊，在左欄固定寬度（design D2 三欄版面）擠不下同一行時會跟名稱重疊——改成兩行：第一行
+   `.files-head-names`（沿用上面的規則），第二行是按鈕（`.changes-head-actions`，git.js
+   buildChangesSkeleton() 建立）。只覆寫「變更」面板（id 範圍選擇器）：「檔案」面板只有一顆按鈕、
+   沒有分支資訊，維持既有單行版面（`.files-head` 本身不變）。 */
+#changes-panel .files-head {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.changes-head-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .files-head-names {
   flex: 1 1 auto;
   min-width: 0;
@@ -2030,8 +2070,13 @@ body {
   gap: 6px;
 }
 
+/* fix round 1：這一行可能同時放根目錄 name、runtime id、分支資訊，三者加起來比左欄寬時必須有優先
+   順序，而不是一起被壓縮到重疊或溢出——name 是主要資訊，最後才縮（flex-shrink 低）；runtime／分支
+   是次要資訊，優先縮到 0 寬（flex-shrink 高，見下面 .files-runtime），縮完才輪到 name 開始省略。
+   两者都補上 overflow/ellipsis，被縮到極窄時顯示「…」而不是硬裁切，完整內容仍在 title。 */
 .files-root-name {
   min-width: 0;
+  flex-shrink: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2041,7 +2086,11 @@ body {
 }
 
 .files-runtime {
-  flex: none;
+  min-width: 0;
+  flex-shrink: 1000;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: var(--font-mono);
   font-size: var(--fs-meta);
   color: var(--text-dim);
@@ -2138,8 +2187,13 @@ body {
   height: 16px;
 }
 
+/* fix round 1（控制端設計審核，git-review task 4.2）：檔名是主要資訊，在 .changes-row 裡跟
+   .changes-dir（所在資料夾，次要資訊）搶同一行空間時 flex-shrink 要低，讓資料夾先縮到 0 寬、
+   檔名才開始省略（見下面 .changes-dir 的 flex-shrink）。在檔案樹（.tree-row）裡沒有這個競爭
+   對象，這個優先順序不影響那裡的既有行為。 */
 .tree-name {
   min-width: 0;
+  flex-shrink: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2151,6 +2205,72 @@ body {
   font-size: var(--fs-meta);
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+/* 左欄「變更」分頁（git-review task 4.2；spec git-review「左欄變更分頁」）：清單容器重用 .files-tree
+   （同一種可捲動框），四組（合併衝突／已暫存／變更／未追蹤）的清單放在同一個容器裡，組標題與每一列是
+   下面兩條新規則；截斷提示重用既有的 .tree-note。 */
+.changes-group-title {
+  margin: 6px 0 2px;
+  padding: 0 6px;
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+/* 每一列是原生 <button>（Enter／Space 原生觸發 click，不必自己處理鍵盤），視覺沿用 .tree-row 的排版，
+   這裡只補瀏覽器按鈕預設樣式的重置（寬度撐滿、置左對齊、透明底、無外框）。 */
+.changes-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 4px;
+  min-height: 24px;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-dense);
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+}
+
+.changes-row:hover {
+  background: var(--focused-tint);
+}
+
+.changes-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* 所在資料夾（design：icon、檔名、所在資料夾與狀態字母）：次要文字色，檔名之後、狀態字母之前，
+   單行省略（完整路徑在列的 title）。改名列不顯示（檔名欄已經是「原路徑 → 新路徑」）。 */
+.changes-dir {
+  min-width: 0;
+  flex: 1 1 auto;
+  /* fix round 1：次要資訊，擠壓時先縮到 0 寬（見上面 .tree-name 的對應說明），縮完才輪到檔名縮。 */
+  flex-shrink: 1000;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-size: var(--fs-meta);
+}
+
+/* 狀態字母：等寬、固定寬度對齊；顏色由 git.js 依字母以行內樣式指定（M／A／?／D／R／C／T／U 只有
+   working-tree 狀態的前四種在這個端點會真的出現，其餘要在 commit 之間才會出現——用
+   [data-status="…"] 系列選擇器會有摸不到元素的死規則，因此顏色不進 CSS，只有字級／等寬留在這裡）。 */
+.changes-status {
+  flex: none;
+  width: 1.4em;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: var(--fs-meta);
 }
 
 /* < 760px 單欄時左欄沒有高度上限（跟著內容長），檔案樹限制在大約半個視窗高、自己捲動，避免一個大
@@ -2179,7 +2299,7 @@ body {
   display: none;
 }
 
-/* 分頁列（file-review task 4.1；左欄「Project／檔案」與下半部分頁區共用）：role="tablist"，每個
+/* 分頁列（file-review task 4.1／4.2；左欄「Project／檔案／變更」與下半部分頁區共用）：role="tablist"，每個
    分頁是一顆 <button role="tab">。design D4「冰青的形狀分工」：目前分頁＝--surface 底＋下緣 2px
    冰青條（跟選定 Project／pane 列的「--surface 底＋左緣冰青條」同一套語彙，只是換到分頁該有的
    下緣），文字 --text／600；其餘分頁 --text-dim、透明底。分頁列下緣 1px --line 只是裝飾分隔。
@@ -2232,7 +2352,7 @@ body {
   outline-offset: -2px;
 }
 
-/* 左欄只有兩個分頁：平分欄寬。 */
+/* 左欄的分頁（3 個：Project／檔案／變更）：平分欄寬，`flex: 1 1 0` 本來就不寫死數量。 */
 .files-tabbar > .tabbar-tab {
   flex: 1 1 0;
 }
@@ -2402,6 +2522,413 @@ body {
   flex: 1 1 auto;
   min-height: 4em;
   overflow: auto;
+}
+
+/* diff 分頁工具列（git-review task 4.3；spec git-review「diff 分頁」）：路徑（改名時「原路徑 →
+   新路徑」）、兩側版本名稱、過期標籤（重用 .file-stale-label）、四個動作（重用 .action-button／
+   .file-vscode）。允許換行（不像 .file-toolbar 只有三項）：視窗窄時按鈕才不會逼出橫向捲軸
+   （spec「窄視窗不橫向捲動」；cockpit-dashboard「diff 與 Git Graph 不撐破頁面」）。 */
+.diff-toolbar {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-width: 0;
+}
+
+.diff-toolbar-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-dense);
+  line-height: 1.4;
+}
+
+.diff-toolbar-versions {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+/* 左右並排格線（design D7；spec「diff 分頁」）：4 欄（左行號／左文字／右行號／右文字），行號欄固定
+   窄且等寬（3.5em，容納到 4 位數行號）、文字欄 minmax(0,1fr) 平分。文字色不在這裡宣告——正常時從
+   `.file-panel`（進而 body）繼承 `--text`；過期時 git.js 直接在 `.diff-grid` 本身覆寫行內
+   `style.color`（同「變更面板」既有裁決：不新增只有「diff 讀取失敗」這種少數狀態才摸得到的選擇器，
+   否則會是 CL1 死規則，見 task 4.1「自我審查」）。`.diff-num` 兩側的框線同時畫出「行號與文字之間」
+   與「左右兩側之間」三道分隔線（不需要另外的選擇器）。文字折行（overflow-wrap: anywhere）、不橫向
+   捲動（design「風險」：避免兩側同步捲動的複雜度；spec「窄視窗不橫向捲動」）。 */
+.diff-grid {
+  display: grid;
+  grid-template-columns: 3.5em minmax(0, 1fr) 3.5em minmax(0, 1fr);
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--fs-dense);
+  line-height: 1.5;
+}
+
+.diff-num {
+  padding: 0 6px;
+  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  color: var(--text-dim); /* 行號本來就是 --text-dim，過期時不需要另外變暗（同純文字檢視器） */
+  text-align: right;
+  user-select: none;
+}
+
+.diff-text {
+  padding: 0 8px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* gap 列（省略 N 行）：橫跨四欄，底色 --surface 與程式碼區塊區分開來。 */
+.diff-gap {
+  grid-column: 1 / -1;
+  padding: 2px 8px;
+  background: var(--surface);
+  color: var(--text-dim);
+  font-size: var(--fs-meta);
+}
+
+/* 刪除／新增側底色（design D7 控制端裁決：--bad／--ok 以 color-mix 18% 量級推導）；空白側（delete／
+   add 列另一側沒有內容）用不透明的 --bg-deep 直接當底色（同一個 10 色 token，不需要再推導）。 */
+.diff-row-del {
+  background: color-mix(in oklab, var(--bad) 18%, transparent);
+}
+
+.diff-row-add {
+  background: color-mix(in oklab, var(--ok) 18%, transparent);
+}
+
+.diff-row-blank {
+  background: var(--bg-deep);
+}
+
+/* Git Graph 分頁（git-review task 4.4；spec git-review「Git Graph 分頁」；design D8／D9）：工具列
+   重用 `.diff-toolbar`（同款可換行的 flex 列）；分支篩選是工具列內一個 `position:relative` 的
+   小容器，popover 絕對定位在按鈕下方；「分支已變更」提示重用既有的 `.action-banner`／
+   `.action-banner-text`（同改綁提示、409 錯誤提示的既有語彙，不新增一條只有這裡才用得到的
+   選擇器）；清單容器重用 `.file-viewer-host`（`.graph-scroll`，捲動＋細捲軸）。 */
+.graph-filter {
+  position: relative;
+}
+
+.graph-filter-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 220px;
+  max-height: 60vh;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-base);
+  box-shadow: 0 8px 24px color-mix(in oklab, var(--bg-deep) 70%, transparent);
+}
+
+.graph-filter-group + .graph-filter-group {
+  margin-top: 6px;
+}
+
+.graph-filter-group-title {
+  margin-bottom: 2px;
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.graph-filter-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: var(--fs-dense);
+  cursor: pointer;
+}
+
+/* 核取方塊本身是原生控制項（不重畫外觀），只用 accent-color 讓「已勾選」用畫面既有的強調色，
+   不引入瀏覽器預設的藍色（不屬於十色 token）。 */
+.graph-filter-item input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+.graph-filter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+
+.graph-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.graph-search-input {
+  min-width: 8em;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg-deep);
+  color: var(--text);
+  font-size: var(--fs-dense);
+}
+
+.graph-search-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.graph-search-count {
+  flex: none;
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+/* 每一列固定高度、依內容決定寬度（`width: max-content`）：欄位（graph SVG／ref 標籤＋標題／
+   作者／時間／hash）一律不縮（design 控制端裁決：跟 diff 的折行策略不同——把 Graph 車道硬擠
+   窄沒有意義，太寬時交給 `.graph-scroll` 內部橫向捲動，不讓頁面出現橫向捲軸；spec
+   cockpit-dashboard「diff 與 Git Graph 不撐破頁面」）。`min-width: 100%` 讓列在內容較窄時仍
+   撐滿容器寬度（hover 底色才會是整行）。 */
+.graph-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  min-width: 100%;
+  min-height: 26px;
+  padding: 0 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.graph-row:hover {
+  background: var(--focused-tint);
+}
+
+.graph-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.graph-row.is-selected {
+  background: var(--surface);
+}
+
+/* 搜尋跳轉標示（spec「Git Graph 分頁」：跳到的列捲入可見範圍並標示）：用 --warn 外框跟
+   `.is-selected` 的底色區分開來，兩者可以同時成立（搜到的那一列剛好也是選取列）。 */
+.graph-row.is-search-hit {
+  outline: 2px solid var(--warn);
+  outline-offset: -2px;
+}
+
+.graph-svg {
+  flex: none;
+  display: block;
+}
+
+/* 線段／節點的顏色一律由 git.js 以行內 style 指定（引用 CSS 變數，見 buildGraphSvg()）；這裡只定
+   幾何屬性（線寬、預設無填色）。 */
+.graph-line {
+  stroke-width: 2;
+  fill: none;
+}
+
+.graph-node-head-ring {
+  fill: none;
+  stroke-width: 1.5;
+}
+
+.graph-message {
+  flex: none;
+  width: 22em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.graph-refs {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+
+/* ref 標籤（design 控制端裁決：本地分支＝邊框、遠端分支＝底色、tag＝不對稱圓角＋虛線邊框，三種
+   一眼可辨；HEAD 指向的分支另外用實心底色強調，spec「Git Graph 分頁」）。 */
+.graph-ref-badge {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--ok);
+  border-radius: 10px;
+  font-size: var(--fs-meta);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.graph-ref-badge.is-head-branch {
+  background: var(--ok);
+  color: var(--bg-deep);
+}
+
+.graph-ref-badge[data-kind="remote"] {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--text-dim);
+}
+
+.graph-ref-badge[data-kind="tag"] {
+  border: 1px dashed var(--accent);
+  border-radius: 2px 8px 2px 8px;
+}
+
+.graph-subject {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-dense);
+}
+
+.graph-author {
+  flex: none;
+  width: 10em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+}
+
+.graph-time {
+  flex: none;
+  width: 16ch; /* "YYYY-MM-DD HH:mm" 是 16 個字元；沒給夠寬度時等寬字仍會蓋到下一欄（見 fix round 1） */
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.graph-hash {
+  flex: none;
+  width: 7ch;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-dim);
+}
+
+.graph-load-more {
+  display: block;
+  margin: 6px auto;
+}
+
+/* < 760px：作者／時間欄可以先隱藏（spec 用詞「可隱藏」，非必須）——Graph 本身已經靠
+   `.graph-scroll` 內部橫向捲動應付任何寬度（不像 diff 折行），這裡純粹是窄視窗下讓 hash／
+   標題更早看到的可用性加分。 */
+@media (max-width: 759.98px) {
+  .graph-author,
+  .graph-time {
+    display: none;
+  }
+}
+
+/* commit 詳情與比較（git-review task 4.5；spec git-review「commit 詳情與比較」；design 控制端裁決）：
+   插在被選取的 commit 列下方，`.graph-listbox` 的另一個區塊子節點（同一層，不是巢狀在 `.graph-row`
+   裡）——`--surface` 底＋上下 `--line` 分隔線跟清單本身的透明底區分開來；高度依內容、不設
+   `max-height`／自己的捲軸（brief 控制端裁決：清單本身捲動，詳情不另設捲軸）。 */
+.commit-detail {
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  font-size: var(--fs-dense);
+}
+
+.commit-detail-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin: 4px 0;
+}
+
+.commit-detail-label {
+  flex: none;
+  color: var(--text-dim);
+}
+
+.commit-detail-hash {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+/* parent 短 hash 不在已載入範圍時的純文字：沒有專屬選擇器（見 git.js commitParentNode() 的註解——
+   這個狀態極難在驗收腳本穩定重現，會落成 CL1 死規則，改用行內樣式）。 */
+
+.commit-detail-message {
+  margin: 8px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.commit-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.commit-detail-files {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 變更檔案清單的一列：狀態字母（`.changes-status`）／icon／路徑／增刪行數（`.changes-dir` 重用，
+   同「變更」面板既有列的次要文字樣式）／「看此版本」，重用既有的 `.changes-row` 版面節奏（不整條
+   重用該選擇器本身——這裡多一顆按鈕，欄位排列不完全相同，值得獨立一條規則）。 */
+.commit-detail-file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.commit-detail-file-row:hover {
+  background: var(--focused-tint);
+}
+
+.commit-detail-file-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* 「直接比較」／「自分岔點起」互斥切換：生效中的那顆用品牌強調色（同 `.pdf-tool[aria-pressed="true"]`
+   的既有語彙，這裡不限定 `.pdf-tool`，讓其餘 `.action-button` 的 aria-pressed 用法也能共用）。 */
+.action-button[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* 檔案檢視器（file-review task 4.4；spec file-review「檔案檢視器」；spec cockpit-dashboard「Direction 01

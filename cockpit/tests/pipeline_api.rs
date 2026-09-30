@@ -311,6 +311,7 @@ fn build_with_projects(
         runtimes: Arc::new(HashMap::new()),
         path_mappings: Arc::new(HashMap::new()),
         files: Arc::new(cockpit::files::FileSettings::embedded()),
+        git_runner: Arc::new(cockpit_git::GitRunner::new()),
     };
     (handle, state)
 }

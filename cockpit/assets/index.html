@@ -15,7 +15,7 @@
          不在 render.js 的 replaceChildren 範圍內（design D2：DOM 歸屬與版面位置分開；file-review
          design D6）。 -->
     <div class="shell">
-      <!-- 左欄分頁（file-review task 4.1；design D6）：「Project」「檔案」分頁列＋檔案分頁的內容。
+      <!-- 左欄分頁（file-review task 4.1／4.2；design D6）：「Project」「檔案」「變更」分頁列＋各分頁的內容。
            跟 #app 內的 Project 清單（[data-region="projects"]）疊在同一個 grid area：分頁列在上，
            Project 清單以 margin-top 讓出分頁列的高度；目前分頁是 files.js 的模組狀態，render.js
            每次重畫讀它決定 Project 清單是否 hidden。放在 #app 之前，鍵盤 Tab 順序先到分頁列。 -->
@@ -23,10 +23,18 @@
         <div class="tabbar files-tabbar" role="tablist" aria-label="左欄">
           <button type="button" class="tabbar-tab" role="tab" id="files-tab-projects" data-left-tab="projects" aria-selected="true" tabindex="0">Project</button>
           <button type="button" class="tabbar-tab" role="tab" id="files-tab-files" data-left-tab="files" aria-selected="false" aria-controls="files-panel" tabindex="-1">檔案</button>
+          <!-- 「變更」分頁（git-review task 4.2；spec file-review「左欄檔案樹」三分頁 tablist）：內容
+               （分支資訊、四組變更清單）由 git.js 填入 #changes-panel。 -->
+          <button type="button" class="tabbar-tab" role="tab" id="files-tab-changes" data-left-tab="changes" aria-selected="false" aria-controls="changes-panel" tabindex="-1">變更</button>
         </div>
         <!-- 「檔案」分頁的內容（檔案樹由 file-review task 4.2 填入）。Project 分頁的內容是 #app 內的
              Project 清單，不在這裡，所以「Project」分頁沒有 aria-controls。 -->
         <div class="files-panel" id="files-panel" role="tabpanel" aria-labelledby="files-tab-files" hidden>
+          <p class="files-empty">先在 Factory Floor 或 runtime 清單選一個 pane</p>
+        </div>
+        <!-- 「變更」分頁的內容（git-review task 4.2；design D9）：沒有選定 pane 時與「檔案」分頁同一句
+             空狀態文案，其餘（根目錄名稱、分支、四組清單）由 git.js 動態建立、附加在這個容器內。 -->
+        <div class="files-panel" id="changes-panel" role="tabpanel" aria-labelledby="files-tab-changes" hidden>
           <p class="files-empty">先在 Factory Floor 或 runtime 清單選一個 pane</p>
         </div>
       </div>
@@ -88,9 +96,11 @@
         </div>
       </section>
     </div>
-    <!-- 載入順序：output.js → viewers.js → files.js → render.js → actions.js → channel.js。output.js
-         放最前面，因為 render.js 每次重畫後會呼叫 window.liveOutput.setKnownPanes(...)（design D8；
-         接線在 live-output task 5.3），必須先存在。files.js 在 output.js 之後（它切換分頁時呼叫
+    <!-- 載入順序：output.js → viewers.js → git.js → files.js → render.js → actions.js → channel.js。
+         output.js 放最前面，因為 render.js 每次重畫後會呼叫 window.liveOutput.setKnownPanes(...)
+         （design D8；接線在 live-output task 5.3），必須先存在。git.js 在 files.js 之前（git-review
+         task 4.1：files.js 的分頁框架在建立／還原 "diff"／"graph"／"rev" 分頁時讀
+         window.cockpitGit.kinds，要先存在；files.js 在 output.js 之後（它切換分頁時呼叫
          window.liveOutput 的可見性入口）、render.js 之前（render.js 第一次重畫就要讀左欄目前分頁）；
          viewers.js 在 files.js 之前（file-review task 4.4 起 files.js 用它畫檔案內容）。channel.js 最後，收到第一則訊息時
          window.onState／window.onChannel 一定已經綁好，不需要暫存訊息等 render.js 補齊；
@@ -98,6 +108,7 @@
          準備好。 -->
     <script src="/app/output.js"></script>
     <script src="/app/viewers.js"></script>
+    <script src="/app/git.js"></script>
     <script src="/app/files.js"></script>
     <script src="/app/render.js"></script>
     <script src="/app/actions.js"></script>

@@ -1,175 +1,149 @@
 # 交接：下一段任務
 
-> **建立日期**：2026-09-28　|　**上一段做完的事**：小 change `html-charset` 完成——Codex review approve、squash 併回
-> `main`（`de552f3`）、delta spec 同步進主規格 `file-review` 並 archive（`aa62893`）。
+> **建立日期**：2026-09-29　|　**上一段做完的事**：change 5b `git-review`（git 唯讀層、diff、Git Graph）brainstorming →
+> propose → SDD 實作全部 task 完成、全 gate 綠、WSL 真機驗收通過；**全部尚未經 Codex 審查**（Codex 週限額用盡）。
 > **性質**：接手用文件，會過期，每段重寫。
 > 為什麼做看 `docs/cockpit-spec.md`（北極星）與各 change 的 proposal；怎麼做看 `~/.claude/CLAUDE.md`（本 repo 精簡版在
-> `AGENTS.md`）；規格看 `openspec/specs/`。
+> `AGENTS.md`）；規格看 `openspec/specs/` 與 `openspec/changes/git-review/specs/`。
 
 ## 0. 三十秒版本
 
-1. **目前沒有 active change**，工作分支是 `main`（`feat/html-charset` 已刪）。
-2. **下一步：開 change 5b（git 唯讀層、diff、Git Graph）的 brainstorming**，第一題問「Git Graph 只看還是也能操作」，
-   見第 3 節。開工前先開 feature 分支。
-3. 待使用者決定、不擋 5b：deferred lows 清單（第 5 節）。
+1. **active change＝`git-review`，分支 `feat/git-review`（尚未併回 `main`）**。程式碼、測試、文件都完成；**目視驗收已通過**（使用者
+   2026-09-30 授權由 Claude 判定，過程抓到並修好 V1 衝突檔 diff 502、V2 刪除檔工具列未停用）。但 `tasks.md` 一格都沒勾：依規則，
+   沒經 Codex 通過的 task 不勾選、不宣稱完成。
+2. **Codex 用量上限要到 2026-10-04 10:55 才恢復**（週限額）。恢復後依第 2.2 節的順序補審，這是併回前唯一剩下的關卡。
+   若不想等，改用其他審查方式要由使用者決定（CLAUDE.md 規定 diff 審查一律 Codex，Claude 不得自行改派 Claude subagent 代審）。
+3. brainstorming 期間使用者授權「這次 change 全部給 Claude 採納，second opinion 給 Codex」，所以範圍以外的細節都由 Claude 裁決，
+   裁決清單在 `openspec/changes/git-review/sdd-ledger.md`（搜尋 `Ruling`），使用者可逐條推翻。
 
 ## 1. 現在的狀態
 
-- **已上線（`main`）**：change 1a／1b／2／3／4／5a，以及小 change `html-charset`。
-  - `html-charset`：原始內容端點對 `.html`／`.htm` 依整份回傳位元組是否為合法 UTF-8 決定是否帶 `charset=utf-8`
-    （`cockpit/src/files.rs` 的 `raw_content_type`；主規格 `openspec/specs/file-review/spec.md`「原始內容端點」）；
-    `files-check.js` 新增段 `file-review/沒有宣告編碼的 UTF-8 HTML`。
-  - change 5a 新增：
-    - 新 crate `cockpit-files`（ADR `docs/adr/0006-cockpit-files-crate.md`；`cockpit-core` 不依賴它，方向見 ADR-0003）：
-      根目錄推算、相對路徑界限、列目錄（`.gitignore` 過濾）、中繼資料與 viewer 分類、icon 對照、Markdown 渲染。
-    - `cockpit` 後端：`/api/runtimes/<runtime>/panes/<pane>/root`、`/api/files/<runtime>/<root_id>/{list,meta,render,raw}`、
-      `/vendor/<路徑>`（內嵌 pdf.js 與 Material Icon Theme）。端點與安全邊界詳細說明在 `cockpit/README.md`
-      「檔案瀏覽與 Review」一節，不在這裡重複。
-    - 前端：`/app/files.js`（檔案樹、檔案分頁）、`/app/viewers.js`（Markdown／純文字／HTML／PDF 檢視器），
-      下半部分頁區（`#review`，Live Output 移入成為第一個分頁 + 檔案分頁）。
-    - 驗收腳本 `docs/research/2026-09-27/files-check.js`（用法見同目錄 `files-check.md`），`visual-check.js` 補新段落。
-  - change 4 的畫面規則（`.shell` 三欄外框、10 色 token、`--fs-*` 四階、Live Output 過期標示）仍然有效，見
-    `git show 7aebc3b:docs/handover.md` 第 1 節。
-- **archive**：`openspec/changes/archive/2026-09-28-html-charset/`（小 change，直接 apply 無 ledger）；
-  `openspec/changes/archive/2026-09-28-file-review/`（change 5a），其中 `sdd-ledger.md` 是 SDD 全紀錄
-  （裁決 R1–R30、每個 task 的審查輪次、deferred minors、待使用者決定事項）。上一個是
-  `openspec/changes/archive/2026-09-26-direction-01-visual/`（change 4）。
+- **`main`**：change 1a／1b／2／3／4／5a 與小 change `html-charset`（見上一版 `git show 45f1174:docs/handover.md`）。
+- **`feat/git-review`**（起點 `45f1174`，62 個 commit）：
+  - 新 crate `cockpit-git`（ADR `docs/adr/0007-cockpit-git-crate.md`）：sealed `GitQuery` 封閉查詢、`GitTarget`（Windows repo 走
+    `git -C`；`\\wsl.localhost\<distro>\…` 的 repo 走 `wsl.exe -d <distro> --exec env LC_ALL=C git -C <posix>`）、`GitRunner`（並行 4、
+    含排隊 10 秒逾時、各查詢輸出上限、錯誤分類）、解析器、單檔 diff 左右並排對齊、Graph 排版（前綴穩定）。
+  - `cockpit` 後端 `cockpit/src/git.rs`：`/api/git/<runtime>/<root_id>/{status,refs,log,commit/<hash>,changes,diff,merge-base,
+    meta/<rev>/…,blob/<rev>/…,render/<rev>/…}`，說明在 `cockpit/README.md`「git 唯讀讀取」。
+  - 前端 `cockpit/assets/app/git.js`：左欄「變更」分頁、diff 分頁（左右並排）、Git Graph 分頁（篩選、搜尋、分批載入、commit 詳情、
+    比較、複製）、某版本檔案分頁；`files.js` 分頁一般化為帶 `kind` 的框架，本機儲存 `cockpit.fileTabs` 升 `v:2`（相容 `v:1`）。
+  - `ui_preview` 的 `review-repo`／`other-repo` 改為真正的 git repo（fast-import 264 commit；`other-repo` 是進行中的衝突 merge）。
 - **可用指令**（repo 根目錄）：
   - 全 gate：`cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test --workspace && cargo test -p cockpit --example ui_preview && markdownlint-cli2 "**/*.md" && openspec validate --all`
-  - 正式服務：`cargo run -p cockpit`（讀工作目錄的 `cockpit.toml`；沒有就是零設定模式，Factory Floor 為空）
-  - 預覽（不需要 HERDR，資料寫死、按鈕只記錄不改狀態，含假 repo fixture）：
-    `cargo run -p cockpit --example ui_preview`（`127.0.0.1:7770`）
-  - 視覺驗收：`node docs/research/2026-09-23/visual-check.js [段代號,...]`，用法與段落表見同目錄 `visual-check.md`。
-    打錯段代號會 exit 2。
-  - 檔案瀏覽驗收：`node docs/research/2026-09-27/files-check.js [段代號,...]`，用法見同目錄 `files-check.md`。
-  - 既有六支腳本：`docs/research/2026-09-15/reconnect-check.js`、`whatever-check.js`、`docs/research/2026-09-16/actions-check.js`、
-    `channel-backoff-check.js`、`factory-floor-check.js`、`docs/research/2026-09-19/live-output-check.js`
-  - WSL 真機：`docs/research/2026-09-19/live-output-real-check.js`（用法見 `live-output-acceptance.md`）；
-    `--self-test-stale-signals` 可離線跑。
-  - Codex 審查：`node ~/.claude/plugins/cache/openai-codex/codex/<最新版號>/scripts/codex-companion.mjs adversarial-review --wait --base <BASE> "<focus>"`
-- **測試數字**：以當場輸出為準。最後紀錄（2026-09-28，`html-charset` 併回前全 gate）：
-  `cargo test --workspace` 718 passed／0 failed／11 ignored；`ui_preview` example 31；
-  `files-check.js` 27 段 ok 550／FAIL 0；`visual-check.js` ok 1648／FAIL 0；既有六支腳本全 PASS；
-  `markdownlint-cli2` 0 issues；`openspec validate --all` 17 passed（archive 後，當場跑為準）。
-- **環境**：port 7680（svchost）與 7778（ArmouryCrate）是系統服務，不要碰。change 4 移除 Windows 端 herdr 的
-  `herdr-sidebar` plugin 的備份仍在（`%APPDATA%\herdr\*.bak-20260926-pre-sidebar-uninstall`），
-  `%LOCALAPPDATA%\herdr\plugins\herdr-sidebar.removed-20260926`；`layout.ps1`、`new-space.ps1` 還留著提到 sidebar 的過期註解。
+  - 預覽：`cargo run -p cockpit --example ui_preview`（`127.0.0.1:7770`；需要本機安裝 git）
+  - 驗收腳本（不可並行）：`node docs/research/2026-09-28/git-check.js [段代號,...]`（用法 `git-check.md`）、
+    `docs/research/2026-09-27/files-check.js`、`docs/research/2026-09-23/visual-check.js`，以及既有六支（清單見 `openspec/changes/git-review/tasks.md` 通則）。
+  - WSL 版 git 整合測試（opt-in）：PowerShell `$env:COCKPIT_GIT_TEST_WSL_DISTRO="Ubuntu-24.04"; cargo test -p cockpit-git -- --ignored`
+- **測試數字**（2026-09-30，`232c293`，當場跑為準）：`cargo test --workspace` 997 passed／0 failed／12 ignored；`ui_preview` 38；
+  `git-check.js` 21 段、`files-check.js` 29 段、`visual-check.js` 29 段（以各腳本的段落清單計）、其餘六支全 PASS；`markdownlint-cli2` 108 files 0 issues；
+  `openspec validate --all` 18 passed。
+- **SDD 紀錄**：`openspec/changes/git-review/sdd-ledger.md`（基線、每個 task 的 commit 範圍、fix round、裁決、deferred minors、事故）。
+  暫存的 brief／report 在 `.superpowers/sdd/tasks/`（git 忽略，本機才有）。
 
-## 2. 立刻要做：change 5b brainstorming
+## 2. 立刻要做
 
-使用者下指令後走 superpowers brainstorming，再 `/opsx:propose`。前置事實與要問的第一題見第 3 節「change 5b」。
-開工前 `git switch -c feat/<slug>`。
+### 2.1 目視驗收（已完成，2026-09-30 由 Claude 依授權判定通過）
+
+19 步 headless 截圖逐張判定，紀錄在 ledger「目視驗收」節。若使用者想自己再看一次：
+
+`cargo run -p cockpit --example ui_preview` 後開 `http://127.0.0.1:7770/`，選 `wJ:p4`（review-repo）：
+
+- 左欄「變更」：看得到 `review-repo`、分支 `main`、已暫存 1／變更 2／未追蹤 1。點檔案開 diff 分頁，左右並排、紅綠底色、行號。
+- 「Git Graph」：264 個 commit 分批載入、`feature/formatting` 合併回 main（`feature/logging` 刻意不合併，供分支篩選情境）、`main`／`origin/main`／`v0.1.0` 標籤；點 merge commit 展開詳情；
+  「選為比較基準」後點另一個 commit 看比較；「看此版本」開某版本分頁。
+- 截圖參考（本機 scratchpad，session 結束可能被清掉）：`shots-5.1\`、`shots-5.2\`（WSL 真機）。
+
+### 2.2 Codex 補審（2026-10-04 10:55 之後）
+
+**一律前景執行**（背景 Bash 執行時 `--wait` 曾提早返回、job 失聯，原因未證實），只採信 log 最後的「# Codex Adversarial Review」段。
+每一批先在 scratchpad 建 detached worktree 固定在該批終點，再以起點為 `--base`：
+
+```bash
+git worktree add --detach <scratchpad>/rv <終點>
+cd <scratchpad>/rv && node ~/.claude/plugins/cache/openai-codex/codex/<最新版號>/scripts/codex-companion.mjs adversarial-review --wait --base <起點> "<focus>"
+```
+
+| 批次 | 起點 → 終點 | 內容 |
+|---|---|---|
+| 1 | `main` → `44eb00e` | propose artifacts＋probe（純文件；focus 見 ledger「Codex 可用性」段的原提示） |
+| 2 | `44eb00e` → `db5c075` | task 2.1–2.6（`cockpit-git`，含 revert 掉的誤提交） |
+| 3 | `db5c075` → `0083632` | task 3.1–3.3（ui_preview fixture、git 端點；注意 Ruling P2：`cockpit/src/git.rs` 不得有 `Command::new`） |
+| 4 | `0083632` → `34ceba5` | task 4.1–4.5（前端） |
+| 4b | `7003b5a` → `232c293` | 目視驗收修正 V1／V2（Ruling R11、R12；含 spec／design 修改） |
+| 5 | `main` → `HEAD` | 整支分支（task 5.4），帶 ledger 的 deferred minors 與 Ruling 清單請它判斷哪些須在併回前修 |
+
+findings 先實測重現才採信（CLAUDE.md），修正依 SDD fix round 流程；每批通過才在 `tasks.md` 勾對應 task、在 ledger 補一行。
+全部通過後：squash 併回 `main`（已授權）→ `/opsx:archive`（3 份 delta spec 同步進主規格）→ 重寫本檔。
 
 ## 3. 接著要做（依序）
 
-### change 5b：git 唯讀層、diff、Git Graph（下一個要開 brainstorming 的 change）
+### change 6「進度模型」（使用者 2026-09-26 定案）
 
-- 第一題要問使用者：**Git Graph 只看還是也能操作**（決定範圍與複雜度）。
-- **Windows 端 git 對 WSL repo 會被 dubious ownership 擋下**（`docs/research/2026-09-27/file-review-probe.md` §3 已實測
-  `fatal: detected dubious ownership in repository`，未改 `safe.directory`）；5b 的 git 讀取層要先解這題（例如改在 WSL
-  端執行 git、或設定 `safe.directory` 並評估風險），不能直接沿用 change 5a 的「Windows 端讀 WSL 路徑」做法。
-- Git Graph 參考 `mhutchie/vscode-git-graph` 只能看外觀與功能，**不得取用程式碼**（LICENSE 禁止散布衍生作品）。
-- 使用者仍建議不做 VS Code extension host（5a 已納入「在 VS Code 開啟」與分頁還原，Ctrl+P 與全 repo 搜尋不做）。
-- 詞彙：使用者口中的 space＝HERDR workspace，artifact 一律寫 workspace。
+- 進度目前全靠人工按按鈕。方向：agent 呼叫 cockpit 的 API 回報進度，寫入 cockpit 自己的狀態檔，**不需要推翻「對 HERDR 唯讀」**；
+  「HERDR 的 `done` 不等於 task 完成」保留。
+- 活動狀態目前只到 workstream 層級（見 `CONTEXT.md`），要精確到 task；推進要有「退回」操作。
 
-### change 6「進度模型」（使用者 2026-09-26 定案，排在 5b 之後）
+### change 7「畫面與操作修補」
 
-- 進度目前全靠人工按按鈕，看板會跟真實進度脫節。方向是讓 agent 自己呼叫 cockpit 的 API 回報進度，
-  寫入的是 cockpit 自己的狀態檔，**不需要推翻「對 HERDR 唯讀」**。「HERDR 的 `done` 不等於 task 完成」這條原則保留。
-- 活動狀態目前只到 workstream 層級（同一條 workstream 的 task 共用 pane 綁定，見 `CONTEXT.md`），要精確到 task。
-- 推進要有「退回」操作。現在誤按只能停服務、手改 `cockpit.state.json`（見 `cockpit/README.md` 的推進限制）。
+- Live Output 上色；M2（斷線期間無法取消改綁，`ProjectedBinding::RuntimeDisconnected` 不帶 `source`）；U1（滑鼠點擊後殘留冰青焦點框，
+  改 `:focus-visible`，確認鍵盤焦點還原不退步）；U2（服務斷線時右欄 runtime 卡仍綠色 connected）。
+- 本段新增候選：Git Graph 詳情展開處車道線中斷；diff 行尾 `\r` 處理不一致（ledger deferred minors）。
 
-### change 7「畫面與操作修補」（排在 change 6 之後）
-
-- Live Output 上色。
-- M2：斷線期間無法取消改綁，因為 `ProjectedBinding::RuntimeDisconnected` 不帶 `source`。
-- U1：滑鼠點按鈕或列之後會留下冰青焦點框，重畫後還在；選定的 pane 列因此像 running 節點。改法是 `:focus-visible`，
-  要確認鍵盤焦點還原沒有退步。
-- U2：cockpit 服務斷線時，只有頂列標「最後已知」，右欄 runtime 卡片仍用綠色顯示 connected。
-
-多 runtime 通用支援不排（目前沒有第二個 runtime 要接，YAGNI；核心模型與執行環境已經分層，ADR-0003）。
-
-## 4. 這兩段（change 5a、html-charset）踩過的坑
+## 4. 這一段踩過的坑
 
 （**不會報錯的錯誤**加粗。）
 
-html-charset：
+git 與 WSL：
 
-- **文字類回應不帶 charset、檔案又沒宣告時，繁中 Windows 的 Chrome 以 Big5 解 UTF-8**：回 200、無錯誤，只是亂碼
-  （`檔案瀏覽` → `瑼娍��讛汗`）。正解：確定是 UTF-8 才帶 `charset=utf-8`；不確定就不帶，讓檔內宣告決定（design D1）。
-  判斷要看整份回傳位元組，不能用中繼資料只看的前 8192 位元組（design D2）。
-- **sandbox iframe（無 `allow-same-origin`）是 OOPIF**：頁面讀不到它的 `contentDocument`，也不能在裡面跑腳本；
-  它的**文件導航請求記在父 session**，只有子資源才在子 session。要讀 iframe 內容：記下 `Target.attachedToTarget`
-  的 `type === 'iframe'` session，在該 session 用 `DOM.getDocument`（`pierce: true`）找 `documentURL` 相符的文件再
-  `DOM.getOuterHTML`（做法見 `files-check.js` 的 `segUtf8HtmlWithoutMeta`）。只靠網路請求上的 session 找不到子 session。
-- Codex 用量上限本段又發生一次（2026-09-28 11:40 左右，14:19 恢復）；做法同下方 5a 的對策。
+- **`wsl.exe -d <distro> -- <cmd>` 會經 Linux shell 重新解析引數**（`'$HOME'` 被展開，等於 shell 注入）；**`--cd <不存在路徑>` 靜默退回 `/`
+  且 exit 0**。正解：一律 `--exec`，目錄交給 `git -C`（memory `wsl-exe-argument-passing-pitfalls`）。
+- **在 repo 子目錄建暫存 repo，`git init` 失敗後 add／commit 會靜默落到外層真實 repo**：本段發生一次（2.6，已 revert）。正解：暫存 repo
+  建在 repo 外並先驗 `rev-parse --show-toplevel`（memory `git-in-subdir-falls-through-to-enclosing-repo`）。被擋下的 `reset`／`rebase`
+  不轉手給別人執行，改 `git revert`。
+- `git diff` 的 `--name-status` 與 `--numstat` 不能同時輸出（兩版本都只印前者）→ 分兩次呼叫以路徑合併。
+- `git diff-tree -p --root` 即使有 `-p` 仍先印一行 commit hash。
+- `-M` 相似度低於門檻時，帶 `old_path` 的 diff 會拆成兩個 `diff --git` 區塊（Ruling R2：依序合併）。
+- 未加 `--no-optional-locks` 的 `git status` 會改寫 index（實測對照測試在 `cockpit-git/tests/real_git.rs`），會跟 agent 的 commit 搶 `index.lock`。
+- **對衝突中（未合併）的檔案跑 `git diff`（暫存區→工作區）會輸出 `diff --cc` 三方格式、exit 0**，unified 解析器當格式錯誤 → 曾回 502。
+  正解：衝突組改用 HEAD→工作區；遇 `diff --cc` 回 409 `unmerged_path`（memory `git-diff-unmerged-path-emits-combined-format`）。
+  單元測試與腳本都沒涵蓋，是目視驗收逐一點過每種檔案狀態才抓到。
+- Windows git 對 `\\wsl.localhost` repo 報 dubious ownership；本 change 不繞過（`-c safe.directory` 會讓 WSL repo 設定以 Windows 身分執行程式）。
 
-change 5a（全紀錄與裁決理由見 `openspec/changes/archive/2026-09-28-file-review/sdd-ledger.md`）：
+實作與流程：
 
-流程與工具：
+- **封閉性很容易被「為了測試方便」的公開入口破壞**：2.2 一度讓 `QueryPlan` 欄位與 `execute` 都 `pub`，crate 外可執行任意 argv。正解：正式入口只有
+  `GitRunner::run<Q: GitQuery>`，任意 argv 入口限 `test-support` feature；證明方式是未開 feature 的暫時 consumer crate `cargo check`（doctest 會因
+  dev-dependency 自我引用洩漏 feature 而失效）。
+- **新增第三個列舉值時，舊的 `=== "某值"` 二選一判斷把新值歸錯邊**：左欄加「變更」後 `render.js` 仍 `leftTab === "files"`，重畫時 Project 清單蓋回來；
+  切換當下被同步 DOM 操作遮住（memory `binary-check-misroutes-new-enum-value`）。
+- `meta` 的 `blob` 一度用內容雜湊（整份讀取、違反 spec「物件 hash」）→ 新增封閉查詢 `BlobId`；只看副檔名分類 viewer 又違反 5a 規則 → `BlobHead`
+  （上限 8192、可截斷）交給 `cockpit_files::classify_viewer_bytes`。
+- 計時測試的逾時不能短於「系統忙碌時子程序啟動＋寫檔」的時間（`tests/runner.rs` 由 150 ms 改 2 s）。
+- 既有 flaky（非本分支引入，交使用者決定是否修）：`cockpit/tests/app.rs` 的 `abort_await_is_bounded`、`visual-check.js` `DF1` 收尾的 chrome PID 確認。
+- Codex：週限額可能在一晚內用盡；`--wait` 放背景 Bash 時提早返回（見 2.2）。Claude API 的 session 上限也撞過一次（subagent 中斷，resume 即可）。
+- `codex-companion.mjs cancel` 在 Git Bash 下要 `MSYS_NO_PATHCONV=1`（`taskkill /PID` 被吃）；失聯 job 的 `cancel`／`result` 會回 "No job found"。
 
-- **Codex 用量上限會中途用盡**：本段發生兩次（2026-09-27 19:49 與 2026-09-28 約 00:30），各停約 3 小時。對策：
-  審查排隊、實作不停，只是未經 Codex 通過的 task 不勾選、不宣稱完成；恢復後依序補審，必要時把多個 task 合成一次
-  `--base` 較早的審查（減少重疊）。
-- 在 scratchpad 建 detached worktree（`git worktree add <scratchpad>/review-wt <commit>`）審特定 commit 範圍，
-  避免審到進行中、還沒到那個範圍的改動。
-- **Codex 有時只回開場白，不是結構化的審查輸出**（非 usage limit 導致）：判斷方式同 memory
-  `codex-review-verdict-only-valid-in-final-section`（找不到「# Codex Adversarial Review」結論段），重跑即可。
-- subagent 會自己開背景監看，回報「waiting on background work」不代表完成，要等它真正回報結果再往下走。
-- 驗收腳本（`ui_preview` 系）不可並行跑，會共用暫存目錄互相干擾。
-
-安全邊界與 Rust：
-
-- **Windows 經 `\\wsl.localhost` 看 Linux 符號連結是無法跟隨的 reparse point**：`ResolveLinkTarget` 解不出目標、
-  直接開檔失敗，`canonicalize` 因此失敗。WSL repo 內的符號連結（含指向根目錄內部的）一律視為跳出根目錄、一律
-  403，這是 fail-closed 的功能限制不是漏洞（已寫 memory `herdr-schema-fields-may-be-inert.md` 同系列的環境認知，
-  細節見 `docs/research/2026-09-27/file-review-probe.md` §6）。
-- **axum 的 `{*path}` 會先把整段路徑 percent-decode 一次**，`a%2Fb` 解碼後變成兩段 `a/b`，若拿這個已解碼值做
-  逐段界限檢查就會漏擋多重編碼的跳出嘗試。對策：從原始 URI 字串取路徑自己逐段解碼與檢查，不用 axum `Path`
-  已解碼的值。
-- **`ignore::WalkBuilder` 沿邏輯路徑走祖先鏈找 `.gitignore` 有多個同源漏洞**（規則檔本身是根外連結仍生效、
-  祖先目錄被忽略時子項目卻仍列出等）：改成對每個路徑前綴分別 `canonicalize` 驗證是否在根內、用
-  `GitignoreBuilder` 逐層以「實體目錄」載入規則、`fs::read_dir` 讀取，不吞任何錯誤（design D4 已依此改寫）。
-  同類 finding 連續幾輪還在冒，就是設計方向錯了要換，不要逐條補洞。
-- **先看 metadata 的 size 再整檔讀取，會被並行改寫繞過大小上限**（檢查通過後、讀取前檔案被換成更大的檔案）：
-  改成有上限的讀取函式（`read_capped`），一路讀一路數位元組，超過就中止；前端串流／逐段讀同理。
-- comrak 0.55 的選項是 `extension.header_id_prefix`（不是原設計文件寫的 `header_ids`，那是舊版 API），
-  且會替每個標題自動加一個 `<a href="#未加前綴的id" class="anchor">`——這個 anchor 的 `href` 不含前綴，
-  跟標題本身的 `id`（有前綴）不一致，若要改寫成應用內錨點連結要注意這個落差。
-- 本機建不了檔案 symlink（`os error 1314`，權限不足）→ 測試改用 junction（`mklink /J`）驗證同一套邊界邏輯。
-
-其他：
-
-- VS Code 的 `vscode://vscode-remote/wsl+<distro>/<path>` 連結**結尾要加 `:1`**（行號），否則 VS Code 把遠端路徑
-  當成資料夾開啟，不是開檔（實測見 probe §5）。
-- Git Bash 裡打 `python3` 會叫出 Windows Store 的 stub 卡住，不會真的執行 Python。
-
-change 5a 以前仍然有效的坑（HERDR 行為、change 4 前端、axum、WSL、Git Bash 等），見上一版
-`git show 7aebc3b:docs/handover.md` 第 4 節（再往前的鏈結見該節末的指標）。
+change 5a 與更早仍有效的坑：`git show 45f1174:docs/handover.md` 第 4 節（再往前的鏈結見該節末）。
 
 ## 5. 已定但未執行的決策
 
 | 決策 | 狀態 |
 |---|---|
-| 路線：change 5a 檔案瀏覽與 Review（已完成、已併回並 archive）→ change 5b git 唯讀層／diff／Git Graph → change 6 進度模型 → change 7 畫面與操作修補 | **已定** |
-| 沒有 `<meta charset>` 的 UTF-8 HTML 在 iframe 會亂碼 | **已完成**（change `html-charset`，已併回並 archive）：依內容決定——合法 UTF-8 帶 `charset=utf-8`，否則不帶；不偵測 Big5、不轉碼、不改 `.css`（CSS 跟著 HTML 的編碼） |
-| HTML 檢視器改用「隱藏 iframe 先載入、Resource Timing 確認 200 才換掉舊 iframe」（R30，取代最初的 R28/R29 兩次請求做法） | **已定**（實測可行，5.4 修正波已套用），理由：同時維持 spec 字面（iframe 載入原始內容端點）又消除 R28/R29 的競態；不做 `srcdoc`（會改寫使用者 HTML，違反 design D8「不改寫使用者內容」） |
-| Markdown 以 `/` 開頭的相對連結以 repo 根目錄為基準（同 GitHub）；前端另加元素／屬性白名單清洗，縱深防禦 comrak 未來新增輸出元素 | **已定**（R25） |
-| 允許清單範圍是「目前有 pane 的整個 repo」，shell pane 停在家目錄／磁碟根會讓整個範圍進允許清單 | **已定不額外限制**（只對本機同源、只讀，等同使用者在該 pane 本來能讀到的範圍） |
-| PDF 解析失敗算「成功讀取後的一種顯示內容」，不算讀取失敗、不上過期標示 | **已定**（R26） |
-| Git Graph：只當參考、不取用程式碼（授權禁止散布衍生作品） | **已定**（控制端查證 LICENSE） |
-| 不做 VS Code extension host | **建議**，使用者尚未最終表態 |
-| 多 runtime 通用支援 | **不做**，等真的有第二個 runtime 再開 |
-| deferred lows（Codex 分級可延後，不擋合併）：405 缺 `Allow` 標頭（3.2）；`ui_preview` 外層寫入路由 405 空本體；1100 寬 Factory Floor 頂緣低 12px；1200×720 固定一屏時 Live Output 面板 227.6px；單欄開檔時分頁區高度在中繼資料回來前跳動一次；tablist 內含關閉 button 的 ARIA 結構（`role=presentation` 包裝）；PDF 固定倍率下 devicePixelRatio 改變不立即重畫；過期標示與中繼資料成功重疊時偶發短暫閃爍；Markdown 內文缺最大行寬（已在最終修正波補約 80ch，若之後嫌不夠可再調） | **延後**，細節見 `openspec/changes/archive/2026-09-28-file-review/sdd-ledger.md` |
-| `main` 上既有檔案含真實主機名／使用者名稱 | **未處理**：推上遠端之前另開一個小 change 清掉 |
+| 路線：5b `git-review`（實作完、待審）→ change 6 進度模型 → change 7 畫面與操作修補 → 去識別化 → 評估 Tauri | **已定** |
+| 5b 範圍：Git Graph 只看＋安全操作（複製、看某版本、搜尋、跳檔案）；四種 diff；只做左右並排；左欄「變更」分頁；全部分支＋篩選；不拆 change | **使用者定案**（2026-09-28） |
+| git 執行方式：WSL repo 在 WSL 內跑 git（`--exec`），不用 `-c safe.directory`、不用 gitoxide | **使用者定案**（2026-09-28） |
+| 本 change 其餘細節（P1、P2、R1–R12） | **Claude 依授權裁決**，清單在 ledger，使用者可推翻 |
+| 不做任何寫入 repo 的操作、不讀 stash、不做 unified diff／行內差異／語法上色／blame | **已定**（proposal 非目標） |
+| Codex 恢復前不以 Claude subagent 代審 diff | **已定**（CLAUDE.md；使用者若要改用其他方式需明示） |
+| deferred lows（5a 的 405 缺 `Allow` 等九項，見 `openspec/changes/archive/2026-09-28-file-review/sdd-ledger.md`）＋本段 deferred minors（ledger） | **延後** |
+| `main` 上既有檔案含真實主機名／使用者名稱 | **未處理**：推 remote 前另開小 change |
 | Codex stop review gate（per-repo）本 repo 未啟用 | 靠流程內手動跑 `adversarial-review` |
-| Claude 在 feature 分支 commit，收尾時 squash 併回 main | **已授權** |
-| 前端要不要上 TypeScript | 使用者 2026-09-24 問過，尚未定案。建議：之後另開小 change，用 JSDoc＋`@ts-check` |
+| Claude 在 feature 分支 commit，收尾 squash 併回 main | **已授權** |
+| 不做 VS Code extension host；多 runtime 通用支援不做；前端 TypeScript 未定（建議 JSDoc＋`@ts-check`） | 同上一版 |
 
 ## 6. 之後的路
 
-change 5a 檔案瀏覽與 Review（已完成）→ change 5b git 唯讀層／diff／Git Graph → change 6 進度模型 →
-change 7 畫面與操作修補 → 推 remote 前的去識別化小 change → 評估 Tauri 桌面殼（ADR-0005）。
+5b 審查併回 → change 6 進度模型 → change 7 畫面與操作修補 → 推 remote 前的去識別化小 change → 評估 Tauri 桌面殼（ADR-0005）。
 北極星見 `docs/cockpit-spec.md`。
 
 ## 版本紀錄
@@ -179,10 +153,7 @@ change 7 畫面與操作修補 → 推 remote 前的去識別化小 change → �
 | 1–10 | 2026-09-13～15 | change 1a／1b（詳見 git log 與 archive 目錄） |
 | 11–14 | 2026-09-15～19 | change 2 propose／apply／驗收／併回 `main` 並 archive |
 | 15–17 | 2026-09-21～23 | change 3 `live-output`：探測 → propose → SDD apply → 驗收 → 併回 `main` 並 archive |
-| 18–19 | 2026-09-23～25 | change 4 `direction-01-visual`：brainstorming → propose → SDD 執行至 3.4 |
-| 20 | 2026-09-26 | change 4 完成 3.4–5.5、使用者目視驗收通過、squash 併回 `main` 並 archive；路線重排為 change 5 檔案瀏覽與 Review、change 6 進度模型、change 7 畫面與操作修補 |
-| 21 | 2026-09-27 | change 5 brainstorming（拆 5a／5b）、5a `file-review` propose 完成，開分支 `feat/file-review` |
-| 22 | 2026-09-28 | change 5a `file-review` SDD apply 完成（task 1.1–5.4，整支分支 Codex review 通過），待使用者目視驗收（5.5） |
-| 23 | 2026-09-28 | change 5a 使用者目視驗收通過、squash 併回 `main`、3 份 delta spec 同步並 archive；下一段為 change 5b brainstorming |
-| 24 | 2026-09-28 | 小 change `html-charset` propose 與 apply 完成（6/6 task、Codex approve），待 squash 併回與 archive |
-| 25 | 2026-09-28 | `html-charset` squash 併回 `main`、delta spec 同步並 archive；下一段為 change 5b brainstorming |
+| 18–20 | 2026-09-23～26 | change 4 `direction-01-visual`：brainstorming → propose → SDD → 驗收 → 併回並 archive |
+| 21–23 | 2026-09-27～28 | change 5a `file-review`：brainstorming（拆 5a／5b）→ propose → SDD → 驗收 → 併回並 archive |
+| 24–25 | 2026-09-28 | 小 change `html-charset` propose／apply／併回並 archive |
+| 26 | 2026-09-29～30 | change 5b `git-review`：brainstorming → propose → SDD 全部 task 實作完成、全 gate 綠、WSL 真機驗收與目視驗收通過（修 V1／V2）；Codex 週限額用盡，全部待審 |
