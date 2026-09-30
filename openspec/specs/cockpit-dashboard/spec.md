@@ -11,11 +11,11 @@ Direction 01 視覺語彙與三欄版面（含 Project 切換）。證據：設�
 ### Requirement: 路由與內嵌資源
 
 系統必須提供 `GET /`（`index.html`）、`GET /app/<檔名>`（`channel.js`、`render.js`、`actions.js`、`output.js`、
-`files.js`、`viewers.js`、`style.css`）、`GET /manifest.webmanifest`、`GET /icons/<檔名>`（192 與 512 px PNG）、
+`files.js`、`viewers.js`、`git.js`、`style.css`）、`GET /manifest.webmanifest`、`GET /icons/<檔名>`（192 與 512 px PNG）、
 `GET /vendor/<路徑>`（隨附的第三方前端資源：`pdfjs/` 下的 PDF 函式庫、worker、`cmaps/`、`standard_fonts/` 與該版本
 函式庫執行時需要的其他資源檔，`material-icons/` 下的檔案 icon 與主題對照表）、`GET /api/state`（目前整張圖 JSON）、`GET /ws`、`live-output` 定義的
 輸出讀取端點（`GET /api/runtimes/<runtime>/panes/<pane>/output`）、`file-review` 定義的檔案端點（根目錄查詢、列目錄、
-中繼資料、Markdown 渲染、原始內容），以及 `pipeline-progress` 定義的寫入端點（`POST /api/projects/<project>/tasks/<task>/<操作>`、
+中繼資料、Markdown 渲染、原始內容）、`git-review` 定義的 git 端點（`GET /api/git/<runtime>/<root_id>/…`），以及 `pipeline-progress` 定義的寫入端點（`POST /api/projects/<project>/tasks/<task>/<操作>`、
 `PUT`／`DELETE /api/projects/<project>/workstreams/<workstream>/override`）；所有靜態內容（含 `/vendor/` 下的全部檔案）
 內嵌在執行檔內；`/vendor/` 的回應依副檔名給 content-type（`.mjs`／`.js` 為 JavaScript、`.svg` 為 `image/svg+xml`、
 `.json` 為 `application/json`、`.wasm` 為 `application/wasm`、其餘為 `application/octet-stream`）並帶 `X-Content-Type-Options: nosniff`；其他路徑回 404；
@@ -24,8 +24,8 @@ Direction 01 視覺語彙與三欄版面（含 Project 切換）。證據：設�
 #### Scenario: 路由與 content-type
 
 - **WHEN** 逐一請求 `/`、`/app/render.js`、`/app/actions.js`、`/app/output.js`、`/app/files.js`、`/app/viewers.js`、
-  `/app/style.css`、`/manifest.webmanifest`、`/icons/icon-192.png`、`/api/state`
-- **THEN** 皆為 200，content-type 分別為 HTML、JavaScript、JavaScript、JavaScript、JavaScript、JavaScript、CSS、
+  `/app/git.js`、`/app/style.css`、`/manifest.webmanifest`、`/icons/icon-192.png`、`/api/state`
+- **THEN** 皆為 200，content-type 分別為 HTML、JavaScript、JavaScript、JavaScript、JavaScript、JavaScript、JavaScript、CSS、
   `application/manifest+json`、`image/png`、`application/json`
 
 #### Scenario: vendored 資源
@@ -307,8 +307,9 @@ exited 的 pane 列出現「綁定到這裡」，按下即送出覆蓋，成功�
 
 ### Requirement: 版面與窄視窗
 
-系統必須以三欄版面呈現：頂列與底列橫跨全寬；左欄頂端為「Project」「檔案」兩個分頁，其下顯示目前分頁的內容（Project 清單
-或檔案樹）；中欄上為 Factory Floor、下為分頁區（第一個分頁為 Live Output，其後為檔案分頁，見 `file-review`「檔案分頁」）；
+系統必須以三欄版面呈現：頂列與底列橫跨全寬；左欄頂端為「Project」「檔案」「變更」三個分頁，其下顯示目前分頁的內容
+（Project 清單、檔案樹或 git 變更清單）；中欄上為 Factory Floor、下為分頁區（第一個分頁為 Live Output，其後為檔案分頁與
+`git-review` 定義的分頁，見 `file-review`「檔案分頁」）；
 右欄上為 runtime 卡、下為最近事件；錯誤訊息與改綁提示顯示在中欄上方。視窗寬度至少 1200 CSS px **且**高度至少 720 CSS px 時，
 頁面高度等於視窗高度、不整頁捲動，內容超出的區域各自內部捲動。視窗寬度至少 1200 CSS px 但高度小於 720 CSS px 時，
 仍維持三欄排列，但取消固定高度、允許整頁捲動。視窗寬度小於 1200 且至少 760 時，右欄移到中欄下方，取消固定高度、
@@ -352,6 +353,12 @@ workstream 名稱、task 標題、pane 標題、cwd、檔名與分頁名稱不�
 - **GIVEN** 視窗寬 1280，已打開 20 個檔名各長 60 個字元的檔案分頁
 - **WHEN** 重畫
 - **THEN** 分頁列在內部橫向捲動，頁面沒有橫向捲軸，中欄寬度不變
+
+#### Scenario: diff 與 Git Graph 不撐破頁面
+
+- **GIVEN** 視窗寬 700，已打開一個含 300 個字元長行的 diff 分頁與一個有 8 條以上並行車道的 Git Graph 分頁
+- **WHEN** 分別切到這兩個分頁
+- **THEN** 長行在所屬欄內折行，Graph 在分頁內容區內部捲動，頁面沒有橫向捲軸
 
 ### Requirement: Project 切換
 
