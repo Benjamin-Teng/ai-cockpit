@@ -117,7 +117,7 @@ fn scenario_c_running_in_implement() {
     assert!(matches!(resolution, BindingResolution::Bound { .. }));
 
     let agent_status = bound_agent_status(&store, &resolution);
-    let status = derive_status(Mark::None, &[], &resolution, agent_status);
+    let status = derive_status(Mark::None, &[], &resolution, agent_status, true);
 
     assert_eq!(status, StageStatus::Running);
 }
@@ -138,7 +138,7 @@ fn bound_agent_blocked_is_blocked() {
     let agent_status = bound_agent_status(&store, &resolution);
 
     assert_eq!(
-        derive_status(Mark::None, &[], &resolution, agent_status),
+        derive_status(Mark::None, &[], &resolution, agent_status, true),
         StageStatus::Blocked
     );
 }
@@ -160,7 +160,7 @@ fn done_is_not_completed() {
     let agent_status = bound_agent_status(&store, &resolution);
 
     assert_eq!(
-        derive_status(Mark::None, &[], &resolution, agent_status),
+        derive_status(Mark::None, &[], &resolution, agent_status, true),
         StageStatus::Ready
     );
 }
@@ -183,7 +183,7 @@ fn idle_and_unknown_agent_status_are_ready() {
         let agent_status = bound_agent_status(&store, &resolution);
 
         assert_eq!(
-            derive_status(Mark::None, &[], &resolution, agent_status),
+            derive_status(Mark::None, &[], &resolution, agent_status, true),
             StageStatus::Ready,
             "agent_status={status:?}"
         );
@@ -208,7 +208,13 @@ fn disconnected_is_ready() {
     let (resolution_before, _) = resolve_binding(&ws, None, &store);
     let agent_status_before = bound_agent_status(&store, &resolution_before);
     assert_eq!(
-        derive_status(Mark::None, &[], &resolution_before, agent_status_before),
+        derive_status(
+            Mark::None,
+            &[],
+            &resolution_before,
+            agent_status_before,
+            true
+        ),
         StageStatus::Running,
         "前置條件：斷線前應先是 running"
     );
@@ -233,7 +239,7 @@ fn disconnected_is_ready() {
     let agent_status_after = bound_agent_status(&store, &resolution_after);
 
     assert_eq!(
-        derive_status(Mark::None, &[], &resolution_after, agent_status_after),
+        derive_status(Mark::None, &[], &resolution_after, agent_status_after, true),
         StageStatus::Ready
     );
 }
@@ -256,12 +262,18 @@ fn dependency_incomplete_is_pending_then_running_once_completed() {
     let agent_status = bound_agent_status(&store, &resolution);
 
     assert_eq!(
-        derive_status(Mark::None, &[Mark::None], &resolution, agent_status),
+        derive_status(Mark::None, &[Mark::None], &resolution, agent_status, true),
         StageStatus::Pending,
         "依賴 A 尚未 Completed，B 應為 pending"
     );
     assert_eq!(
-        derive_status(Mark::None, &[Mark::Completed], &resolution, agent_status),
+        derive_status(
+            Mark::None,
+            &[Mark::Completed],
+            &resolution,
+            agent_status,
+            true
+        ),
         StageStatus::Running,
         "依賴 A 已 Completed，B 應照綁定 agent 狀態推導成 running"
     );
@@ -284,7 +296,7 @@ fn mark_failed_overrides_dependency_and_agent() {
     let agent_status = bound_agent_status(&store, &resolution);
 
     assert_eq!(
-        derive_status(Mark::Failed, &[Mark::None], &resolution, agent_status),
+        derive_status(Mark::Failed, &[Mark::None], &resolution, agent_status, true),
         StageStatus::Failed
     );
 }
@@ -326,7 +338,7 @@ fn scenario_d_parallel_workstreams() {
         assert!(!stale);
         let agent_status = bound_agent_status(&store, &resolution);
         assert_eq!(
-            derive_status(Mark::None, &[], &resolution, agent_status),
+            derive_status(Mark::None, &[], &resolution, agent_status, true),
             StageStatus::Running,
             "workstream {} 應為 running",
             ws.id
@@ -351,10 +363,16 @@ fn same_workstream_multiple_tasks() {
     let (resolution, _) = resolve_binding(&ws, None, &store);
     let agent_status = bound_agent_status(&store, &resolution);
 
-    let status_x = derive_status(Mark::None, &[], &resolution, agent_status);
-    let status_y = derive_status(Mark::Completed, &[], &resolution, agent_status);
+    let status_x = derive_status(Mark::None, &[], &resolution, agent_status, true);
+    let status_y = derive_status(Mark::Completed, &[], &resolution, agent_status, true);
+    let status_z = derive_status(Mark::None, &[], &resolution, agent_status, false);
 
     assert_eq!(status_x, StageStatus::Running, "x 標記 none 應為 running");
+    assert_eq!(
+        status_z,
+        StageStatus::Ready,
+        "z 不是目前 task，即使綁定 pane working 也應為 ready"
+    );
     assert_eq!(
         status_y,
         StageStatus::Completed,
@@ -383,9 +401,47 @@ fn no_binding_unbound_and_ambiguous_are_ready() {
 
     for resolution in &cases {
         assert_eq!(
-            derive_status(Mark::None, &[], resolution, Some(AgentStatus::Working)),
+            derive_status(
+                Mark::None,
+                &[],
+                resolution,
+                Some(AgentStatus::Working),
+                true
+            ),
             StageStatus::Ready,
             "resolution={resolution:?}"
+        );
+    }
+}
+
+/// spec 「沒有目前 task 時不猜」：沒有目前 task（`is_active = false`）時，綁定 pane 為
+/// `working` 或 `blocked`，標記 none 的 task 一律 `ready`；標記與依賴優先序不變。
+#[test]
+fn no_active_task_is_not_guessed() {
+    let ws = workstream_with("backend", Some(binding_spec("win", "backend")));
+    for status in [AgentStatus::Working, AgentStatus::Blocked] {
+        let mut bound_pane = pane("p-be", "backend", "t-be");
+        bound_pane.agent_status = status;
+        let store = connected_store(
+            "win",
+            vec![labeled_workspace("backend", 1)],
+            vec![tab("t-be", "backend", 1)],
+            vec![bound_pane],
+        );
+        let (resolution, _) = resolve_binding(&ws, None, &store);
+        let agent_status = bound_agent_status(&store, &resolution);
+        assert_eq!(
+            derive_status(Mark::None, &[], &resolution, agent_status, false),
+            StageStatus::Ready,
+            "x（status={status:?}）"
+        );
+        assert_eq!(
+            derive_status(Mark::None, &[Mark::None], &resolution, agent_status, false),
+            StageStatus::Pending
+        );
+        assert_eq!(
+            derive_status(Mark::Failed, &[], &resolution, agent_status, false),
+            StageStatus::Failed
         );
     }
 }

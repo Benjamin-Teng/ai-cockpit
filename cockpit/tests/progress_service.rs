@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cockpit::progress;
-use cockpit::progress_service::{ProgressService, WriteError};
+use cockpit::progress_service::{BindingBasis, ProgressService, WriteError};
 use cockpit_core::{
     AgentStatus, ConnectionState, DomainState, Focused, Mark, Override, Pane, PaneId, ProgressOp,
     ProjectDef, ProjectId, Rejection, RuntimeId, RuntimeSnapshot, RuntimeStore, StaleOverride,
@@ -683,4 +683,590 @@ async fn cancelled_caller_does_not_break_serialization() {
     let on_disk = reload(&path);
     let in_memory = handle.with_domain(|d| d.clone());
     assert_eq!(on_disk.progress, in_memory.progress, "檔案與記憶體應一致");
+}
+
+// ---------------------------------------------------------------------------
+// progress-model task 3.2：「宣告目前 task」與「agent 推進」交易、覆蓋變更清除目前 task
+// （spec `agent-reporting`「宣告目前 task」「agent 推進」；`pipeline-domain`「目前 task」；design D3）。
+// ---------------------------------------------------------------------------
+
+fn active_of(handle: &StoreHandle, workstream: &str) -> Option<TaskId> {
+    handle.with_domain(|d| {
+        d.active_task(&pid(), &WorkstreamId::new(workstream))
+            .cloned()
+    })
+}
+
+fn stage_of(handle: &StoreHandle, task: &str) -> String {
+    handle.with_domain(|d| d.progress[&pid()][&TaskId::new(task)].stage.clone())
+}
+
+/// 計算落檔次數的服務（hook 只數 `Start`）。
+fn counting_service(
+    handle: &StoreHandle,
+    path: &Path,
+) -> (
+    ProgressService,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let writes = std::sync::Arc::new(AtomicUsize::new(0));
+    let hook: cockpit::progress_service::WriteHook = {
+        let writes = writes.clone();
+        std::sync::Arc::new(move |stage| {
+            if stage == cockpit::progress_service::WriteStage::Start {
+                writes.fetch_add(1, Ordering::SeqCst);
+            }
+        })
+    };
+    let service = ProgressService::with_write_hook(handle.clone(), path.to_path_buf(), hook);
+    (service, writes)
+}
+
+fn writes_of(writes: &std::sync::atomic::AtomicUsize) -> usize {
+    writes.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+fn fresh_handle() -> StoreHandle {
+    StoreHandle::new_with_domain(
+        connected_store(vec![pane("wJ:p2", false)]),
+        DomainState::from_projects(sample_projects()),
+    )
+}
+
+#[tokio::test]
+async fn declare_active_sets_active_and_persists() {
+    let dir = TempDir::new("declare");
+    let path = dir.path().join("state.json");
+    let handle = fresh_handle();
+    let service = ProgressService::new(handle.clone(), path.clone());
+
+    service
+        .declare_active(&pid(), &TaskId::new("a"), &BindingBasis::Auto)
+        .await
+        .expect("宣告應成功");
+
+    assert_eq!(active_of(&handle, "be"), Some(TaskId::new("a")));
+    assert_eq!(active_of(&handle, "fe"), None, "不動其他 workstream");
+    assert_eq!(mark_of(&handle, "a"), Mark::None);
+    assert_eq!(
+        reload(&path).active_task(&pid(), &WorkstreamId::new("be")),
+        Some(&TaskId::new("a")),
+        "檔案應含目前 task"
+    );
+}
+
+#[tokio::test]
+async fn declare_same_active_twice_does_not_write_again() {
+    let dir = TempDir::new("declare-twice");
+    let path = dir.path().join("state.json");
+    let handle = fresh_handle();
+    let (service, writes) = counting_service(&handle, &path);
+
+    service
+        .declare_active(&pid(), &TaskId::new("a"), &BindingBasis::Auto)
+        .await
+        .expect("第一次宣告");
+    assert_eq!(writes_of(&writes), 1);
+    let after_first = handle.with_domain(Clone::clone);
+    let bytes_after_first = fs::read(&path).expect("讀檔");
+
+    service
+        .declare_active(&pid(), &TaskId::new("a"), &BindingBasis::Auto)
+        .await
+        .expect("重複宣告同一個 task 應成功");
+
+    assert_eq!(writes_of(&writes), 1, "重複宣告不應再落檔");
+    assert_eq!(handle.with_domain(Clone::clone), after_first, "狀態不變");
+    assert_eq!(fs::read(&path).expect("讀檔"), bytes_after_first);
+}
+
+#[tokio::test]
+async fn declare_marked_task_is_rejected_without_change() {
+    let dir = TempDir::new("declare-marked");
+    let path = dir.path().join("state.json");
+    let handle = fresh_handle();
+    let (service, writes) = counting_service(&handle, &path);
+    service
+        .apply_progress(&pid(), &TaskId::new("a"), ProgressOp::Complete)
+        .await
+        .expect("標記完成");
+    let before = handle.with_domain(Clone::clone);
+    let writes_before = writes_of(&writes);
+
+    let error = service
+        .declare_active(&pid(), &TaskId::new("a"), &BindingBasis::Auto)
+        .await
+        .expect_err("已標記的 task 不能宣告");
+
+    assert!(
+        matches!(error, WriteError::Rejected(Rejection::AlreadyMarked)),
+        "{error:?}"
+    );
+    assert_eq!(handle.with_domain(Clone::clone), before);
+    assert_eq!(writes_of(&writes), writes_before, "被拒絕不落檔");
+}
+
+#[tokio::test]
+async fn declare_unknown_targets_are_not_found() {
+    let dir = TempDir::new("declare-not-found");
+    let path = dir.path().join("state.json");
+    let handle = fresh_handle();
+    let (service, writes) = counting_service(&handle, &path);
+
+    let error = service
+        .declare_active(
+            &ProjectId::new("nope"),
+            &TaskId::new("a"),
+            &BindingBasis::Auto,
+        )
+        .await
+        .expect_err("未知 project");
+    assert!(matches!(error, WriteError::UnknownProject(_)), "{error:?}");
+    let error = service
+        .declare_active(&pid(), &TaskId::new("nope"), &BindingBasis::Auto)
+        .await
+        .expect_err("未知 task");
+    assert!(matches!(error, WriteError::UnknownTask(_)), "{error:?}");
+
+    assert_eq!(writes_of(&writes), 0);
+    assert!(!path.exists());
+}
+
+#[tokio::test]
+async fn agent_advance_changes_stage_and_active_with_a_single_write() {
+    let dir = TempDir::new("agent-advance");
+    let path = dir.path().join("state.json");
+    let handle = fresh_handle();
+    let (service, writes) = counting_service(&handle, &path);
+
+    service
+        .agent_advance(&pid(), &TaskId::new("a"), &BindingBasis::Auto)
+        .await
+        .expect("推進應成功");
+
+    assert_eq!(stage_of(&handle, "a"), "Build");
+    assert_eq!(active_of(&handle, "be"), Some(TaskId::new("a")));
+    assert_eq!(writes_of(&writes), 1, "stage 與目前 task 同一次落檔");
+    let on_disk = reload(&path);
+    assert_eq!(on_disk.progress[&pid()][&TaskId::new("a")].stage, "Build");
+    assert_eq!(
+        on_disk.active_task(&pid(), &WorkstreamId::new("be")),
+        Some(&TaskId::new("a"))
+    );
+}
+
+#[tokio::test]
+async fn agent_advance_replaces_existing_active_task_of_same_workstream() {
+    let dir = TempDir::new("agent-advance-replace");
+    let path = dir.path().join("state.json");
+    let mut projects = sample_projects();
+    // 讓 `be` 底下有兩個 task：a 與 c。
+    let mut c = projects[0].tasks[0].clone();
+    c.id = TaskId::new("c");
+    projects[0].tasks.push(c);
+    let handle =
+        StoreHandle::new_with_domain(RuntimeStore::new(), DomainState::from_projects(projects));
+    let service = ProgressService::new(handle.clone(), path);
+    service
+        .declare_active(&pid(), &TaskId::new("a"), &BindingBasis::Auto)
+        .await
+        .expect("宣告 a");
+
+    service
+        .agent_advance(&pid(), &TaskId::new("c"), &BindingBasis::Auto)
+        .await
+        .expect("推進 c");
+
+    assert_eq!(active_of(&handle, "be"), Some(TaskId::new("c")));
+}
+
+#[tokio::test]
+async fn agent_advance_rejected_keeps_stage_and_active() {
+    let dir = TempDir::new("agent-advance-rejected");
+    let path = dir.path().join("state.json");
+    let mut projects = sample_projects();
+    let mut c = projects[0].tasks[0].clone();
+    c.id = TaskId::new("c");
+    projects[0].tasks.push(c);
+    let handle =
+        StoreHandle::new_with_domain(RuntimeStore::new(), DomainState::from_projects(projects));
+    let (service, writes) = counting_service(&handle, &path);
+    service
+        .declare_active(&pid(), &TaskId::new("a"), &BindingBasis::Auto)
+        .await
+        .expect("宣告 a");
+    service
+        .apply_progress(&pid(), &TaskId::new("c"), ProgressOp::Advance)
+        .await
+        .expect("c 推進到最後一站");
+    let before = handle.with_domain(Clone::clone);
+    let writes_before = writes_of(&writes);
+
+    let error = service
+        .agent_advance(&pid(), &TaskId::new("c"), &BindingBasis::Auto)
+        .await
+        .expect_err("最後一站推進被拒");
+
+    assert!(
+        matches!(error, WriteError::Rejected(Rejection::AlreadyLastStage)),
+        "{error:?}"
+    );
+    assert_eq!(stage_of(&handle, "c"), "Build");
+    assert_eq!(
+        active_of(&handle, "be"),
+        Some(TaskId::new("a")),
+        "目前 task 不變"
+    );
+    assert_eq!(handle.with_domain(Clone::clone), before);
+    assert_eq!(writes_of(&writes), writes_before);
+}
+
+#[tokio::test]
+async fn agent_advance_on_marked_task_is_rejected_without_change() {
+    let dir = TempDir::new("agent-advance-marked");
+    let path = dir.path().join("state.json");
+    let handle = fresh_handle();
+    let service = ProgressService::new(handle.clone(), path);
+    service
+        .apply_progress(&pid(), &TaskId::new("a"), ProgressOp::Fail)
+        .await
+        .expect("標記失敗");
+    let before = handle.with_domain(Clone::clone);
+
+    let error = service
+        .agent_advance(&pid(), &TaskId::new("a"), &BindingBasis::Auto)
+        .await
+        .expect_err("已標記不能推進");
+
+    assert!(
+        matches!(error, WriteError::Rejected(Rejection::AlreadyMarked)),
+        "{error:?}"
+    );
+    assert_eq!(handle.with_domain(Clone::clone), before);
+}
+
+#[tokio::test]
+async fn agent_advance_unknown_targets_are_not_found() {
+    let dir = TempDir::new("agent-advance-not-found");
+    let path = dir.path().join("state.json");
+    let handle = fresh_handle();
+    let service = ProgressService::new(handle, path.clone());
+
+    let error = service
+        .agent_advance(
+            &ProjectId::new("nope"),
+            &TaskId::new("a"),
+            &BindingBasis::Auto,
+        )
+        .await
+        .expect_err("未知 project");
+    assert!(matches!(error, WriteError::UnknownProject(_)), "{error:?}");
+    let error = service
+        .agent_advance(&pid(), &TaskId::new("nope"), &BindingBasis::Auto)
+        .await
+        .expect_err("未知 task");
+    assert!(matches!(error, WriteError::UnknownTask(_)), "{error:?}");
+    assert!(!path.exists());
+}
+
+#[tokio::test]
+async fn persist_failure_keeps_stage_and_active_unchanged() {
+    let dir = TempDir::new("active-write-failure");
+    let path = dir.path().join("state.json");
+    fs::create_dir_all(&path).expect("在狀態檔路徑建立目錄，使 rename 失敗");
+    let handle = fresh_handle();
+    let service = ProgressService::new(handle.clone(), path);
+    let before = handle.with_domain(Clone::clone);
+
+    let error = service
+        .declare_active(&pid(), &TaskId::new("a"), &BindingBasis::Auto)
+        .await
+        .expect_err("宣告落檔失敗應回錯");
+    assert!(matches!(error, WriteError::Persist { .. }), "{error:?}");
+    assert_eq!(handle.with_domain(Clone::clone), before);
+
+    let error = service
+        .agent_advance(&pid(), &TaskId::new("a"), &BindingBasis::Auto)
+        .await
+        .expect_err("agent 推進落檔失敗應回錯");
+    assert!(matches!(error, WriteError::Persist { .. }), "{error:?}");
+    assert_eq!(stage_of(&handle, "a"), "Spec", "stage 不應生效");
+    assert_eq!(active_of(&handle, "be"), None, "目前 task 不應生效");
+    assert_eq!(handle.with_domain(Clone::clone), before);
+}
+
+#[tokio::test]
+async fn complete_and_fail_clear_active_of_that_task_only() {
+    let dir = TempDir::new("complete-clears-active");
+    let path = dir.path().join("state.json");
+    let handle = fresh_handle();
+    let service = ProgressService::new(handle.clone(), path.clone());
+    service
+        .declare_active(&pid(), &TaskId::new("a"), &BindingBasis::Auto)
+        .await
+        .expect("宣告 a");
+    service
+        .declare_active(&pid(), &TaskId::new("b"), &BindingBasis::Auto)
+        .await
+        .expect("宣告 b");
+
+    service
+        .apply_progress(&pid(), &TaskId::new("a"), ProgressOp::Complete)
+        .await
+        .expect("a 標完成");
+    assert_eq!(
+        active_of(&handle, "be"),
+        None,
+        "完成的 task 不再是目前 task"
+    );
+    assert_eq!(active_of(&handle, "fe"), Some(TaskId::new("b")));
+
+    service
+        .apply_progress(&pid(), &TaskId::new("b"), ProgressOp::Fail)
+        .await
+        .expect("b 標失敗");
+    assert_eq!(active_of(&handle, "fe"), None);
+    assert_eq!(reload(&path).active, HashMap::new(), "檔案也不含目前 task");
+}
+
+#[tokio::test]
+async fn set_override_clears_active_of_that_workstream() {
+    let dir = TempDir::new("override-clears-active");
+    let path = dir.path().join("state.json");
+    let handle = fresh_handle();
+    let service = ProgressService::new(handle.clone(), path.clone());
+    service
+        .declare_active(&pid(), &TaskId::new("a"), &BindingBasis::Auto)
+        .await
+        .expect("宣告 a");
+    service
+        .declare_active(&pid(), &TaskId::new("b"), &BindingBasis::Auto)
+        .await
+        .expect("宣告 b");
+
+    service
+        .set_override(&pid(), &WorkstreamId::new("be"), over("wJ:p2"))
+        .await
+        .expect("設定覆蓋");
+
+    assert_eq!(active_of(&handle, "be"), None);
+    assert_eq!(
+        active_of(&handle, "fe"),
+        Some(TaskId::new("b")),
+        "只清該 workstream"
+    );
+    let on_disk = reload(&path);
+    assert_eq!(on_disk.active_task(&pid(), &WorkstreamId::new("be")), None);
+}
+
+#[tokio::test]
+async fn clear_override_clears_active_only_when_override_existed() {
+    let dir = TempDir::new("clear-override-active");
+    let path = dir.path().join("state.json");
+    let handle = fresh_handle();
+    let (service, writes) = counting_service(&handle, &path);
+    service
+        .set_override(&pid(), &WorkstreamId::new("be"), over("wJ:p2"))
+        .await
+        .expect("設定覆蓋");
+    service
+        .declare_active(
+            &pid(),
+            &TaskId::new("a"),
+            &BindingBasis::Override(over("wJ:p2")),
+        )
+        .await
+        .expect("宣告 a");
+    let writes_before = writes_of(&writes);
+
+    // 沒有覆蓋的 workstream：取消是 no-op，不清目前 task、不落檔。
+    service
+        .declare_active(&pid(), &TaskId::new("b"), &BindingBasis::Auto)
+        .await
+        .expect("宣告 b");
+    service
+        .clear_override(&pid(), &WorkstreamId::new("fe"))
+        .await
+        .expect("取消不存在的覆蓋");
+    assert_eq!(active_of(&handle, "fe"), Some(TaskId::new("b")));
+    assert_eq!(writes_of(&writes), writes_before + 1, "只有宣告 b 那次落檔");
+
+    service
+        .clear_override(&pid(), &WorkstreamId::new("be"))
+        .await
+        .expect("取消既有覆蓋");
+    assert_eq!(active_of(&handle, "be"), None, "取消既有覆蓋清除目前 task");
+    assert_eq!(active_of(&handle, "fe"), Some(TaskId::new("b")));
+    assert_eq!(
+        reload(&path).active_task(&pid(), &WorkstreamId::new("be")),
+        None
+    );
+}
+
+#[tokio::test]
+async fn remove_stale_clears_active_of_that_workstream() {
+    let dir = TempDir::new("stale-clears-active");
+    let path = dir.path().join("state.json");
+    let handle = fresh_handle();
+    let service = ProgressService::new(handle.clone(), path.clone());
+    service
+        .set_override(&pid(), &WorkstreamId::new("be"), over("wJ:p2"))
+        .await
+        .expect("設定覆蓋");
+    service
+        .declare_active(
+            &pid(),
+            &TaskId::new("a"),
+            &BindingBasis::Override(over("wJ:p2")),
+        )
+        .await
+        .expect("宣告 a");
+    service
+        .declare_active(&pid(), &TaskId::new("b"), &BindingBasis::Auto)
+        .await
+        .expect("宣告 b");
+
+    service
+        .remove_stale(vec![StaleOverride {
+            project: pid(),
+            workstream: WorkstreamId::new("be"),
+            override_: over("wJ:p2"),
+        }])
+        .await;
+
+    assert_eq!(override_of(&handle, "be"), None);
+    assert_eq!(active_of(&handle, "be"), None, "失效覆蓋移除清除目前 task");
+    assert_eq!(active_of(&handle, "fe"), Some(TaskId::new("b")));
+    assert_eq!(
+        reload(&path).active_task(&pid(), &WorkstreamId::new("be")),
+        None
+    );
+}
+
+#[tokio::test]
+async fn set_same_override_keeps_active_and_does_not_write() {
+    // review M4：重設相同覆蓋 → domain 不變，不清目前 task、不落檔。
+    let dir = TempDir::new("same-override");
+    let path = dir.path().join("state.json");
+    let handle = fresh_handle();
+    let (service, writes) = counting_service(&handle, &path);
+    service
+        .set_override(&pid(), &WorkstreamId::new("be"), over("wJ:p2"))
+        .await
+        .expect("設定覆蓋");
+    service
+        .declare_active(
+            &pid(),
+            &TaskId::new("a"),
+            &BindingBasis::Override(over("wJ:p2")),
+        )
+        .await
+        .expect("宣告 a");
+    let writes_before = writes_of(&writes);
+
+    service
+        .set_override(&pid(), &WorkstreamId::new("be"), over("wJ:p2"))
+        .await
+        .expect("重設相同覆蓋");
+
+    assert_eq!(active_of(&handle, "be"), Some(TaskId::new("a")));
+    assert_eq!(writes_of(&writes), writes_before, "沒有變化就不落檔");
+}
+
+#[tokio::test]
+async fn declare_active_rejects_when_binding_basis_no_longer_holds() {
+    // review M1：身分判定依據的覆蓋事實在鎖內重驗；不符 → PaneNotBound、狀態不變、不落檔。
+    let dir = TempDir::new("basis-mismatch");
+    let path = dir.path().join("state.json");
+    let handle = fresh_handle();
+    let (service, writes) = counting_service(&handle, &path);
+    service
+        .set_override(&pid(), &WorkstreamId::new("be"), over("wJ:p2"))
+        .await
+        .expect("設定覆蓋");
+    let writes_before = writes_of(&writes);
+
+    // 判定時依據舊綁定（auto，或指向別的 pane 的覆蓋），但 domain 已是 wJ:p2 的覆蓋。
+    for stale in [BindingBasis::Auto, BindingBasis::Override(over("wJ:p1"))] {
+        let result = service
+            .declare_active(&pid(), &TaskId::new("a"), &stale)
+            .await;
+        assert!(
+            matches!(result, Err(WriteError::PaneNotBound)),
+            "stale = {stale:?}：{result:?}"
+        );
+    }
+    // 判定時依據覆蓋，但覆蓋已被取消。
+    service
+        .clear_override(&pid(), &WorkstreamId::new("be"))
+        .await
+        .expect("取消覆蓋");
+    let writes_before_stale_override = writes_of(&writes);
+    let result = service
+        .declare_active(
+            &pid(),
+            &TaskId::new("a"),
+            &BindingBasis::Override(over("wJ:p2")),
+        )
+        .await;
+    assert!(
+        matches!(result, Err(WriteError::PaneNotBound)),
+        "{result:?}"
+    );
+
+    assert_eq!(active_of(&handle, "be"), None);
+    assert_eq!(
+        writes_before_stale_override,
+        writes_before + 1,
+        "只有取消覆蓋落檔"
+    );
+    assert_eq!(writes_of(&writes), writes_before_stale_override);
+}
+
+#[tokio::test]
+async fn declare_active_accepts_matching_binding_basis() {
+    let dir = TempDir::new("basis-match");
+    let handle = fresh_handle();
+    let service = ProgressService::new(handle.clone(), dir.path().join("state.json"));
+    service
+        .declare_active(&pid(), &TaskId::new("a"), &BindingBasis::Auto)
+        .await
+        .expect("沒有覆蓋、依據 auto");
+    service
+        .set_override(&pid(), &WorkstreamId::new("be"), over("wJ:p2"))
+        .await
+        .expect("設定覆蓋");
+    service
+        .declare_active(
+            &pid(),
+            &TaskId::new("a"),
+            &BindingBasis::Override(over("wJ:p2")),
+        )
+        .await
+        .expect("覆蓋仍相同");
+    assert_eq!(active_of(&handle, "be"), Some(TaskId::new("a")));
+}
+
+#[tokio::test]
+async fn agent_advance_rejects_when_binding_basis_no_longer_holds() {
+    let dir = TempDir::new("advance-basis-mismatch");
+    let handle = fresh_handle();
+    let service = ProgressService::new(handle.clone(), dir.path().join("state.json"));
+    service
+        .set_override(&pid(), &WorkstreamId::new("be"), over("wJ:p2"))
+        .await
+        .expect("設定覆蓋");
+    let stage_before = stage_of(&handle, "a");
+
+    let result = service
+        .agent_advance(&pid(), &TaskId::new("a"), &BindingBasis::Auto)
+        .await;
+
+    assert!(
+        matches!(result, Err(WriteError::PaneNotBound)),
+        "{result:?}"
+    );
+    assert_eq!(stage_of(&handle, "a"), stage_before, "stage 不動");
+    assert_eq!(active_of(&handle, "be"), None);
 }

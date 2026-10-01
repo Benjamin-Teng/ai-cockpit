@@ -12,9 +12,15 @@ pub enum Rejection {
     /// 推進被拒絕：目前 Stage 已是 Project `stages` 的最後一個。
     #[error("已是最後一個 Stage")]
     AlreadyLastStage,
-    /// 推進或重新標記被拒絕：Task 目前已有標記（`completed` 或 `failed`）。
+    /// 退回被拒絕：目前 Stage 已是 Project `stages` 的第一個（progress-model task 2.1）。
+    #[error("已是第一個 Stage")]
+    AlreadyFirstStage,
+    /// 推進、退回或重新標記被拒絕：Task 目前已有標記（`completed` 或 `failed`）。
     #[error("已有標記")]
     AlreadyMarked,
+    /// 設定目前 task 被拒絕：task 不存在，或不屬於指定的 workstream（progress-model task 2.2）。
+    #[error("task 不屬於該 workstream")]
+    TaskNotInWorkstream,
     /// 覆蓋設定被拒絕：指定的 runtime 不是設定檔中已登記的 runtime。
     #[error("runtime 未登記")]
     RuntimeNotRegistered,

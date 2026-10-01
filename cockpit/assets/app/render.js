@@ -525,7 +525,8 @@
     return wrap;
   }
 
-  // 節點按鈕顯示規則（spec「畫面操作」）：mark 為 none 且不在最後一個 stage →「推進」；
+  // 節點按鈕顯示規則（spec「畫面操作」）：mark 為 none 且不在第一個 stage →「退回」（放在
+  // 「推進」之前，progress-model task 4.2）；mark 為 none 且不在最後一個 stage →「推進」；
   // mark 為 none →「Completed」「Failed」；mark 不是 none → 只有「清除標記」。
   function renderTaskActions(project, task) {
     var actions = el("div", "task-actions");
@@ -535,6 +536,9 @@
       );
     }
     if (task.mark === "none") {
+      if (task.stage !== project.stages[0]) {
+        add("退回", "retreat");
+      }
       if (task.stage !== project.stages[project.stages.length - 1]) {
         add("推進", "advance");
       }
@@ -581,6 +585,12 @@
     wsNameEl.title = workstream.name; // 長字串換行顯示（design D3；direction-01-visual task 2.1）
     header.appendChild(wsNameEl);
     header.appendChild(renderBindingSummary(workstream.binding));
+    // 「工作中・未宣告 task」（spec「Factory Floor」；progress-model task 4.3、design D7）：
+    // 完全由投影的 activity_undeclared 決定（整頁重畫不丟狀態）；只有 true 才畫，其他值
+    // （false、欄位缺漏）一律不顯示。警示色靜態文字，沒有動畫（style.css .ff-undeclared）。
+    if (workstream.activity_undeclared === true) {
+      header.appendChild(el("span", "ff-undeclared", "工作中・未宣告 task"));
+    }
 
     // 列首操作：「改綁」一律有；binding.source 為 override 時另有「取消改綁」（spec「畫面操作」）。
     var actions = el("div", "ff-row-actions");
@@ -1195,7 +1205,7 @@
   // 盤點（task focus-fix）：#app 內目前所有可聚焦、可互動的元素都帶 `data-action`——pane 列
   // （`select-pane`，`data-runtime`／`data-pane`）、workstream 列首「看輸出」
   // （`select-bound-pane`，同兩個）、「綁定到這裡」（`bind-here`，同兩個）、task 節點的
-  // 「推進」「Completed」「Failed」「清除標記」（`advance`／`complete`／`fail`／`clear`，
+  // 「推進」「退回」「Completed」「Failed」「清除標記」（`advance`／`retreat`／`complete`／`fail`／`clear`，
   // `data-project`／`data-task`）、workstream 列首「改綁」（`rebind`，
   // `data-project`／`data-workstream`）、「取消改綁」（`override-clear`，同兩個）、改綁提示的
   // 「取消」（`rebind-cancel`，只有 `data-action`）、錯誤訊息的「關閉」

@@ -548,6 +548,69 @@ async fn progress_unknown_op_404() {
     assert_eq!(stage_of(&handle), "Spec", "不合法的操作不該動到進度");
 }
 
+/// spec `pipeline-progress`「退回成功」（progress-model task 3.3）：t1 在 `Build`（非第一站、
+/// 標記 `none`）時 `retreat` 回 204，投影、記憶體與狀態檔的 `stage` 都回到上一站。
+#[tokio::test]
+async fn progress_retreat_succeeds_204() {
+    let dir = TempDir::new("retreat");
+    let path = dir.path().join("state.json");
+    let (handle, state) = build(RuntimeStore::new(), path.clone());
+    let router = http::router(state);
+
+    let initial = state_version(&router).await;
+    let (status, _, _) = send(&router, "POST", "/api/projects/p/tasks/t1/advance", None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "先推進到 Build");
+    assert_eq!(stage_of(&handle), "Build");
+    // 等投影先反映推進，再量退回前的 version（否則退回的 version 遞增可能被推進的遞增吃掉）。
+    let before = wait_for_version_increase(&router, initial).await["version"]
+        .as_u64()
+        .expect("version 應該是數字");
+    let (status, _, _) = send(&router, "POST", "/api/projects/p/tasks/t1/retreat", None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let projected = wait_for_version_increase(&router, before).await;
+    let task = find_task(&projected, "p", "t1").expect("投影應該有 task t1");
+    assert_eq!(task["stage"], "Spec", "投影中 t1 應該回到上一站");
+    assert_eq!(stage_of(&handle), "Spec");
+    let on_disk = read_state_file(&path);
+    assert_eq!(on_disk["projects"]["p"]["tasks"]["t1"]["stage"], "Spec");
+}
+
+/// spec `pipeline-progress`「第一站退回被拒絕」：t1 在第一站（`Spec`）時 `retreat` 回 409，
+/// 本體 `error` 指出已是第一個 Stage，進度不變。
+#[tokio::test]
+async fn progress_retreat_at_first_stage_rejected_409() {
+    let dir = TempDir::new("retreat-first");
+    let (handle, state) = build(RuntimeStore::new(), dir.path().join("state.json"));
+    let router = http::router(state);
+
+    let (status, body, content_type) =
+        send(&router, "POST", "/api/projects/p/tasks/t1/retreat", None).await;
+
+    assert_error_response(status, &body, &content_type, StatusCode::CONFLICT);
+    assert_eq!(body["error"], "已是第一個 Stage");
+    assert_eq!(stage_of(&handle), "Spec", "被拒絕不應改變進度");
+}
+
+/// spec `pipeline-progress`「人工端點沒有宣告操作」：`start` 是 agent 專屬操作，人工端點回 404，
+/// 狀態不變。
+#[tokio::test]
+async fn progress_start_op_is_404_on_manual_endpoint() {
+    let dir = TempDir::new("manual-start");
+    let (handle, state) = build(RuntimeStore::new(), dir.path().join("state.json"));
+    let router = http::router(state);
+
+    let (status, body, content_type) =
+        send(&router, "POST", "/api/projects/p/tasks/t1/start", None).await;
+
+    assert_error_response(status, &body, &content_type, StatusCode::NOT_FOUND);
+    assert_eq!(stage_of(&handle), "Spec");
+    assert!(
+        handle.with_domain(|d| d.active.is_empty()),
+        "人工端點不得宣告目前 task"
+    );
+}
+
 #[tokio::test]
 async fn progress_write_failure_500() {
     let dir = TempDir::new("write-failure");
@@ -1036,6 +1099,56 @@ async fn duplicate_origin_rejected() {
 // `/api/state` 與寫入端點——不讀 `with_domain`。
 // ---------------------------------------------------------------------------
 
+/// 等 workstream 的綁定投影成 `bound`，再以 agent `start` 端點（帶 `X-Herdr-Pane-Id`）宣告目前
+/// task（progress-model task 3.4：spec 改為「只有目前 task 才 running」，Scenario C／D 的 GIVEN
+/// 因此要先宣告）。
+async fn declare_active_via_agent(
+    router: &axum::Router,
+    workstream: &str,
+    pane_id: &str,
+    task: &str,
+) {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        let projected = send(router, "GET", "/api/state", None).await.1;
+        if find_workstream(&projected, "p", workstream)
+            .is_some_and(|w| w["binding"]["state"] == "bound")
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "等待 workstream {workstream} 綁定逾時"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let (status, _, _) = send_with_headers(
+        router,
+        "POST",
+        &format!("/api/agent/projects/p/tasks/{task}/start"),
+        None,
+        &[("host", "127.0.0.1:0"), ("x-herdr-pane-id", pane_id)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "宣告 {task} 為目前 task");
+}
+
+/// 輪詢到 workstream 的 `active_task` 為 `task`，回傳那份投影的 version（之後等 version 遞增用）。
+async fn wait_for_active(router: &axum::Router, workstream: &str, task: &str) -> u64 {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        let projected = send(router, "GET", "/api/state", None).await.1;
+        if find_workstream(&projected, "p", workstream).is_some_and(|w| w["active_task"] == task) {
+            return projected["version"].as_u64().expect("version 應該是數字");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "等待 {workstream} 的目前 task 變成 {task} 逾時"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// Scenario C 用的 project：一條 workstream `be` 以設定檔 binding（不是覆蓋）自動解析到
 /// workspace `wJ` 底下唯一的 pane，task `A` 一開始就在 `Implement`、無標記、無依賴。
 fn scenario_c_project() -> ProjectDef {
@@ -1078,8 +1191,11 @@ async fn scenario_c_pipeline_projection() {
     );
     let router = http::router(state);
 
+    // GIVEN：agent 宣告 A 為目前 task（spec：只有目前 task 才看 pane 狀態）。
+    declare_active_via_agent(&router, "be", "wJ:p1", "A").await;
+
     // 起始狀態：binding 已 bound，但 pane 還是 idle，task 應為 ready（不是 running）。
-    let initial = state_version(&router).await;
+    let initial = wait_for_active(&router, "be", "A").await;
     let projected = send(&router, "GET", "/api/state", None).await.1;
     let task = find_task(&projected, "p", "A").expect("投影應該有 task A");
     assert_eq!(task["status"], "ready", "pane 還是 idle 時不應該是 running");
@@ -1176,7 +1292,11 @@ async fn scenario_d_parallel_collaboration() {
     );
     let router = http::router(state);
 
-    let before_working = state_version(&router).await;
+    // GIVEN：三條 workstream 的 agent 各自宣告目前 task（spec：只有目前 task 才 running）。
+    declare_active_via_agent(&router, "backend", "wBackend:p1", "be1").await;
+    declare_active_via_agent(&router, "frontend", "wFrontend:p1", "fe1").await;
+    declare_active_via_agent(&router, "tests", "wTests:p1", "qa1").await;
+    let before_working = wait_for_active(&router, "tests", "qa1").await;
     set_agent_status(&handle, "wBackend:p1", AgentStatus::Working);
     set_agent_status(&handle, "wFrontend:p1", AgentStatus::Working);
     set_agent_status(&handle, "wTests:p1", AgentStatus::Working);

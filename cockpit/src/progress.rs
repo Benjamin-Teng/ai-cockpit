@@ -7,7 +7,7 @@
 //!
 //! 容錯規則（design D5）：
 //! - 狀態檔不存在：所有 task 用初始進度、沒有覆蓋，**不建立檔案**。
-//! - 檔案無法解析為狀態檔形狀、或 `version` 不是 1：視為損毀，回傳 [`ProgressError`]（呼叫端
+//! - 檔案無法解析為狀態檔形狀、或 `version` 不是 1 或 2：視為損毀，回傳 [`ProgressError`]（呼叫端
 //!   應視為啟動失敗；這是使用者手改檔案才會發生的情況，靜默丟棄會吞掉進度）。
 //! - 狀態檔中的 project／task／workstream 在設定檔不存在，或覆蓋的 `runtime` 不是設定檔中的
 //!   runtime：忽略該筆並以 `tracing::warn!` 記錄一則操作記錄，不進入回傳的 `DomainState`
@@ -16,6 +16,9 @@
 //!   標記，並在回傳值的 `warnings[project_id]` 加入一則含 task id 與原 stage 值的訊息——這則要
 //!   顯示給使用者（投影 `warnings`），跟前一條「忽略並 warn」的操作記錄不同層級。
 //! - 設定檔中有、狀態檔中沒有的 task：用初始進度。
+//! - v1 舊檔沒有 `active`（有就是損毀）、v2 每個 project 都必須有 `active`（缺就是損毀）；
+//!   `active` 的無效項目（workstream／task 不存在、task 不屬於該 workstream、載入後標記不是
+//!   none）忽略並 warn（progress-model task 3.1，design D5）。
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -27,8 +30,11 @@ use cockpit_core::{
 };
 use serde::{Deserialize, Serialize};
 
-/// 狀態檔目前唯一支援的 `version` 值。
-pub const STATE_FILE_VERSION: u64 = 1;
+/// 狀態檔寫出時的 `version`（含目前 task 的 v2；progress-model task 3.1）。
+pub const STATE_FILE_VERSION: u64 = 2;
+
+/// 仍可讀取的舊版 `version`：沒有 `active` 欄位，載入後所有 workstream 沒有目前 task。
+const LEGACY_STATE_FILE_VERSION: u64 = 1;
 
 /// 狀態檔載入失敗的原因；訊息一律含狀態檔路徑（spec `pipeline-progress`「狀態檔載入與容錯」：
 /// 「啟動失敗，訊息含狀態檔路徑與原因」）。
@@ -52,8 +58,8 @@ pub enum ProgressError {
         /// 底層解析器的錯誤訊息。
         message: String,
     },
-    /// `version` 不是 [`STATE_FILE_VERSION`]。
-    #[error("狀態檔版本不支援（{}）：期望 {STATE_FILE_VERSION}，收到 {version}", path.display())]
+    /// `version` 不是 1 或 [`STATE_FILE_VERSION`]。
+    #[error("狀態檔版本不支援（{}）：期望 1 或 {STATE_FILE_VERSION}，收到 {version}", path.display())]
     UnsupportedVersion {
         /// 出錯的檔案路徑。
         path: PathBuf,
@@ -85,11 +91,16 @@ pub(crate) struct StateFile {
 }
 
 /// 單一 project 在狀態檔中的內容；`tasks`／`overrides` 均為必填（理由見 [`StateFile`]）。
+///
+/// `active`（workstream id → task id）是 `Option`：v1 檔沒有這個欄位、v2 檔必須有（可為空物件），
+/// 兩種版本共用同一個結構，由載入時依 `version` 檢查有無（design D5；不用兩個 struct 加
+/// `untagged`，免得錯誤訊息退化成「無法匹配任何變體」）。寫出一律 `Some`。
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct StateProject {
     pub(crate) tasks: BTreeMap<String, StateTask>,
     pub(crate) overrides: BTreeMap<String, StateOverride>,
+    pub(crate) active: Option<BTreeMap<String, String>>,
 }
 
 /// 單一 task 在狀態檔中的進度。
@@ -144,12 +155,7 @@ pub fn load_progress(
             message: error.to_string(),
         })?;
 
-    if state_file.version != STATE_FILE_VERSION {
-        return Err(ProgressError::UnsupportedVersion {
-            path: path.to_path_buf(),
-            version: state_file.version,
-        });
-    }
+    check_version_shape(path, &state_file)?;
 
     Ok(apply_state_file(
         path,
@@ -157,6 +163,37 @@ pub fn load_progress(
         state_file,
         known_runtime_ids,
     ))
+}
+
+/// 依 `version` 檢查 `active` 欄位有無：v1 不得有、v2 每個 project 都必須有；其他版本不支援。
+fn check_version_shape(path: &Path, state_file: &StateFile) -> Result<(), ProgressError> {
+    let parse_error = |message: String| ProgressError::Parse {
+        path: path.to_path_buf(),
+        message,
+    };
+    match state_file.version {
+        LEGACY_STATE_FILE_VERSION => {
+            if let Some((id, _)) = state_file.projects.iter().find(|(_, p)| p.active.is_some()) {
+                return Err(parse_error(format!(
+                    "version 1 的狀態檔不應有 active 欄位（project {id}）"
+                )));
+            }
+        }
+        STATE_FILE_VERSION => {
+            if let Some((id, _)) = state_file.projects.iter().find(|(_, p)| p.active.is_none()) {
+                return Err(parse_error(format!(
+                    "version 2 的狀態檔每個 project 都必須有 active 欄位（缺 project {id}）"
+                )));
+            }
+        }
+        version => {
+            return Err(ProgressError::UnsupportedVersion {
+                path: path.to_path_buf(),
+                version,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// 把解析成功的狀態檔套到 `projects` 上；純函數（不再碰檔案系統），容錯規則見模組文件。
@@ -182,6 +219,7 @@ fn apply_state_file(
     let mut progress: HashMap<ProjectId, HashMap<TaskId, TaskProgress>> =
         HashMap::with_capacity(projects.len());
     let mut overrides: HashMap<ProjectId, HashMap<WorkstreamId, Override>> = HashMap::new();
+    let mut active: HashMap<ProjectId, HashMap<WorkstreamId, TaskId>> = HashMap::new();
     let mut warnings: HashMap<ProjectId, Vec<String>> = HashMap::new();
 
     for project in &projects {
@@ -198,8 +236,26 @@ fn apply_state_file(
 
         let project_overrides =
             resolve_overrides(path, project, &state_project.overrides, known_runtime_ids);
+
+        // 覆蓋在本次載入被忽略的 workstream：綁定已退回自動，目前 task 不再可信（review M3）。
+        let dropped_overrides: HashSet<&str> = state_project
+            .overrides
+            .keys()
+            .filter(|id| !project_overrides.contains_key(&WorkstreamId::new(id.as_str())))
+            .map(String::as_str)
+            .collect();
+        let project_active = resolve_active(
+            path,
+            project,
+            state_project.active.as_ref(),
+            &progress[&project.id],
+            &dropped_overrides,
+        );
         if !project_overrides.is_empty() {
             overrides.insert(project.id.clone(), project_overrides);
+        }
+        if !project_active.is_empty() {
+            active.insert(project.id.clone(), project_active);
         }
     }
 
@@ -207,6 +263,7 @@ fn apply_state_file(
         projects,
         progress,
         overrides,
+        active,
         warnings,
     }
 }
@@ -305,6 +362,54 @@ fn resolve_overrides(
     overrides
 }
 
+/// 解出一個 project 底下的目前 task：workstream 或 task 不存在、task 不屬於該 workstream、或 task
+/// 載入後標記不是 `none`、或該 workstream 的覆蓋在本次載入被忽略（`dropped_overrides`）都忽略並
+/// 記錄操作記錄；其餘照用。`state_active` 為 `None`（v1 檔）時
+/// 沒有任何目前 task。
+fn resolve_active(
+    path: &Path,
+    project: &ProjectDef,
+    state_active: Option<&BTreeMap<String, String>>,
+    progress: &HashMap<TaskId, TaskProgress>,
+    dropped_overrides: &HashSet<&str>,
+) -> HashMap<WorkstreamId, TaskId> {
+    let mut active = HashMap::new();
+    for (workstream_id, task_id) in state_active.into_iter().flatten() {
+        let workstream_known = project
+            .workstreams
+            .iter()
+            .any(|w| w.id.as_str() == workstream_id);
+        let task = project.tasks.iter().find(|t| t.id.as_str() == task_id);
+        let reason = match task {
+            _ if !workstream_known => "workstream 不在設定檔中",
+            None => "task 不在設定檔中",
+            Some(task) if task.workstream.as_str() != workstream_id => "task 不屬於該 workstream",
+            Some(task) if progress.get(&task.id).is_some_and(|p| p.mark != Mark::None) => {
+                "task 已有標記"
+            }
+            Some(_) if dropped_overrides.contains(workstream_id.as_str()) => {
+                "workstream 的覆蓋已被忽略，綁定退回自動"
+            }
+            Some(_) => {
+                active.insert(
+                    WorkstreamId::new(workstream_id.clone()),
+                    TaskId::new(task_id.clone()),
+                );
+                continue;
+            }
+        };
+        tracing::warn!(
+            path = %path.display(),
+            project = %project.id,
+            workstream = %workstream_id,
+            task = %task_id,
+            reason,
+            "狀態檔的目前 task 無效，忽略",
+        );
+    }
+    active
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,6 +426,7 @@ mod tests {
                 StateProject {
                     tasks: BTreeMap::new(),
                     overrides: BTreeMap::new(),
+                    active: Some(BTreeMap::new()),
                 },
             )]),
         };
@@ -334,6 +440,10 @@ mod tests {
         assert!(
             json.contains("\"overrides\":{}"),
             "空 overrides 應明確輸出為 {{}}，不能被省略：{json}"
+        );
+        assert!(
+            json.contains("\"active\":{}"),
+            "空 active 應明確輸出為 {{}}，不能被省略：{json}"
         );
 
         let round_tripped: StateFile =

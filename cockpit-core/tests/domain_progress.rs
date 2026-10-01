@@ -237,3 +237,62 @@ fn agent_status_never_changes_progress() {
         );
     }
 }
+
+// ---- progress-model task 2.1：退回（spec `pipeline-domain`「進度操作」）----
+
+#[test]
+fn retreat_moves_to_previous_stage() {
+    // spec 「退回到上一站」：stages = [Spec, Plan, Build]，t1 在 Build、標記 none → Plan、none。
+    let project = sample_project();
+    let progress = progress_at("Build", Mark::None);
+
+    let result = apply_op(&project, &progress, ProgressOp::Retreat).expect("Build 不是第一站");
+
+    assert_eq!(result, progress_at("Plan", Mark::None));
+}
+
+#[test]
+fn retreat_rejected_on_first_stage() {
+    // spec 「第一站不能退回」：t1 在 Spec（第一個）、標記 none → 被拒絕，原因指出已是第一個 Stage。
+    let project = sample_project();
+    let progress = progress_at("Spec", Mark::None);
+
+    let result = apply_op(&project, &progress, ProgressOp::Retreat);
+
+    assert_eq!(result, Err(Rejection::AlreadyFirstStage));
+    assert_eq!(Rejection::AlreadyFirstStage.to_string(), "已是第一個 Stage");
+}
+
+#[test]
+fn retreat_rejected_when_marked() {
+    // spec 「有標記時不能退回」：t1 在 Plan（非第一個）、標記 failed → 被拒絕，原因是已有標記。
+    let project = sample_project();
+    for mark in [Mark::Completed, Mark::Failed] {
+        let progress = progress_at("Plan", mark);
+        assert_eq!(
+            apply_op(&project, &progress, ProgressOp::Retreat),
+            Err(Rejection::AlreadyMarked),
+            "標記 {mark:?} 時不能退回"
+        );
+    }
+}
+
+#[test]
+fn retreat_on_first_stage_with_mark_reports_already_marked() {
+    // 兩個拒絕條件同時成立時，標記優先（與推進一致：先查標記、再查邊界）。
+    let project = sample_project();
+    let progress = progress_at("Spec", Mark::Failed);
+
+    assert_eq!(
+        apply_op(&project, &progress, ProgressOp::Retreat),
+        Err(Rejection::AlreadyMarked)
+    );
+}
+
+#[test]
+fn retreat_serializes_as_lowercase_path_string() {
+    assert_eq!(
+        serde_json::to_string(&ProgressOp::Retreat).unwrap(),
+        "\"retreat\""
+    );
+}

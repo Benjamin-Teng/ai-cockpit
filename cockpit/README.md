@@ -93,6 +93,10 @@ path = "cockpit.state.json"   # 選填；相對路徑相對於設定檔目錄解
   下次啟動時舊狀態檔中對不到設定檔的 project／task／workstream 會被忽略並記一則 warn。
 - **單一實例**：狀態檔沒有鎖，也沒有多實例協調機制。同一份狀態檔只能給一個 cockpit 行程用；兩個
   行程指到同一個檔案時，後寫入的那個會覆蓋先寫入的，不會合併。
+- **狀態檔 v2（change 6 `progress-model`）**：每個 project 多一個 `active` 欄位（workstream id → 目前
+  task id，見下一節），檔案 `version` 為 2。升級直接換新版即可：舊的 v1 狀態檔照常讀取（視為沒有任何
+  目前 task），第一次寫入時存成 v2。**回退**：舊版 cockpit 讀到 v2 會因版本不支援而啟動失敗；回退前先停掉
+  cockpit，手動把 `version` 改回 `1`、刪掉每個 project 底下的 `active` 欄位，進度與覆蓋不受影響，再換回舊版。
 - **回滾注意**：`[[project]]`／`[state]` 是 change 2 新增的區段，設定檔解析一律 `deny_unknown_fields`
   （未知欄位＝啟動失敗）。換回沒有這兩個功能的舊版 `cockpit.exe` 前，要先把 `cockpit.toml` 裡的
   `[[project]]` 與 `[state]` 區段整段移除，不然舊版會直接啟動失敗；狀態檔可以留著不動，舊版本來就
@@ -107,7 +111,7 @@ path = "cockpit.state.json"   # 選填；相對路徑相對於設定檔目錄解
 下面範例對本機打 `127.0.0.1:7770`，`curl` 依網址自動送出對應的 `Host` 標頭，仍明寫出來方便對照：
 
 ```bash
-# 推進（POST，四種操作 advance / complete / fail / clear 三選一，不需要本體）
+# 推進（POST，五種操作 advance / retreat / complete / fail / clear 擇一，不需要本體）
 curl -i -X POST http://127.0.0.1:7770/api/projects/cockpit/tasks/impl/advance \
   -H 'Host: 127.0.0.1:7770'
 
@@ -123,7 +127,7 @@ curl -i -X DELETE http://127.0.0.1:7770/api/projects/cockpit/workstreams/backend
 ```
 
 狀態碼：成功 204（不回投影本體，畫面等 `/ws` 推送）；project／task／workstream 不存在，或
-`<op>` 不是四值之一 → 404；操作被拒絕（已是最後一站、已有標記、覆蓋的 runtime 未連線或 pane 已
+`<op>` 不是五值之一 → 404；操作被拒絕（已是最後一站、已有標記、覆蓋的 runtime 未連線或 pane 已
 exited）→ 409，本體 `{"error": "<原因>"}`；`PUT` 本體不是含 `runtime`／`pane_id` 兩個字串欄位的
 JSON 物件 → 400；狀態檔寫入失敗 → 500，本體同樣是 `{"error": "<原因>"}`，記憶體中的進度維持操作
 前的值（不會半套生效）。
@@ -142,15 +146,82 @@ JSON 物件 → 400；狀態檔寫入失敗 → 500，本體同樣是 `{"error":
   父目錄不存在的位置，每一次寫入（包含畫面按鈕）都會在寫 `.tmp` 這一步失敗，回 500，且永遠不會
   自己修好——請先手動建立好該目錄。
 
-**推進沒有反悔按鈕**：畫面上「Completed」「Failed」都能再按「清除標記」復原，但「推進」把 task
-移到下一個 stage 後沒有對應的「退回」操作；`pointerdown` 事件委派又比 `click` 容易誤觸（見設計文件
-§8.3），誤按只能直接手動改狀態檔（`cockpit.state.json` 裡對應 task 的 `stage` 欄位）。
+**推進可以退回**：畫面上 task 節點的「退回」按鈕（等效 `.../advance` 換成 `.../retreat`）把 task
+移回上一個 stage；標記為 `none` 且不在第一個 stage 才接受，否則 409。`pointerdown` 事件委派比
+`click` 容易誤觸（見設計文件 §8.3），誤按推進就用退回復原。退回不影響目前 task（見下一節）。
 
 **手動改狀態檔前必須先停止 cockpit，改完才能再啟動**：cockpit 執行中對狀態檔的任何寫入——不只是
 按按鈕，也包含背景任務刪除失效覆蓋（design D3；覆蓋指到的 pane 不存在或已 exited 時自動觸發）——
 都會覆寫整份狀態檔（`.tmp` 寫好再 `rename` 取代），所以只要程序還在跑，任何時間點的下一次寫入都會
 連同你手改的內容一起蓋掉。正確順序是：先 Ctrl-C 停掉這次執行 → 改 `cockpit.state.json` → 再重新
 `cargo run -p cockpit` 或執行檔啟動，讓它在下次寫入前先把你手改的內容讀進記憶體。
+
+## agent 回報進度（change 6 `progress-model`）
+
+畫面上一條 workstream 的 task 只有「目前 task」會隨綁定 pane 的 agent 狀態變成 `running`／`blocked`，其餘
+task 維持 `ready`。哪個 task 是目前 task 由 agent 自己宣告：agent 在自己所在的 HERDR pane 內呼叫下列
+端點（Cockpit 不猜）。寫入只改 Cockpit 自己的狀態，對 HERDR 完全唯讀。沒宣告時，若 agent 正在 working，
+workstream 列首會顯示「工作中・未宣告 task」。
+
+| 端點 | 說明 |
+|---|---|
+| `GET /api/agent/tasks` | 列出綁定到這個 pane 的 workstream 與其 task（含 `id`、`stage`、`next_stage`、`mark`、`status`、`active_task`） |
+| `POST /api/agent/projects/<project>/tasks/<task>/start` | 宣告這個 task 為目前 task（204） |
+| `POST /api/agent/projects/<project>/tasks/<task>/advance` | 把 task 推進到下一個 stage，並設為目前 task（204） |
+
+所有請求都要帶標頭 `X-Herdr-Pane-Id`，值取 HERDR 在 pane 內提供的 `HERDR_PANE_ID` 環境變數
+（例如 `wW:p1`）。同樣只接受本機同源請求（見上一節）。agent 不能標 Completed／Failed、清除標記或退回，
+那些是人的操作：`<操作>` 不是 `start`／`advance` 一律 404。
+
+| 狀態碼 | 意義 |
+|---|---|
+| 204 | 成功（沒有本體） |
+| 400 `missing_pane_id` | 沒帶 `X-Herdr-Pane-Id`，或值是空白 |
+| 403 `pane_not_bound` | 該 task 所屬的 workstream 沒有綁定到這個 pane |
+| 403 `forbidden_source` | 不是本機同源請求（`Host`／`Origin` 不符） |
+| 404 | project／task 不存在，或 `<操作>` 不是 `start`／`advance` |
+| 409 | 被拒絕：task 已有標記（`start`），或已是最後一個 stage／已有標記（`advance`）；本體 `{"error": "<原因>"}` |
+| 500 | 狀態檔寫入失敗，記憶體不變 |
+
+**只認非 WSL runtime 的 pane**：綁定到經由 WSL 連線的 runtime 的 pane 不算，同一個 pane id 在兩個以上
+Windows runtime 都有綁定時也不算，這兩種情況 `GET` 回空的 `workstreams`、`POST` 回 403。目前 WSL 內的
+agent 連不到這組 API：WSL2 預設 NAT 網路下，WSL 裡的 `127.0.0.1` 是 WSL 自己，不是 Windows，Cockpit
+只監聽 Windows 的 `127.0.0.1`。
+
+PowerShell（務必用 `curl.exe`，裸的 `curl` 在 PowerShell 是 `Invoke-WebRequest` 的別名）：
+
+```powershell
+# 先查自己的 task id
+curl.exe -s http://127.0.0.1:7770/api/agent/tasks -H "X-Herdr-Pane-Id: $env:HERDR_PANE_ID"
+# 宣告開始做某個 task
+curl.exe -i -X POST http://127.0.0.1:7770/api/agent/projects/cockpit/tasks/impl/start `
+  -H "X-Herdr-Pane-Id: $env:HERDR_PANE_ID"
+# 完成一站，推進到下一個 stage
+curl.exe -i -X POST http://127.0.0.1:7770/api/agent/projects/cockpit/tasks/impl/advance `
+  -H "X-Herdr-Pane-Id: $env:HERDR_PANE_ID"
+```
+
+bash：
+
+```bash
+curl -s http://127.0.0.1:7770/api/agent/tasks -H "X-Herdr-Pane-Id: $HERDR_PANE_ID"
+curl -i -X POST http://127.0.0.1:7770/api/agent/projects/cockpit/tasks/impl/start   -H "X-Herdr-Pane-Id: $HERDR_PANE_ID"
+curl -i -X POST http://127.0.0.1:7770/api/agent/projects/cockpit/tasks/impl/advance   -H "X-Herdr-Pane-Id: $HERDR_PANE_ID"
+```
+
+可直接貼進專案 `AGENTS.md` 的短文（埠與 project id 依自己的設定改）：
+
+```markdown
+## 回報進度給 Cockpit
+
+你的 pane 綁在 Cockpit 的一條 workstream 上。請用 `curl.exe`（PowerShell）或 `curl`（bash）回報進度，
+每次都帶標頭 `X-Herdr-Pane-Id: $HERDR_PANE_ID`，網址前綴 `http://127.0.0.1:7770`：
+
+- 開始做某個 task 時：`POST /api/agent/projects/<project>/tasks/<task>/start`。
+- 完成一個 stage 時：`POST /api/agent/projects/<project>/tasks/<task>/advance`。
+- 不要嘗試標完成、失敗或退回，那是人的操作。
+- 不知道自己的 task id 時，先 `GET /api/agent/tasks` 查。
+```
 
 ## 輸出讀取 API（change 3 `live-output`）
 

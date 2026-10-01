@@ -1,5 +1,5 @@
 //! Task 進度：目前所在的 Stage 與人工標記 `Mark`（spec `pipeline-domain` 「Task 進度」）。
-//! `ProgressOp` 是四種進度操作，序列化字串與 HTTP 路徑字串一致（spec `pipeline-progress`
+//! `ProgressOp` 是五種進度操作，序列化字串與 HTTP 路徑字串一致（spec `pipeline-progress`
 //! 「進度寫入端點」的 `<操作>`）。轉移規則見本檔 `apply_op`（design D1）。
 
 use serde::{Deserialize, Serialize};
@@ -41,13 +41,15 @@ impl TaskProgress {
     }
 }
 
-/// 四種進度操作，序列化值與 `POST /api/projects/<project>/tasks/<task>/<操作>` 的路徑字串
-/// 一致（spec `pipeline-progress`）。轉移規則見 task 2.2 的 `apply_op`。
+/// 五種進度操作，序列化值與 `POST /api/projects/<project>/tasks/<task>/<操作>` 的路徑字串
+/// 一致（spec `pipeline-progress`）。轉移規則見 `apply_op`。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProgressOp {
     /// 推進到下一個 Stage。
     Advance,
+    /// 退回到上一個 Stage（progress-model task 2.1）。
+    Retreat,
     /// 標 Completed。
     Complete,
     /// 標 Failed。
@@ -87,6 +89,25 @@ pub fn apply_op(
             }
             Ok(TaskProgress {
                 stage: project.stages[next_index].clone(),
+                mark: Mark::None,
+            })
+        }
+        ProgressOp::Retreat => {
+            if progress.mark != Mark::None {
+                return Err(Rejection::AlreadyMarked);
+            }
+            let current_index = project
+                .stages
+                .iter()
+                .position(|stage| stage == &progress.stage)
+                .expect(
+                    "progress.stage 必須是 project.stages 其中之一（design D5，載入時已正規化）",
+                );
+            let Some(previous_index) = current_index.checked_sub(1) else {
+                return Err(Rejection::AlreadyFirstStage);
+            };
+            Ok(TaskProgress {
+                stage: project.stages[previous_index].clone(),
                 mark: Mark::None,
             })
         }

@@ -213,6 +213,15 @@ pub fn router(app: AppState) -> Router {
                 .fallback(write_method_not_allowed)
                 .route_layer(source_check_layer.clone()),
         )
+        // agent 端點（progress-model task 3.4；design D6）：兩條都套 `source_check`。GET 用共同的
+        // `file_route!` 掛法；POST 同寫入端點，未註冊的 method 走 405 fallback（不經來源檢查）。
+        .route("/api/agent/tasks", file_route!(crate::agent::list_tasks))
+        .route(
+            "/api/agent/projects/{project}/tasks/{task}/{op}",
+            post(crate::agent::agent_op)
+                .fallback(write_method_not_allowed)
+                .route_layer(source_check_layer.clone()),
+        )
         .route(
             "/api/projects/{project}/workstreams/{workstream}/override",
             put(set_override)
@@ -482,10 +491,12 @@ async fn progress_op(
     }
 }
 
-/// 把路徑上的 `<op>` 字串比對成 [`ProgressOp`]；不是四值之一回 `None`（design D6）。
+/// 把路徑上的 `<op>` 字串比對成 [`ProgressOp`]；不是五值之一回 `None`（design D6；progress-model
+/// task 3.3 加入 `retreat`；`start` 是 agent 專屬，人工端點不認得）。
 fn parse_progress_op(op: &str) -> Option<ProgressOp> {
     match op {
         "advance" => Some(ProgressOp::Advance),
+        "retreat" => Some(ProgressOp::Retreat),
         "complete" => Some(ProgressOp::Complete),
         "fail" => Some(ProgressOp::Fail),
         "clear" => Some(ProgressOp::Clear),
@@ -712,12 +723,15 @@ pub(crate) fn with_no_store_headers(mut response: Response) -> Response {
 /// 409／500，Codex fix round 1 finding 3：先前 404 回空本體，跟 tasks.md 4.1 明定的形狀
 /// 不符；axum 自己判定路徑完全不匹配的 404（例如未知路徑）不在此限，那種情況根本不會進到
 /// 這個函式）。
-fn write_error_response(error: WriteError) -> Response {
+pub(crate) fn write_error_response(error: WriteError) -> Response {
     match &error {
         WriteError::UnknownProject(_)
         | WriteError::UnknownTask(_)
         | WriteError::UnknownWorkstream(_) => {
             error_response(StatusCode::NOT_FOUND, &error.to_string())
+        }
+        WriteError::PaneNotBound => {
+            coded_error_response(StatusCode::FORBIDDEN, "pane_not_bound", &error.to_string())
         }
         WriteError::Rejected(_) => error_response(StatusCode::CONFLICT, &error.to_string()),
         WriteError::Persist { .. } | WriteError::Internal(_) => {

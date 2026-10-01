@@ -930,7 +930,8 @@ async fn restart_keeps_progress_and_override() {
     let raw_state = fs::read_to_string(&state_path).expect("重啟後狀態檔應該存在");
     let state_json: serde_json::Value =
         serde_json::from_str(&raw_state).expect("狀態檔應該是合法 JSON");
-    assert_eq!(state_json["version"], 1);
+    // 狀態檔改為 v2（pipeline-progress「狀態檔格式與持久化」：系統寫出的狀態檔一律為 version 2；progress-model task 3.1）。
+    assert_eq!(state_json["version"], 2);
     assert_eq!(state_json["projects"]["p"]["tasks"]["t1"]["stage"], "Build");
     assert_eq!(
         state_json["projects"]["p"]["tasks"]["t1"]["mark"],

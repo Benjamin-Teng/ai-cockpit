@@ -73,6 +73,14 @@ pub struct ProjectedWorkstream {
     pub name: String,
     /// 這次投影即時解析出的綁定。
     pub binding: ProjectedBinding,
+    /// 目前 task 的 id；沒有就序列化為 `null`，不省略（progress-model task 2.3）。
+    #[serde(default)]
+    pub active_task: Option<TaskId>,
+    /// 綁定的 agent 正在工作或被擋住，但這條 workstream 沒有目前 task（agent 還沒宣告在做哪個
+    /// task）。只在 `binding` 為 `bound`、`agent_status` 為 `working`／`blocked`、且 `active_task`
+    /// 為 `None` 時為 `true`。
+    #[serde(default)]
+    pub activity_undeclared: bool,
 }
 
 /// 綁定解析結果的投影：序列化為 `{"state": "none" | "runtime_disconnected" | "bound" |
@@ -366,10 +374,18 @@ fn project_project(
         .workstreams
         .iter()
         .zip(&resolved)
-        .map(|(ws, (resolution, pane))| ProjectedWorkstream {
-            id: ws.id.clone(),
-            name: ws.name.clone(),
-            binding: project_binding(resolution, *pane),
+        .map(|(ws, (resolution, pane))| {
+            let active_task = domain.active_task(&def.id, &ws.id).cloned();
+            let busy = pane.is_some_and(|p| {
+                matches!(p.agent_status, AgentStatus::Working | AgentStatus::Blocked)
+            });
+            ProjectedWorkstream {
+                id: ws.id.clone(),
+                name: ws.name.clone(),
+                binding: project_binding(resolution, *pane),
+                activity_undeclared: busy && active_task.is_none(),
+                active_task,
+            }
         })
         .collect();
 
@@ -399,6 +415,7 @@ fn project_project(
                 &dependency_marks,
                 resolution,
                 pane.map(|p| p.agent_status),
+                domain.active_task(&def.id, &task.workstream) == Some(&task.id),
             );
             ProjectedTask {
                 id: task.id.clone(),

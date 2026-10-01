@@ -42,11 +42,11 @@ pub enum StageStatus {
 /// 1. `mark` 為 `Completed`／`Failed` → 對應的 `StageStatus`（優先於下面所有規則，包含依賴
 ///    未完成與綁定 agent 狀態）。
 /// 2. `dependency_marks` 中任一不是 `Mark::Completed` → `Pending`。
-/// 3. `binding` 解析為 `Bound`（`resolve_binding` 只在對應 runtime 已 `connected` 時才回傳
+/// 3. 這個 Task 是所屬 workstream 的目前 task（`is_active`），且 `binding` 解析為 `Bound`（`resolve_binding` 只在對應 runtime 已 `connected` 時才回傳
 ///    `Bound`，這裡不必再另外檢查一次連線狀態）：`agent_status` 為 `Some(AgentStatus::Working)`
 ///    → `Running`；`Some(AgentStatus::Blocked)` → `Blocked`；其餘（`Idle`／`Done`／`Unknown`／
 ///    `None`，即 pane 沒有 agent 或呼叫端沒查到）→ `Ready`。
-/// 4. 其餘情況（`binding` 是 `None`／`RuntimeDisconnected`／`Unbound`／`Ambiguous`）→ `Ready`。
+/// 4. 其餘情況（這個 Task 不是目前 task、workstream 沒有目前 task、`binding` 是 `None`／`RuntimeDisconnected`／`Unbound`／`Ambiguous`）→ `Ready`。
 ///
 /// `dependency_marks` 只需要依賴 task 的 `Mark`（規則 2 的判定依據只看標記，不看依賴 task
 /// 所在的 Stage）；呼叫端自行從 `TaskDef::depends_on` 映射出對應 task 的 `Mark` 清單，空切片
@@ -58,6 +58,7 @@ pub fn derive_status(
     dependency_marks: &[Mark],
     binding: &BindingResolution,
     agent_status: Option<AgentStatus>,
+    is_active: bool,
 ) -> StageStatus {
     match mark {
         Mark::Completed => return StageStatus::Completed,
@@ -72,7 +73,8 @@ pub fn derive_status(
         return StageStatus::Pending;
     }
 
-    if matches!(binding, BindingResolution::Bound { .. }) {
+    // 沒有目前 task 時不從 agent 狀態猜是哪個 task 在做（progress-model task 2.3）。
+    if is_active && matches!(binding, BindingResolution::Bound { .. }) {
         return match agent_status {
             Some(AgentStatus::Working) => StageStatus::Running,
             Some(AgentStatus::Blocked) => StageStatus::Blocked,

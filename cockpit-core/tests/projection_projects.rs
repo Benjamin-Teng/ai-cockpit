@@ -148,7 +148,15 @@ fn no_projects_projects_is_empty_array() {
 #[test]
 fn scenario_c_binding_json_fields() {
     let store = scenario_c_store(AgentStatus::Working);
-    let domain = DomainState::from_projects(vec![scenario_c_project()]);
+    let mut domain = DomainState::from_projects(vec![scenario_c_project()]);
+    // spec Scenario C 的 GIVEN：`be` 的目前 task 為 `A`。
+    domain
+        .set_active(
+            &ProjectId::new("p"),
+            &WorkstreamId::new("be"),
+            &TaskId::new("A"),
+        )
+        .expect("A 屬於 be 且無標記");
     let projected = project(&store, &domain, 1, epoch_secs(10));
     let value = serde_json::to_value(&projected).expect("序列化應成功");
 
@@ -176,7 +184,11 @@ fn scenario_c_binding_json_fields() {
             "agent_status": "working"
         })
     );
+    assert_eq!(be["active_task"], json!("A"));
+    assert_eq!(be["activity_undeclared"], json!(false));
     assert_eq!(p["workstreams"][1]["binding"], json!({"state": "none"}));
+    assert_eq!(p["workstreams"][1]["active_task"], json!(null));
+    assert_eq!(p["workstreams"][1]["activity_undeclared"], json!(false));
 
     let a = p["tasks"]
         .as_array()
@@ -198,6 +210,72 @@ fn scenario_c_binding_json_fields() {
     );
     assert_eq!(p["tasks"][1]["status"], json!("pending"));
     assert_eq!(p["tasks"][1]["depends_on"], json!(["A"]));
+}
+
+/// spec 「工作中但未宣告」：`be` 為 bound、`agent_status` 為 working／blocked 且沒有目前 task →
+/// `active_task` 為 `null`、`activity_undeclared` 為 `true`，task 為 `ready`（不猜）；idle 則為
+/// `false`；有目前 task 時為 `false`。
+#[test]
+fn activity_undeclared_only_when_bound_busy_and_no_active_task() {
+    let pid = ProjectId::new("p");
+    let be = WorkstreamId::new("be");
+    let undeclared = |status: AgentStatus, active: bool| {
+        let store = scenario_c_store(status);
+        let mut domain = DomainState::from_projects(vec![scenario_c_project()]);
+        if active {
+            domain
+                .set_active(&pid, &be, &TaskId::new("A"))
+                .expect("A 屬於 be");
+        }
+        let value =
+            serde_json::to_value(project(&store, &domain, 1, epoch_secs(0))).expect("序列化");
+        let ws = value["projects"][0]["workstreams"][0].clone();
+        let task_status = value["projects"][0]["tasks"][0]["status"].clone();
+        (ws, task_status)
+    };
+
+    for status in [AgentStatus::Working, AgentStatus::Blocked] {
+        let (ws, task_status) = undeclared(status, false);
+        assert_eq!(ws["active_task"], json!(null));
+        assert_eq!(ws["activity_undeclared"], json!(true), "{status:?}");
+        assert_eq!(task_status, json!("ready"), "沒有目前 task 不猜");
+    }
+    for status in [AgentStatus::Idle, AgentStatus::Done, AgentStatus::Unknown] {
+        let (ws, _) = undeclared(status, false);
+        assert_eq!(ws["activity_undeclared"], json!(false), "{status:?}");
+    }
+    let (ws, task_status) = undeclared(AgentStatus::Working, true);
+    assert_eq!(ws["activity_undeclared"], json!(false));
+    assert_eq!(task_status, json!("running"));
+
+    // 非 bound（fe 沒有 binding）即使沒有目前 task 也是 false。
+    let store = scenario_c_store(AgentStatus::Working);
+    let domain = DomainState::from_projects(vec![scenario_c_project()]);
+    let value = serde_json::to_value(project(&store, &domain, 1, epoch_secs(0))).expect("序列化");
+    assert_eq!(
+        value["projects"][0]["workstreams"][1]["activity_undeclared"],
+        json!(false)
+    );
+}
+
+/// 兩份只差 `active_task` 的投影，`content_eq` 必須為 false（design D9：目前 task 改變要遞增
+/// version）。
+#[test]
+fn content_eq_is_sensitive_to_active_task() {
+    let store = scenario_c_store(AgentStatus::Idle);
+    let without = DomainState::from_projects(vec![scenario_c_project()]);
+    let mut with = without.clone();
+    with.set_active(
+        &ProjectId::new("p"),
+        &WorkstreamId::new("be"),
+        &TaskId::new("A"),
+    )
+    .expect("A 屬於 be");
+
+    let a = project(&store, &without, 1, epoch_secs(0));
+    let b = project(&store, &with, 1, epoch_secs(0));
+    assert!(a.content_eq(&a.clone()));
+    assert!(!a.content_eq(&b), "只差 active_task 的投影不應相等");
 }
 
 /// `binding` 另外四種狀態的欄位（spec 「Project 投影」）：`runtime_disconnected`／`unbound` 帶

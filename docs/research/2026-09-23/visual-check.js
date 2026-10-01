@@ -8498,6 +8498,9 @@ function craftCl1DefensiveState() {
   win.connection.protocol_warning = 'CL1：HERDR protocol 與 cockpit 預期的版本不同';
   const project = s.projects.find((p) => p.id === 'cockpit');
   project.tasks.find((t) => t.id === 'be-2').status = 'whatever';
+  // progress-model task 4.3：列首「工作中・未宣告 task」（.ff-undeclared）只在 activity_undeclared 為
+  // true 時才畫；cockpit 專案是預設選定、fixture 沒有 true 的 workstream，這裡設一個讓該規則有元素可對。
+  project.workstreams.find((w) => w.id === 'docs').activity_undeclared = true;
   return s;
 }
 

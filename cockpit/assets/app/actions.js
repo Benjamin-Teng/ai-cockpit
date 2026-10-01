@@ -178,7 +178,7 @@
     return "/api/projects/" + seg(project) + "/workstreams/" + seg(workstream) + "/override";
   }
 
-  var TASK_OPS = { advance: true, complete: true, fail: true, clear: true };
+  var TASK_OPS = { advance: true, retreat: true, complete: true, fail: true, clear: true };
 
   function perform(el) {
     var data = el.dataset;

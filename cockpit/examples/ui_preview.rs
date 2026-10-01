@@ -86,8 +86,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{post, put};
 use cockpit::http::{AppState, router};
 use cockpit_core::{
-    AgentRuntime, AgentStatus, OutputFormat, PaneId, PaneOutput, ProjectedPane, ProjectedState,
-    ProjectedTab, RuntimeError, RuntimeEvents, RuntimeId, RuntimeSnapshot, TabId,
+    AgentRuntime, AgentStatus, BindingSource, Mark, OutputFormat, PaneId, PaneOutput,
+    ProjectedBinding, ProjectedPane, ProjectedState, ProjectedTab, ProjectedTask,
+    ProjectedWorkstream, RuntimeError, RuntimeEvents, RuntimeId, RuntimeSnapshot, StageStatus,
+    TabId, TaskId, WorkstreamId,
 };
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -146,6 +148,7 @@ async fn main() -> anyhow::Result<()> {
         .context("file-review task 3.4：準備 review-repo／other-repo fixture 失敗")?;
     add_review_fixture_panes(&mut initial, &review_fixture)
         .context("file-review task 3.4：把 fixture pane 掛進假投影失敗")?;
+    apply_progress_scenarios(&mut initial);
 
     // R14 要在 `initial` 被搬進 `Arc::new` 之前先蒐集 pane id 集合，晚一步就借不到了。
     let known_panes = known_pane_ids(&initial);
@@ -1190,6 +1193,69 @@ fn add_review_fixture_panes(
     Ok(())
 }
 
+/// 每條 workstream 的目前 task：既有情境裡原本呈 `running`／`blocked` 的 task 設為其
+/// workstream 的目前 task（progress-model task 4.1；StageStatus 只有目前 task 才會跟 agent 狀態
+/// 變 running／blocked），讓既有畫面與驗收腳本的斷言不變。`(project, workstream, task)`。
+const PREVIEW_ACTIVE_TASKS: [(&str, &str, &str); 5] = [
+    ("cockpit", "be", "be-1"),
+    ("cockpit", "qa", "qa-1"),
+    ("p", "backend", "backend-1"),
+    ("p", "frontend", "frontend-1"),
+    ("p", "tests", "tests-1"),
+];
+
+/// 預覽用的進度情境（progress-model task 4.1）：
+///
+/// 1. 為 [`PREVIEW_ACTIVE_TASKS`] 的 workstream 填上 `active_task`；
+/// 2. 在 project `p`（Scenario D Demo）的 workstream／task 末尾附加：workstream `undeclared`
+///    綁定 `wJ:p1`（working）、沒有目前 task，投影 `activity_undeclared=true`；其下 task
+///    `undeclared-1`（stage `Implement`、`mark=none`、不在第一站）供「退回」按鈕驗收。不另開新
+///    project：`factory-floor-check.js` 斷言左欄恰好兩個 Project（spec 未改變）。
+///    新 task 為 `ready`、不是 running，不影響 p 的 running 節點數（3）。
+fn apply_progress_scenarios(state: &mut ProjectedState) {
+    for (project, workstream, task) in PREVIEW_ACTIVE_TASKS {
+        let ws = state
+            .projects
+            .iter_mut()
+            .find(|p| p.id.as_str() == project)
+            .and_then(|p| {
+                p.workstreams
+                    .iter_mut()
+                    .find(|w| w.id.as_str() == workstream)
+            })
+            .unwrap_or_else(|| panic!("fixture 缺少 workstream {project}/{workstream}"));
+        ws.active_task = Some(TaskId::new(task));
+    }
+
+    let p = state
+        .projects
+        .iter_mut()
+        .find(|p| p.id.as_str() == "p")
+        .expect("fixture 缺少 project p");
+    p.workstreams.push(ProjectedWorkstream {
+        id: WorkstreamId::new("undeclared"),
+        name: "Undeclared".to_string(),
+        binding: ProjectedBinding::Bound {
+            runtime: RuntimeId::new(OUTPUT_RUNTIME_ID),
+            pane_id: PaneId::new("wJ:p1"),
+            source: BindingSource::Auto,
+            agent: Some("claude".to_string()),
+            agent_status: AgentStatus::Working,
+        },
+        active_task: None,
+        activity_undeclared: true,
+    });
+    p.tasks.push(ProjectedTask {
+        id: TaskId::new("undeclared-1"),
+        title: "Retreat target".to_string(),
+        workstream: WorkstreamId::new("undeclared"),
+        stage: "Implement".to_string(),
+        mark: Mark::None,
+        status: StageStatus::Ready,
+        depends_on: Vec::new(),
+    });
+}
+
 /// `COCKPIT_PREVIEW_PUSH_MS`（正整數毫秒）→ 推送間隔；未設定為 2 秒。
 fn push_interval() -> anyhow::Result<Duration> {
     match env::var("COCKPIT_PREVIEW_PUSH_MS") {
@@ -2117,6 +2183,43 @@ mod tests {
         let missing = root.path().join("does-not-exist");
         // 不應該 panic；`fs::read_dir` 失敗時直接回傳。
         cleanup_stale_fixtures_with(&missing, |_| Some(false));
+    }
+
+    #[test]
+    fn apply_progress_scenarios_sets_active_tasks_and_adds_undeclared_workstream() {
+        let mut state: ProjectedState =
+            serde_json::from_str(FIXTURE).expect("fixture 應該能反序列化");
+        let before = state.projects.len();
+        apply_progress_scenarios(&mut state);
+
+        // 既有 running／blocked 的 task 都是其 workstream 的目前 task。
+        for project in &state.projects[..before] {
+            for task in project
+                .tasks
+                .iter()
+                .filter(|t| matches!(t.status, StageStatus::Running | StageStatus::Blocked))
+            {
+                let ws = project
+                    .workstreams
+                    .iter()
+                    .find(|w| w.id == task.workstream)
+                    .expect("task 的 workstream 存在");
+                assert_eq!(ws.active_task.as_ref(), Some(&task.id), "{}", task.id);
+            }
+        }
+
+        let p = state
+            .projects
+            .iter()
+            .find(|p| p.id.as_str() == "p")
+            .unwrap();
+        let ws = p.workstreams.last().unwrap();
+        assert_eq!(ws.id.as_str(), "undeclared");
+        assert!(ws.activity_undeclared && ws.active_task.is_none());
+        let task = p.tasks.last().unwrap();
+        assert_eq!(task.mark, Mark::None);
+        assert_ne!(task.stage, p.stages[0], "不在第一站");
+        assert_eq!(state.projects.len(), before, "不新增 project");
     }
 
     #[test]

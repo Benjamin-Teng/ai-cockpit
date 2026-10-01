@@ -776,6 +776,16 @@ body {
   font-size: var(--fs-meta);
 }
 
+/* 「工作中・未宣告 task」（progress-model task 4.3；spec「Factory Floor」）：列首綁定摘要之後
+   一行警示色文字，沿用既有 --warn token，不新增顏色、不加動畫與轉場。文字本身已說明狀態，
+   不靠顏色單獨傳達。 */
+.ff-undeclared {
+  min-width: 0;
+  font-size: var(--fs-meta);
+  color: var(--warn);
+  overflow-wrap: anywhere;
+}
+
 .ff-row-actions {
   display: flex;
   flex-wrap: wrap;

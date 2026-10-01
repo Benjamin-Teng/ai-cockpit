@@ -202,9 +202,12 @@ async function stopChrome(handle, label) {
 
 // 依 spec「畫面操作」算出某 task 節點應有的按鈕（data-action 集合，排序後比較）。
 function expectedTaskActions(project, task) {
+  const first = project.stages[0];
   const last = project.stages[project.stages.length - 1];
   const actions = [];
   if (task.mark === 'none') {
+    // progress-model task 4.2：spec「畫面操作」新增「退回」（mark 為 none 且不在第一個 stage）。
+    if (task.stage !== first) actions.push('retreat');
     if (task.stage !== last) actions.push('advance');
     actions.push('complete', 'fail');
   } else {
@@ -531,14 +534,16 @@ async function partPreview() {
       "[...document.querySelectorAll('[data-action=\"complete\"]')].map((b) => [b.dataset.project, b.dataset.task])"
     );
     check(
-      pTargets.length === 3,
-      `p 專案畫面上應該有 3 個「Completed」（實際 ${pTargets.length}：${JSON.stringify(pTargets)}）`
+      pTargets.length === 4,
+      `p 專案畫面上應該有 4 個「Completed」（實際 ${pTargets.length}：${JSON.stringify(pTargets)}）`
     );
     for (const [project, task] of pTargets) {
       await cdp.click(`[data-action="complete"][data-project="${project}"][data-task="${task}"]`, 150);
     }
+    // progress-model task 4.1：ui_preview 在 p 末尾新增 undeclared-1（mark=none，供「退回」驗收），
+    // p 的「Completed」從 3 個變 4 個、合計從 10 個變 11 個（仍涵蓋原本 10 個以上不同 task）。
     const chosen = cockpitTargets.concat(pTargets);
-    check(chosen.length === 10, `合計應該連按 10 個不同 task（實際 ${chosen.length}）`);
+    check(chosen.length === 11, `合計應該連按 11 個不同 task（實際 ${chosen.length}）`);
     const vAfter = await cdp.eval("Number(document.getElementById('version').textContent.slice(1))");
     check(
       vAfter - vBefore >= 10,

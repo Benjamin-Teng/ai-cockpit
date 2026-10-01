@@ -4,7 +4,9 @@
 //! `tokio::sync::Mutex` 內依序完成：
 //!
 //! 1. 從 `StoreHandle` 讀目前的 `DomainState`；
-//! 2. 以 `cockpit-core` 純函數算出新狀態（`apply_op`／`validate_override`），被拒絕就回錯、不落檔；
+//! 2. 在 `DomainState` 的 clone 上呼叫 core 的狀態轉移（`apply_progress`／`set_active`／
+//!    `set_override`／`remove_override`，目前 task 的清除規則都在那裡）與 `validate_override`，
+//!    被拒絕就回錯、不落檔；
 //! 3. 新狀態與目前相同（例如標記已是 none 時 clear、取消不存在的覆蓋）→ 成功、不落檔、不通知；
 //! 4. `spawn_blocking` 寫同目錄 `<檔名>.tmp` 再 `std::fs::rename` 取代狀態檔；
 //! 5. 落檔成功才 `StoreHandle::set_domain` 生效。
@@ -23,14 +25,14 @@ use std::sync::Arc;
 
 use cockpit_core::{
     DomainState, Override, ProgressOp, ProjectId, Rejection, StaleOverride, StoreHandle, TaskId,
-    TaskProgress, WorkstreamId, domain::binding::validate_override, domain::progress::apply_op,
+    TaskProgress, WorkstreamId, domain::binding::validate_override,
 };
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 
 use crate::progress::{STATE_FILE_VERSION, StateFile, StateOverride, StateProject, StateTask};
 
-/// 寫入失敗的原因；變體對應 HTTP 狀態碼：`Unknown*` → 404、`Rejected` → 409、
+/// 寫入失敗的原因；變體對應 HTTP 狀態碼：`Unknown*` → 404、`PaneNotBound` → 403、`Rejected` → 409、
 /// `Persist`／`Internal` → 500。
 #[derive(Debug, thiserror::Error)]
 pub enum WriteError {
@@ -55,6 +57,10 @@ pub enum WriteError {
         #[source]
         source: std::io::Error,
     },
+    /// 身分判定當時依據的覆蓋事實，在寫入鎖內重驗時已不成立（例如判定後使用者改綁或取消覆蓋）；
+    /// HTTP 層對應 403 `pane_not_bound`。
+    #[error("pane 已不再綁定到該 workstream")]
+    PaneNotBound,
     /// 執行寫入交易的 task 異常結束（panic 或 runtime 關閉時被取消）。
     #[error("寫入任務異常結束：{0}")]
     Internal(#[source] tokio::task::JoinError),
@@ -73,6 +79,31 @@ pub enum WriteStage {
 /// 測試用鉤子：在 blocking 執行緒上於落檔 IO 前後被呼叫，可藉此卡住或觀察寫入。
 #[doc(hidden)]
 pub type WriteHook = Arc<dyn Fn(WriteStage) + Send + Sync>;
+
+/// agent 端點判定 pane 身分時，那條 workstream 的綁定來源（review M1）。service 在寫入鎖內拿它
+/// 比對 Domain 的覆蓋，確認判定依據沒有在「讀投影」與「取得鎖」之間被改綁推翻；只看 Domain
+/// 狀態，不依賴 Runtime 層。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BindingBasis {
+    /// 判定時綁定來源是自動解析：要求鎖內仍然沒有覆蓋。
+    Auto,
+    /// 判定時綁定來源是覆蓋：要求鎖內覆蓋仍等於這筆。
+    Override(Override),
+}
+
+impl BindingBasis {
+    /// 鎖內重驗：`domain` 對 `(project, workstream)` 的覆蓋事實是否仍與判定依據一致。
+    fn holds(&self, domain: &DomainState, project: &ProjectId, workstream: &WorkstreamId) -> bool {
+        let current = domain
+            .overrides
+            .get(project)
+            .and_then(|m| m.get(workstream));
+        match self {
+            Self::Auto => current.is_none(),
+            Self::Override(expected) => current == Some(expected),
+        }
+    }
+}
 
 struct Inner {
     handle: StoreHandle,
@@ -122,26 +153,69 @@ impl ProgressService {
         let project = project.clone();
         let task = task.clone();
         self.write(move |domain| {
-            let def = find_project(domain, &project)?;
-            let task_def = def
-                .tasks
-                .iter()
-                .find(|t| t.id == task)
-                .ok_or_else(|| WriteError::UnknownTask(task.clone()))?;
-            let current = domain
-                .progress
-                .get(&project)
-                .and_then(|m| m.get(&task))
-                .cloned()
-                .unwrap_or_else(|| TaskProgress::initial(task_def));
-            let next = apply_op(def, &current, op)?;
-
             let mut new_domain = domain.clone();
-            new_domain
-                .progress
-                .entry(project)
-                .or_default()
-                .insert(task, next);
+            ensure_task(&mut new_domain, &project, &task)?;
+            new_domain.apply_progress(&project, &task, op)?;
+            Ok(new_domain)
+        })
+        .await
+    }
+
+    /// 宣告目前 task：把 `task` 設為其所屬 workstream 的目前 task（spec `agent-reporting`「宣告目前
+    /// task」；progress-model task 3.2，design D3）。重複宣告同一個 task 時狀態不變，成功、不落檔。
+    /// 「這個 pane 是否綁定到該 workstream」的身分判定在 HTTP 層（task 3.4），這裡只在鎖內以
+    /// `basis` 重驗判定依據的覆蓋事實（review M1），不符回 [`WriteError::PaneNotBound`]。
+    ///
+    /// # Errors
+    ///
+    /// project／task 不存在（[`WriteError::UnknownProject`]／[`WriteError::UnknownTask`]）、task 已有
+    /// 標記（[`WriteError::Rejected`]）、或狀態檔寫入失敗時回傳 [`WriteError`]；任何錯誤都不改記憶體。
+    pub async fn declare_active(
+        &self,
+        project: &ProjectId,
+        task: &TaskId,
+        basis: &BindingBasis,
+    ) -> Result<(), WriteError> {
+        let project = project.clone();
+        let task = task.clone();
+        let basis = basis.clone();
+        self.write(move |domain| {
+            let mut new_domain = domain.clone();
+            let workstream = ensure_task(&mut new_domain, &project, &task)?;
+            if !basis.holds(domain, &project, &workstream) {
+                return Err(WriteError::PaneNotBound);
+            }
+            new_domain.set_active(&project, &workstream, &task)?;
+            Ok(new_domain)
+        })
+        .await
+    }
+
+    /// agent 推進：同一筆交易先推進 `task` 的 stage、再把它設為所屬 workstream 的目前 task（spec
+    /// `agent-reporting`「agent 推進」；progress-model task 3.2）。兩步在同一把鎖內、只落檔一次；
+    /// 任一步被拒絕整筆不生效。身分判定與 `basis` 重驗同 [`ProgressService::declare_active`]。
+    ///
+    /// # Errors
+    ///
+    /// 同 [`ProgressService::declare_active`]；推進規則被拒絕（最後一站、已有標記）也走
+    /// [`WriteError::Rejected`]。
+    pub async fn agent_advance(
+        &self,
+        project: &ProjectId,
+        task: &TaskId,
+        basis: &BindingBasis,
+    ) -> Result<(), WriteError> {
+        let project = project.clone();
+        let task = task.clone();
+        let basis = basis.clone();
+        self.write(move |domain| {
+            let mut new_domain = domain.clone();
+            let workstream = ensure_task(&mut new_domain, &project, &task)?;
+            if !basis.holds(domain, &project, &workstream) {
+                return Err(WriteError::PaneNotBound);
+            }
+            new_domain.apply_progress(&project, &task, ProgressOp::Advance)?;
+            new_domain.set_active(&project, &workstream, &task)?;
             Ok(new_domain)
         })
         .await
@@ -167,11 +241,7 @@ impl ProgressService {
             handle.with_store(|store| validate_override(&override_, store))?;
 
             let mut new_domain = domain.clone();
-            new_domain
-                .overrides
-                .entry(project)
-                .or_default()
-                .insert(workstream, override_);
+            new_domain.set_override(&project, &workstream, override_);
             Ok(new_domain)
         })
         .await
@@ -192,7 +262,7 @@ impl ProgressService {
         self.write(move |domain| {
             ensure_workstream(domain, &project, &workstream)?;
             let mut new_domain = domain.clone();
-            remove_override(&mut new_domain, &project, &workstream);
+            new_domain.remove_override(&project, &workstream);
             Ok(new_domain)
         })
         .await
@@ -215,7 +285,7 @@ impl ProgressService {
                     .and_then(|m| m.get(&item.workstream))
                     == Some(&item.override_);
                 if still_same {
-                    remove_override(&mut new_domain, &item.project, &item.workstream);
+                    new_domain.remove_override(&item.project, &item.workstream);
                 }
             }
             if new_domain == current {
@@ -319,15 +389,28 @@ fn ensure_workstream(
     }
 }
 
-/// 刪除一筆覆蓋；該 project 已沒有任何覆蓋時連同外層項目移除，讓「沒有覆蓋」只有一種表示法
-/// （與載入時 `DomainState` 的形狀一致，相等比較才不會被空 map 干擾）。
-fn remove_override(domain: &mut DomainState, project: &ProjectId, workstream: &WorkstreamId) {
-    if let Some(map) = domain.overrides.get_mut(project) {
-        map.remove(workstream);
-        if map.is_empty() {
-            domain.overrides.remove(project);
-        }
-    }
+/// 確認 project 與 task 存在並回傳 task 所屬的 workstream；`new_domain.progress` 缺這個 task 的項目
+/// 時補初始進度，滿足 `DomainState::apply_progress` 的前置條件。
+fn ensure_task(
+    domain: &mut DomainState,
+    project: &ProjectId,
+    task: &TaskId,
+) -> Result<WorkstreamId, WriteError> {
+    let def = find_project(domain, project)?;
+    let task_def = def
+        .tasks
+        .iter()
+        .find(|t| &t.id == task)
+        .ok_or_else(|| WriteError::UnknownTask(task.clone()))?;
+    let workstream = task_def.workstream.clone();
+    let initial = TaskProgress::initial(task_def);
+    domain
+        .progress
+        .entry(project.clone())
+        .or_default()
+        .entry(task.clone())
+        .or_insert(initial);
+    Ok(workstream)
 }
 
 /// `DomainState` → 狀態檔形狀：所有 project 與其全部 task 都寫出，沒有覆蓋的 project 寫 `{}`。
@@ -371,9 +454,22 @@ fn to_state_file(domain: &DomainState) -> StateFile {
                         .collect()
                 })
                 .unwrap_or_default();
+            let active = domain
+                .active
+                .get(&def.id)
+                .map(|m| {
+                    m.iter()
+                        .map(|(ws, task)| (ws.as_str().to_string(), task.as_str().to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
             (
                 def.id.as_str().to_string(),
-                StateProject { tasks, overrides },
+                StateProject {
+                    tasks,
+                    overrides,
+                    active: Some(active),
+                },
             )
         })
         .collect::<BTreeMap<_, _>>();
