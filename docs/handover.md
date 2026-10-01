@@ -8,7 +8,7 @@
 
 ## 0. 三十秒版本
 
-1. **沒有 active change**，`main` 乾淨、無 feature 分支。下一段＝**推 remote 前的去識別化小 change**（第 2 節），開始前有兩件事要使用者先決定（第 4 節前兩列）。
+1. **沒有 active change**，`main` 乾淨、無 feature 分支。下一段＝**推 remote 前的去識別化小 change**（第 2 節），範圍與歷史處理方式已由使用者決定（第 4 節前兩列）。
 2. change 7、8 以 Opus 取代 Codex 都是使用者對該 change 的個別決定，**不延伸到下一個 change**；之後照 CLAUDE.md 一律 Codex（週限額
    2026-10-04 10:55 恢復，之前要審查就先問使用者）。
 
@@ -42,7 +42,7 @@
 - 範圍（現況已知）：`main` 上既有檔案含真實主機名／使用者名稱（`git grep -il` 以 `node -e "process.stdout.write(require('os').userInfo().username)"`、
   `os.hostname()` 取得的值搜，2026-10-02 命中 `docs/research/2026-09-13/` 四個檔與 archive `2026-09-15-attach-herdr-runtimes/tasks.md`）；PNG 要逐張看圖並
   grep 位元組；**git 歷史**中的舊截圖（change 6 `progress-700.png` 舊版）重拍清不掉，要另定歷史處理方式。
-- 開始前先問使用者第 4 節前兩列。
+- 已定：其他私人 repo 名稱換成代號；推 remote 前改寫歷史（先備份整個 repo）。
 - 流程：`git switch -c feat/<slug>` → 判斷是否需要 brainstorming（範圍明確時可直接 `/opsx:propose`，`tasks.md` 開頭寫執行路徑分流）→ apply → Codex 審查 → 併回。
 
 ## 3. 這一段踩過的坑
@@ -66,8 +66,8 @@ change 7 與更早仍有效的坑：`git show 1d3c475:docs/handover.md` 第 3 �
 
 | 決策 | 狀態 |
 |---|---|
-| 真機紀錄 `ui-fixes-live.md` 與真機截圖帶出使用者其他私人 repo 名稱 | **待使用者決定**是否列入去識別化範圍 |
-| 去識別化如何處理 **git 歷史**中的舊圖與檔案（重寫歷史或接受） | **待使用者決定** |
+| 真機紀錄 `ui-fixes-live.md` 與真機截圖帶出使用者其他私人 repo 名稱 | **已定**（使用者 2026-10-02）：列入去識別化，換成代號 |
+| 去識別化如何處理 **git 歷史**中的舊圖與檔案 | **已定**（使用者 2026-10-02）：推 remote 前改寫歷史，改寫前先備份整個 repo |
 | 色相歸色無彩門檻（change 8 審查 M1）：HERDR 改傳 256／真彩色前要不要先調 | **待使用者決定**，建議另開小 change |
 | Live Output 粗體 600 在 12px 等寬字與一般字差距小，是否改 700（spec 變更） | **待使用者決定** |
 | change 5b（Sonnet 驗收）、change 6／7／8（Opus 審查）未經 Codex | 要不要補審由使用者決定（5b `45f1174..427118b`、6 `e04644f..37005c1`、7、8 見各 archive） |
