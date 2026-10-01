@@ -111,5 +111,5 @@
 - [x] 5.2 全 gate：`cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test --workspace && cargo test -p cockpit --example ui_preview && markdownlint-cli2 "**/*.md" && openspec validate --all`
   與全部腳本（既有＋`ui-fixes-check.js`）；驗收＝輸出貼進 ledger，全綠
 - [x] 5.3 Codex 審查（整支分支）：`adversarial-review --base main`，處理方式同 3.7；驗收＝ledger 記錄結論段與每個 finding 的處理
-- [ ] 5.4 收尾：squash 併回 `main`、archive change、重寫 `docs/handover.md`（依 `~/.claude/guides/handover-template.md`）；
+- [x] 5.4 收尾：squash 併回 `main`、archive change、重寫 `docs/handover.md`（依 `~/.claude/guides/handover-template.md`）；
   驗收＝`openspec validate --all` 通過、`git status` 乾淨

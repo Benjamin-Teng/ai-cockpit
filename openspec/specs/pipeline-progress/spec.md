@@ -144,7 +144,8 @@
 
 系統必須在啟動時（Project 清單非空時）讀取狀態檔：檔案不存在 → 所有 task 用初始進度、沒有覆蓋、沒有目前 task，
 不立即建立檔案；`version` 為 1 → 依舊形狀（沒有 `active`）讀取，所有 workstream 沒有目前 task，下次寫入時寫成
-`version: 2`；檔案無法解析為對應版本的形狀、或 `version` 不是 1 或 2 → 啟動失敗，訊息含狀態檔路徑與原因；檔案
+`version: 2`；`version` 為 1 的檔案中，任一 project 出現 `active` 欄位（不論值為何，含 `null` 與空物件）即視為損毀，啟動失敗，
+訊息含狀態檔路徑與原因；檔案無法解析為對應版本的形狀、或 `version` 不是 1 或 2 → 啟動失敗，訊息含狀態檔路徑與原因；檔案
 中的 project、task、workstream 在設定檔不存在，或覆蓋的 `runtime` 不是設定檔中的 runtime → 忽略並記
 warn，下次寫入時不再寫出；`active` 中的項目指向設定檔不存在的 workstream 或 task、task 不屬於該 workstream、
 或 task 載入後的標記不是 `none`、或該 workstream 的覆蓋在這次載入中因無效而被忽略 → 忽略該項目並記 warn，下次寫入時不再寫出；task 的 `stage`
@@ -162,6 +163,18 @@ warn，下次寫入時不再寫出；`active` 中的項目指向設定檔不存�
 - **GIVEN** 狀態檔為 `{"version":1,"projects":{"p":{"tasks":{"t1":{"stage":"Build","mark":"none"}},"overrides":{}}}}`
 - **WHEN** 啟動後對 `t1` 做一次被接受的操作
 - **THEN** 啟動成功，`t1` 在 `Build`；新寫出的狀態檔 `version` 為 2，且 `p` 含 `active` 欄位
+
+#### Scenario: v1 檔出現 active 視為損毀
+
+- **GIVEN** 狀態檔為 `{"version":1,"projects":{"p":{"tasks":{"t1":{"stage":"Build","mark":"none"}},"overrides":{},"active":{}}}}`
+- **WHEN** 啟動
+- **THEN** 啟動失敗，訊息含狀態檔路徑與原因
+
+#### Scenario: v1 檔的 active 為 null 也視為損毀
+
+- **GIVEN** 狀態檔為 `{"version":1,"projects":{"p":{"tasks":{"t1":{"stage":"Build","mark":"none"}},"overrides":{},"active":null}}}`
+- **WHEN** 啟動
+- **THEN** 啟動失敗，訊息含狀態檔路徑與原因
 
 #### Scenario: 不支援的版本
 

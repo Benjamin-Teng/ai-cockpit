@@ -92,7 +92,8 @@
 `warnings`（字串陣列，無則空）、`workstreams`、`tasks`。每筆 workstream 含 `id`、`name`、`binding`、`active_task`
 （目前 task 的 id，無則 `null`）、`activity_undeclared`（布林）；`binding.state` 為 `none`、`runtime_disconnected`、
 `bound`、`unbound`、`ambiguous` 之一——
-`runtime_disconnected`、`unbound` 另帶 `runtime`；`ambiguous` 另帶 `runtime` 與 `candidates`（pane id
+`unbound` 另帶 `runtime`；`runtime_disconnected` 另帶 `runtime` 與 `source`（`auto`／`override`，
+與 `bound` 的 `source` 同義：這個斷線的綁定來自自動解析或使用者覆蓋）；`ambiguous` 另帶 `runtime` 與 `candidates`（pane id
 陣列）；`bound` 另帶 `runtime`、`pane_id`、`source`（`auto`／`override`）、`agent`（無則 `null`）、
 `agent_status`（小寫字串）。`activity_undeclared` 只在 `binding.state` 為 `bound`、`agent_status` 為 `working` 或
 `blocked`、且 `active_task` 為 `null` 時為 `true`，其餘為 `false`。每筆 task 含 `id`、`title`、`workstream`、`stage`
@@ -126,3 +127,15 @@ Runtime 層改變一樣觸發投影，並遵守「version 只在內容改變時�
 - **GIVEN** 投影 version 為 5
 - **WHEN** 一次進度操作被拒絕
 - **THEN** version 仍為 5，觀察者沒有收到新的一份
+
+#### Scenario: 覆蓋綁定的 runtime 斷線
+
+- **GIVEN** workstream `be` 的覆蓋指向 `wsl`／`w1:p1`，`wsl` 為 `disconnected`
+- **WHEN** 產生投影
+- **THEN** `be` 的 `binding` 為 `{"state":"runtime_disconnected","runtime":"wsl","source":"override"}`
+
+#### Scenario: 自動綁定的 runtime 斷線
+
+- **GIVEN** workstream `be` 沒有覆蓋、設定檔 binding 的 `runtime` 為 `wsl`，`wsl` 為 `disconnected`
+- **WHEN** 產生投影
+- **THEN** `be` 的 `binding` 為 `{"state":"runtime_disconnected","runtime":"wsl","source":"auto"}`
