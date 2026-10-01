@@ -14,6 +14,28 @@ const CHROME = process.env.COCKPIT_CHROME || 'C:\\Program Files\\Google\\Chrome\
 const PORT = 7770;
 const CDP_PORT = 18890;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// 去識別化（ui-fixes 修正波 2 W2-I2）：ui_preview 的 review fixture 把 pane cwd 放在真實 %TEMP% 底下，
+// 右欄會顯示 `C:\Users\<真實使用者名稱>\AppData\Local\Temp\…`。截圖前在頁面裝 MutationObserver，把文字節點中
+// `Users\` 之後的路徑段與真實使用者名稱、主機名稱換成 `<user>`；背景重畫一直重建節點，所以持續替換。
+// 只改文字內容，不動版面；名稱在執行時由 os 取得，不寫進 repo。
+const NAMES = [os.userInfo().username, os.hostname()].filter(Boolean);
+const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const MASK = `(() => {
+  const userRe = /(Users[\\\\/])[^\\\\/\\s]+/gi;
+  const nameRe = new RegExp(${JSON.stringify(NAMES.map(escRe).join('|'))}, 'gi');
+  const mask = (s) => s.replace(userRe, '$1<user>').replace(nameRe, '<user>');
+  const sweep = (root) => {
+    const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let n = w.nextNode(); n; n = w.nextNode()) {
+      const v = mask(n.nodeValue);
+      if (v !== n.nodeValue) n.nodeValue = v;
+    }
+  };
+  new MutationObserver(() => sweep(document.body)).observe(document.body, { childList: true, subtree: true, characterData: true });
+  sweep(document.body);
+  return true;
+})()`;
 const kill = (c) => c && c.exitCode === null && spawnSync('taskkill', ['/PID', String(c.pid), '/T', '/F']);
 
 async function main() {
@@ -62,12 +84,16 @@ async function main() {
       (await send('Runtime.evaluate', { expression, returnByValue: true })).result.result.value;
 
     for (let i = 0; i < 50 && !(await ev("!!document.querySelector('.task-node')")); i++) await sleep(200);
+    await ev(MASK);
     await ev("document.querySelector('[data-action=\"select-project\"][data-project=\"p\"]').dispatchEvent(new PointerEvent('pointerdown', {bubbles: true, button: 0})); true");
     for (let i = 0; i < 50 && !(await ev("!!document.querySelector('.ff-undeclared')")); i++) await sleep(100);
 
     for (const [w, h] of [[1536, 1300], [1100, 1400], [700, 1400]]) {
       await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
       await sleep(400);
+      const text = (await ev('document.body.textContent')).toLowerCase();
+      const hit = NAMES.filter((n) => text.includes(n.toLowerCase()));
+      if (hit.length) throw new Error(`截圖前頁面文字仍含真實使用者名稱或主機名稱（${hit.length} 個）`);
       const shot = await send('Page.captureScreenshot', { format: 'png' });
       const file = path.join(__dirname, `progress-${w}.png`);
       fs.writeFileSync(file, Buffer.from(shot.result.data, 'base64'));

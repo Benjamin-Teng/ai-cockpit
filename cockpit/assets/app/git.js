@@ -1136,6 +1136,7 @@
       tab.els.detailWrap = null;
     }
     tab.detailAnchorOid = null;
+    tab.detailFocusLost = null;
     tab.detailKind = null;
     tab.detailData = null;
     tab.detailStatus = "idle";
@@ -1154,6 +1155,8 @@
     }
     var wrap = document.createElement("div");
     wrap.className = "commit-detail";
+    wrap.tabIndex = -1; // ui-fixes task 4.8：重建後找不到對應元素時，焦點退到容器（不落到 body）
+    tab.detailFocusLost = null;
     rowObj.els.row.insertAdjacentElement("afterend", wrap);
     tab.els.detailWrap = wrap;
     tab.detailAnchorOid = rowObj.oid;
@@ -1171,10 +1174,17 @@
     return row;
   }
 
+  // ui-fixes task 4.8：詳情內可聚焦元素的穩定身分（元素種類＋檔案路徑／ref 名稱／oid／切換名稱）。
+  // 詳情隨時整份重建，重建前後靠它找回「代表同一個對象」的元素（renderGraphDetail）。
+  function setFocusKey(el, key) {
+    el.setAttribute("data-focus-key", key);
+  }
+
   function commitDetailCopyButton(tab, text, label) {
     var btn = document.createElement("button");
     btn.type = "button";
     btn.className = "action-button";
+    setFocusKey(btn, "copy:" + label);
     btn.textContent = "複製";
     btn.setAttribute("aria-label", "複製" + label);
     btn.addEventListener("click", function () {
@@ -1200,6 +1210,7 @@
     var btn = document.createElement("button");
     btn.type = "button";
     btn.className = "action-button";
+    setFocusKey(btn, "parent:" + oid);
     btn.textContent = shortHash(oid);
     btn.addEventListener("click", function () {
       jumpToGraphRow(tab, oid);
@@ -1223,6 +1234,7 @@
     row.className = "commit-detail-file-row";
     row.setAttribute("role", "button");
     row.tabIndex = 0;
+    setFocusKey(row, "file:" + entry.path);
     row.title = entry.path;
     var icon = document.createElement("img");
     icon.className = "tree-icon";
@@ -1249,6 +1261,7 @@
       var viewBtn = document.createElement("button");
       viewBtn.type = "button";
       viewBtn.className = "action-button";
+      setFocusKey(viewBtn, "view:" + entry.path);
       viewBtn.textContent = "看此版本";
       viewBtn.addEventListener("click", function (event) {
         event.stopPropagation();
@@ -1378,6 +1391,7 @@
     var baseBtn = document.createElement("button");
     baseBtn.type = "button";
     baseBtn.className = "action-button";
+    setFocusKey(baseBtn, "compare-base");
     baseBtn.textContent = "選為比較基準";
     baseBtn.addEventListener("click", function () {
       tab.compareBaseOid = body.oid;
@@ -1422,6 +1436,18 @@
       );
     });
     wrap.appendChild(filesList);
+    if (body.truncated === true) {
+      wrap.appendChild(truncatedFilesNote());
+    }
+  }
+
+  // ui-fixes task 4.7：檔案清單被後端截斷（`truncated` 為真）時，在清單末端顯示的提示；文案與樣式
+  // （.tree-note）同變更清單的 note row（desiredChangeRows），詳情與比較清單不是虛擬清單，所以另建元素。
+  function truncatedFilesNote() {
+    var note = document.createElement("div");
+    note.className = "tree-note";
+    note.textContent = "變更過多，只列出前面一部分";
+    return note;
   }
 
   function renderCompareDetail(tab, wrap) {
@@ -1440,6 +1466,7 @@
     var directBtn = document.createElement("button");
     directBtn.type = "button";
     directBtn.className = "action-button";
+    setFocusKey(directBtn, "toggle:direct");
     directBtn.textContent = "直接比較";
     directBtn.setAttribute("aria-pressed", tab.compareMode === "direct" ? "true" : "false");
     directBtn.addEventListener("click", function () {
@@ -1451,6 +1478,7 @@
     var forkBtn = document.createElement("button");
     forkBtn.type = "button";
     forkBtn.className = "action-button";
+    setFocusKey(forkBtn, "toggle:fork");
     forkBtn.textContent = "自分岔點起";
     forkBtn.setAttribute("aria-pressed", tab.compareMode === "fork" ? "true" : "false");
     forkBtn.addEventListener("click", function () {
@@ -1497,6 +1525,9 @@
       );
     });
     wrap.appendChild(filesList);
+    if (data.truncated === true) {
+      wrap.appendChild(truncatedFilesNote());
+    }
   }
 
   function renderGraphDetail(tab) {
@@ -1504,11 +1535,53 @@
       return;
     }
     var wrap = tab.els.detailWrap;
+    // ui-fixes task 4.8（design D7）：重建前若焦點在詳情內，記下身分；重建後找回對應元素，經共用的
+    // 焦點 helper 還原（最近輸入是滑鼠就不呈現焦點外框）。找不到時聚焦容器，不落到 body，並把身分留在
+    // tab 上：載入中的畫面還沒有檔案列，載入完成的下一次重建才找得回來。焦點本來就不在詳情內
+    // （使用者已移到別處）時不搶焦點。
+    var active = document.activeElement;
+    var focusKey = null;
+    var hadFocus = false;
+    // 修正波 1 F-M1：舊焦點元素原本匹配 :focus-visible（鍵盤使用者 Tab 到的）就保留外框。
+    var keepVisible =
+      !!window.cockpitFocus &&
+      typeof window.cockpitFocus.focusVisible === "function" &&
+      window.cockpitFocus.focusVisible(active);
+    if (active === wrap) {
+      hadFocus = true;
+      focusKey = tab.detailFocusLost;
+    } else if (active !== null && wrap.contains(active)) {
+      hadFocus = true;
+      focusKey = active.getAttribute("data-focus-key");
+    }
     wrap.replaceChildren();
     if (tab.detailKind === "single") {
       renderSingleCommitDetail(tab, wrap);
     } else if (tab.detailKind === "compare") {
       renderCompareDetail(tab, wrap);
+    }
+    tab.detailFocusLost = null;
+    if (!hadFocus) {
+      return;
+    }
+    var target = null;
+    if (focusKey) {
+      var keyed = wrap.querySelectorAll("[data-focus-key]");
+      for (var i = 0; i < keyed.length; i += 1) {
+        if (keyed[i].getAttribute("data-focus-key") === focusKey) {
+          target = keyed[i];
+          break;
+        }
+      }
+    }
+    if (target === null) {
+      tab.detailFocusLost = focusKey || null;
+      target = wrap;
+    }
+    if (window.cockpitFocus && typeof window.cockpitFocus.focus === "function") {
+      window.cockpitFocus.focus(target, keepVisible);
+    } else {
+      target.focus({ preventScroll: true });
     }
   }
 
@@ -1564,7 +1637,7 @@
         if (result.ok && result.body && Array.isArray(result.body.files)) {
           tab.detailStatus = "ok";
           tab.detailCode = null;
-          tab.detailData = { baseOid: baseOid, targetOid: targetOid, effectiveBase: effectiveBase, files: result.body.files };
+          tab.detailData = { baseOid: baseOid, targetOid: targetOid, effectiveBase: effectiveBase, files: result.body.files, truncated: result.body.truncated === true };
         } else {
           tab.detailStatus = "error";
           tab.detailCode = result.ok ? "unknown" : result.code;
@@ -1930,6 +2003,9 @@
   // refs 輪詢：偵測「分支已變更」用的假想 tips 計算（同 cockpit::git log_inner() 的起點規則，
   // 純為了跟 tab.tips 比對，不會真的拿去打 log 端點）——有篩選時＝各篩選 ref 目前的 oid（依
   // selectedRefs 的既定順序）；沒有篩選時＝refs 清單去重後的 oid＋HEAD（不在清單中才附加）。
+  // ui-fixes task 4.6（design D4）：沒有篩選時後端起點只收 `commit` 為真的 ref（指向 tree／blob 的 tag
+  // 不算），這裡必須同一條規則，否則 tips 永遠對不上、「分支已變更」永久誤報；有篩選時後端照篩選名取
+  // oid、不看 `commit`，這裡同樣不看。
   function computeExpectedTips(refsBody, selectedRefNames) {
     if (selectedRefNames.length > 0) {
       return selectedRefNames.map(function (name) {
@@ -1945,7 +2021,7 @@
     var seen = {};
     var tips = [];
     refsBody.refs.forEach(function (r) {
-      if (!seen[r.oid]) {
+      if (r.commit === true && !seen[r.oid]) {
         seen[r.oid] = true;
         tips.push(r.oid);
       }
@@ -2101,7 +2177,9 @@
     }
   }
 
-  function highlightGraphSearchCurrent(tab) {
+  // `scroll`：只有使用者移到下一筆／上一筆（Enter、Shift+Enter、上下按鈕）才傳 true 把命中列捲入可見
+  // 範圍；背景分批載入後重算命中只更新高亮（ui-fixes task 4.5，design D6），不拉動使用者的捲動位置。
+  function highlightGraphSearchCurrent(tab, scroll) {
     tab.rows.forEach(function (r) {
       if (r.els.row.classList.contains("is-search-hit")) {
         r.els.row.classList.remove("is-search-hit");
@@ -2110,7 +2188,9 @@
     if (tab.searchIndex >= 0) {
       var rowObj = tab.rows[tab.searchMatches[tab.searchIndex]];
       rowObj.els.row.classList.add("is-search-hit");
-      rowObj.els.row.scrollIntoView({ block: "nearest" });
+      if (scroll) {
+        rowObj.els.row.scrollIntoView({ block: "nearest" });
+      }
     }
   }
 
@@ -2142,7 +2222,7 @@
       tab.searchIndex = -1;
     }
     renderGraphSearchState(tab);
-    highlightGraphSearchCurrent(tab);
+    highlightGraphSearchCurrent(tab, false);
   }
 
   // delta > 0＝Enter／「下一筆」，< 0＝Shift+Enter／「上一筆」。尚未跳轉過（searchIndex === -1）
@@ -2157,7 +2237,7 @@
       tab.searchIndex = (tab.searchIndex + delta + tab.searchMatches.length) % tab.searchMatches.length;
     }
     renderGraphSearchState(tab);
-    highlightGraphSearchCurrent(tab);
+    highlightGraphSearchCurrent(tab, true);
   }
 
   function graphIdentity(fields) {
@@ -2352,10 +2432,11 @@
       compareMode: "direct", // "direct" | "fork"（僅在 detailKind === "compare" 時有意義）
       detailKind: null, // null | "single" | "compare"
       detailAnchorOid: null, // 詳情面板目前緊接在哪個 oid 的列後面，或 null（收合）
-      detailData: null, // single：commit 端點回應；compare：{baseOid, targetOid, effectiveBase, files}
+      detailData: null, // single：commit 端點回應；compare：{baseOid, targetOid, effectiveBase, files, truncated}
       detailStatus: "idle", // idle|loading|ok|error
       detailCode: null,
       detailReqGen: 0,
+      detailFocusLost: null, // ui-fixes task 4.8：重建時找不到對應元素、焦點退到容器的那個身分，等下次重建再找
       closed: false,
       els: {
         wrap: shell.els.wrap,

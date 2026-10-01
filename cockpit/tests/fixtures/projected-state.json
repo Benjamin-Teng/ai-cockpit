@@ -113,7 +113,8 @@
           "name": "Docs",
           "binding": {
             "state": "runtime_disconnected",
-            "runtime": "wsl"
+            "runtime": "wsl",
+            "source": "auto"
           }
         },
         {
@@ -260,7 +261,8 @@
           "name": "Tests",
           "binding": {
             "state": "runtime_disconnected",
-            "runtime": "wsl"
+            "runtime": "wsl",
+            "source": "auto"
           }
         }
       ],

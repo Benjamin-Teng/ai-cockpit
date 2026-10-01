@@ -468,7 +468,7 @@ fn to_state_file(domain: &DomainState) -> StateFile {
                 StateProject {
                     tasks,
                     overrides,
-                    active: Some(active),
+                    active: Some(Some(active)),
                 },
             )
         })

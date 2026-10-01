@@ -85,6 +85,67 @@
 // 以任何方式選定 pane（select()）時通知 files.js（`window.cockpitFiles.paneSelected`），由它切到 Live
 // Output 分頁；選取被清掉（取消選取、外部 clear()、pane 已不存在）時通知 `paneCleared`，不切換分頁。
 
+// 最後一次輸入方式與程式焦點 helper（ui-fixes task 4.2；design D1）：
+// 整頁重畫會 `replaceChildren` 換掉焦點所在的節點再用 `focus()` 還原。Chrome 的規則是：這次滑鼠
+// 操作若沒有讓任何元素被滑鼠聚焦（actions.js 的 pointerdown 委派 `preventDefault()` 並同步重畫，
+// 正是這種情況），之後的程式焦點就算 `:focus-visible`，畫出焦點外框。所以記下「最後一次輸入方式」：
+// `pointerdown` 設為 pointer、`keydown` 設為 keyboard，兩者都掛在 `document` 的 capture 階段——
+// 必須早於 `#app` 上 actions.js 的 pointerdown 委派（它會同步重畫），否則第一次點擊的重畫讀到的
+// 仍是舊值。最後輸入為 pointer 時程式焦點帶 `focusVisible: false`；其餘維持現狀（鍵盤操作的外框
+// 照常保留，所以不能無條件傳 false）。不支援 `focusVisible` 選項的瀏覽器會忽略它。
+// 兩個例外（ui-fixes 修正波 1）：
+//   - 單按 Alt／Ctrl／Meta 組合鍵不算鍵盤輸入（F-I1）：Chrome 原生的 :focus-visible 判定忽略它們，
+//     滑鼠點選後單按修飾鍵，原生按鈕的外框不會出現；若這裡把它記成 keyboard，下一次背景重畫的
+//     程式焦點就會畫出外框。Shift 算鍵盤（Shift+Tab 是導覽），不在忽略之列。
+//   - 呼叫端可傳 `keepVisible`（F-M1）：重畫前舊的焦點元素本來就匹配 :focus-visible（鍵盤使用者
+//     Tab 到的按鈕），之後即使有不移動焦點的滑鼠操作（按住捲軸之類，仍會觸發 pointerdown）
+//     也要保留外框，否則下一次重畫外框會憑空消失。`focusVisible(el)` 供呼叫端在重建前讀取。
+// 放在載入順序最前的 output.js 並掛成全域（比照 `window.liveOutput`／`window.onChannel`），
+// render.js、git.js 等後載入的檔案取用：`window.cockpitFocus.focus(el)`。這個 IIFE 必須在
+// 下面「#output 不存在就提早 return」之前，不受該分支影響。
+(function () {
+  "use strict";
+
+  var lastInput = null;
+
+  document.addEventListener(
+    "pointerdown",
+    function () {
+      lastInput = "pointer";
+    },
+    true
+  );
+  document.addEventListener(
+    "keydown",
+    function (event) {
+      if (event.altKey || event.ctrlKey || event.metaKey) {
+        return;
+      }
+      lastInput = "keyboard";
+    },
+    true
+  );
+
+  window.cockpitFocus = {
+    // 還原／交接焦點：永遠 preventScroll（不為了還原焦點捲動頁面）。
+    focus: function (el, keepVisible) {
+      var options = { preventScroll: true };
+      if (lastInput === "pointer" && keepVisible !== true) {
+        options.focusVisible = false;
+      }
+      el.focus(options);
+    },
+    // 元素此刻是否匹配 :focus-visible（不支援該選擇器的瀏覽器回 false）。
+    focusVisible: function (el) {
+      try {
+        return !!el && el.matches(":focus-visible");
+      } catch (e) {
+        return false;
+      }
+    },
+  };
+})();
+
 (function () {
   "use strict";
 
@@ -674,13 +735,13 @@
         rows[i].getAttribute("data-runtime") === target.runtime &&
         rows[i].getAttribute("data-pane") === target.paneId
       ) {
-        rows[i].focus({ preventScroll: true });
+        window.cockpitFocus.focus(rows[i]);
         if (document.activeElement === rows[i]) {
           return;
         }
       }
     }
-    outputSection.focus({ preventScroll: true });
+    window.cockpitFocus.focus(outputSection);
   }
 
   function setKnownPanes(panes) {

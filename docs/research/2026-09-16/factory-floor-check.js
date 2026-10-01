@@ -705,8 +705,12 @@ async function scenarioUnknownStatus() {
 
     // window.onState 是 render.js 唯一暴露的、會觸發 renderState 整頁重畫的入口；直接餵一個
     // 沒經過 Rust 型別系統的 JS 物件，模擬「協定加了目前版本不認得的新 status 值」。
+    // ui-fixes task 4.3：真實流程中 channel.js 一定先 onChannel('connected')（socket.onopen）才會有第一則
+    // onState；通道不是 connected 時 style.css 會把狀態色轉為最後已知的 --text-dim（spec cockpit-dashboard
+    // 「畫面整頁重畫」），而 render.js 的初值是 "connecting"。harness 沒有 channel.js，所以補上這個前置步驟，
+    // 讓下面比對的仍是「連線中」的狀態色。
     const evalResult = await cdp.send('Runtime.evaluate', {
-      expression: `window.onState(${JSON.stringify(SYNTHETIC_STATE)})`,
+      expression: `window.onChannel('connected'); window.onState(${JSON.stringify(SYNTHETIC_STATE)})`,
     });
     check(
       !evalResult.result || !evalResult.result.exceptionDetails,

@@ -155,9 +155,10 @@ pub struct Refs;
 
 impl private::Sealed for Refs {}
 
-/// `for-each-ref` 的 `--format`：refname、objectname、剝皮後的 objectname、symref，
-/// 以 NUL 分隔（design D4「附註 tag 以 `*objectname`（剝皮後的 commit）為準」）。
-const REFS_FORMAT: &str = "--format=%(refname)%00%(objectname)%00%(*objectname)%00%(symref)";
+/// `for-each-ref` 的 `--format`：refname、objectname、剝皮後的 objectname、objecttype、
+/// 剝皮後的 objecttype、symref，以 NUL 分隔（design D4「附註 tag 以 `*objectname`（剝皮後的
+/// 物件）為準」；ui-fixes task 3.1／design D4：型別欄位用來判斷是否為 commit）。
+const REFS_FORMAT: &str = "--format=%(refname)%00%(objectname)%00%(*objectname)%00%(objecttype)%00%(*objecttype)%00%(symref)";
 
 impl GitQuery for Refs {
     type Output = crate::refs::RefsOutput;
@@ -797,7 +798,7 @@ mod tests {
                 &calls[0][prefix_len..],
                 [
                     "for-each-ref",
-                    "--format=%(refname)%00%(objectname)%00%(*objectname)%00%(symref)",
+                    "--format=%(refname)%00%(objectname)%00%(*objectname)%00%(objecttype)%00%(*objecttype)%00%(symref)",
                     "refs/heads",
                     "refs/remotes",
                     "refs/tags",

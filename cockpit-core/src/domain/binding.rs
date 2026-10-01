@@ -48,6 +48,9 @@ pub enum BindingResolution {
     RuntimeDisconnected {
         /// 未連線的 runtime id。
         runtime: RuntimeId,
+        /// 這個斷線的綁定來源：覆蓋造成的為 `Override`，自動解析造成的為 `Auto`
+        /// （ui-fixes task 2.1；前端據此在斷線期間決定是否顯示「取消改綁」）。
+        source: BindingSource,
     },
     /// 恰好解析到一個 pane（自動解析或覆蓋）。
     Bound {
@@ -137,12 +140,18 @@ fn workspace_label_matches(
 fn resolve_auto(spec: &BindingSpec, store: &RuntimeStore) -> BindingResolution {
     let runtime = spec.runtime.clone();
     if !is_connected(store, &runtime) {
-        return BindingResolution::RuntimeDisconnected { runtime };
+        return BindingResolution::RuntimeDisconnected {
+            runtime,
+            source: BindingSource::Auto,
+        };
     }
     // `is_connected` 已確認 `runtime` 已登記（`connection()` 只在登記過才回 `Some`），
     // 這裡的 `state()` 理論上一定命中；仍防禦性地退回未連線，不 panic。
     let Some(state) = store.state(&runtime) else {
-        return BindingResolution::RuntimeDisconnected { runtime };
+        return BindingResolution::RuntimeDisconnected {
+            runtime,
+            source: BindingSource::Auto,
+        };
     };
 
     let mut candidates: Vec<(u64, PaneId)> = state
@@ -205,6 +214,7 @@ pub fn resolve_binding(
         return (
             BindingResolution::RuntimeDisconnected {
                 runtime: over.runtime.clone(),
+                source: BindingSource::Override,
             },
             false,
         );

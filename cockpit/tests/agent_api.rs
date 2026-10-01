@@ -527,10 +527,76 @@ async fn exited_or_wsl_same_id_pane_is_not_collision() {
     assert_eq!(status, StatusCode::NO_CONTENT);
 }
 
-/// review M1：改綁的 `PUT` 已 204 之後，舊 pane 立刻 `start`（投影可能還沒重算）必須被拒，
-/// 不能留下由已不屬於這條 workstream 的 agent 宣告的目前 task。
+/// spec「斷線 runtime 最後已知的 pane 仍參與撞號」（ui-fixes task 3.3）：`win2` 斷線後它最後已知的
+/// pane 樹照常保留在投影中，其中未 exited 的 `w1:p1` 仍算擁有者，與 `win` 撞號。這是現行行為的
+/// 回歸測試，加入時就是綠的（撞號判定本來就只看 pane 樹，不看連線狀態）。
 #[tokio::test]
-async fn stale_pane_start_right_after_rebind_is_403() {
+async fn disconnected_runtime_last_known_pane_still_collides() {
+    let dir = TempDir::new("collision-disconnected");
+    let project = ProjectDef {
+        id: ProjectId::new("p"),
+        name: "p".to_string(),
+        stages: vec!["Plan".to_string(), "Build".to_string()],
+        workstreams: vec![workstream("a", "win", "w1")],
+        tasks: vec![task("ta", "a", "Plan")],
+    };
+    let mut store = RuntimeStore::new();
+    add_runtime(&mut store, "win", &[("w1", "w1:p1")]);
+    add_runtime(&mut store, "win2", &[("w9", "w1:p1")]);
+    let (handle, state) = build_with(vec![project], store, &[], dir.path().join("s.json"));
+    handle
+        .set_connection(
+            &RuntimeId::new("win2"),
+            ConnectionState::Disconnected {
+                reason: "test".to_string(),
+                retry_in: Duration::from_secs(1),
+            },
+        )
+        .expect("runtime 已登記");
+    let router = http::router(state);
+    wait_bound(&router, "a").await;
+    wait_state(
+        &router,
+        "win2 已斷線但保留最後已知的 pane",
+        |s| {
+            s["runtimes"]
+                .as_array()
+                .and_then(|rs| rs.iter().find(|r| r["id"] == "win2"))
+                .is_some_and(|r| {
+                    r["connection"]["state"] == "disconnected"
+                        && r["workspaces"][0]["tabs"][0]["panes"][0]["id"] == "w1:p1"
+                })
+        },
+    )
+    .await;
+
+    let (status, body) = agent(&router, "GET", "/api/agent/tasks", "w1:p1").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["workstreams"], json!([]));
+    let (status, body) = agent(
+        &router,
+        "POST",
+        "/api/agent/projects/p/tasks/ta/start",
+        "w1:p1",
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "pane_not_bound");
+    assert!(handle.with_domain(|d| d.active.is_empty()));
+}
+
+/// review M1：改綁的 `PUT` 已 204 之後，舊 pane 立刻 `start` 必須被拒，不能留下由已不屬於這條
+/// workstream 的 agent 宣告的目前 task。
+///
+/// 這個測試驗的範圍是端到端結果：`403 pane_not_bound`、且 `be` 沒有目前 task。它**分不出**請求
+/// 是被哪一條路擋下的：投影還沒重算時由 service 的鎖內重驗擋下，或投影已追上時由 handler 的
+/// 綁定判定擋下，兩條路結果相同，且哪條發生取決於時序（ui-fixes task 3.5、design D10）。要確定性
+/// 地證明鎖內重驗有效，看 service 層的 basis 測試（不經投影、直接造出「判定依據已不成立」）：
+/// `cockpit/tests/progress_service.rs` 的
+/// `declare_active_rejects_when_binding_basis_no_longer_holds`（`start` 路徑）與
+/// `agent_advance_rejects_when_binding_basis_no_longer_holds`（`advance` 路徑）。
+#[tokio::test]
+async fn start_from_old_pane_after_rebind_leaves_no_active_task() {
     let dir = TempDir::new("rebind-race");
     let (handle, state) = build(dir.path().join("state.json"));
     let router = http::router(state);

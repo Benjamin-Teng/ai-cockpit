@@ -278,8 +278,8 @@ fn content_eq_is_sensitive_to_active_task() {
     assert!(!a.content_eq(&b), "只差 active_task 的投影不應相等");
 }
 
-/// `binding` 另外四種狀態的欄位（spec 「Project 投影」）：`runtime_disconnected`／`unbound` 帶
-/// `runtime`，`ambiguous` 帶 `runtime` 與 `candidates`，覆蓋的 `source` 為 `override`，warnings
+/// `binding` 另外四種狀態的欄位（spec 「Project 投影」）：`unbound` 帶 `runtime`，
+/// `runtime_disconnected` 帶 `runtime` 與 `source`（自動為 `auto`、覆蓋為 `override`），`ambiguous` 帶 `runtime` 與 `candidates`，覆蓋的 `source` 為 `override`，warnings
 /// 與 mark 原樣輸出。
 #[test]
 fn binding_variants_and_domain_fields_serialize() {
@@ -314,6 +314,12 @@ fn binding_variants_and_domain_fields_serialize() {
             agent: None,
         }),
     });
+    // 覆蓋指向未登記的 wsl → 同樣是 runtime_disconnected，但來源為 override。
+    project_def.workstreams.push(WorkstreamDef {
+        id: WorkstreamId::new("ovr"),
+        name: "ovr".to_string(),
+        binding: None,
+    });
 
     let mut store = scenario_c_store(AgentStatus::Idle);
     let win = runtime_id("win");
@@ -341,6 +347,13 @@ fn binding_variants_and_domain_fields_serialize() {
         Override {
             runtime: win.clone(),
             pane_id: pane_id("wJ:p2"),
+        },
+    );
+    domain.overrides.entry(pid.clone()).or_default().insert(
+        WorkstreamId::new("ovr"),
+        Override {
+            runtime: runtime_id("wsl"),
+            pane_id: pane_id("w1:p1"),
         },
     );
     domain
@@ -374,7 +387,11 @@ fn binding_variants_and_domain_fields_serialize() {
     );
     assert_eq!(
         p["workstreams"][2]["binding"],
-        json!({"state": "runtime_disconnected", "runtime": "wsl"})
+        json!({"state": "runtime_disconnected", "runtime": "wsl", "source": "auto"})
+    );
+    assert_eq!(
+        p["workstreams"][4]["binding"],
+        json!({"state": "runtime_disconnected", "runtime": "wsl", "source": "override"})
     );
     assert_eq!(
         p["workstreams"][3]["binding"],

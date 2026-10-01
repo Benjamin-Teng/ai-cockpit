@@ -572,11 +572,55 @@ async fn refs_scenario_branches_remote_and_tag() {
     assert_eq!(tag["kind"], "tag");
     assert_eq!(tag["oid"], main_oid);
     assert!(
+        refs.iter().all(|r| r["commit"] == true),
+        "此 scenario 的所有 ref 都指向 commit：{refs:?}"
+    );
+    assert!(
         !refs
             .iter()
             .any(|r| r["name"].as_str().unwrap_or("").starts_with("refs/stash")),
         "不應有任何 refs/stash 項目：{refs:?}"
     );
+}
+
+/// ui-fixes task 3.1，Scenario: tag 指向非 commit 的物件（refs 端點）＋預設起點不含該 oid
+/// （commit 清單端點）。真實 repo 建一個輕量 tag 指向 tree：refs 仍列出、`commit` 為 false，
+/// 預設 log 不因壞起點整個失敗、`tips` 不含該 tree 的 oid。
+#[tokio::test]
+async fn refs_and_default_log_handle_tag_pointing_at_tree() {
+    let tmp = TempDir::new("refs-tree-tag");
+    let repo = init_repo(&tmp, "repo");
+    write_file(&repo, "a.txt", b"1");
+    let main_oid = commit_all(&repo, "base");
+    let tree_oid = git_ok(&repo, &["rev-parse", "HEAD^{tree}"]);
+    git_ok(&repo, &["tag", "tree-tag", &tree_oid]);
+
+    let fx = Fixture::new(&repo);
+    let reply = fx.get("/refs").await;
+    assert_eq!(reply.status, StatusCode::OK, "本體：{}", reply.raw);
+    let refs = reply.json["refs"].as_array().expect("refs 應為陣列");
+    let find = |name: &str| {
+        refs.iter()
+            .find(|r| r["name"] == name)
+            .unwrap_or_else(|| panic!("找不到 {name}：{refs:?}"))
+    };
+    let tree_tag = find("refs/tags/tree-tag");
+    assert_eq!(tree_tag["kind"], "tag");
+    assert_eq!(tree_tag["oid"], tree_oid);
+    assert_eq!(tree_tag["commit"], false);
+    assert_eq!(find("refs/heads/main")["commit"], true);
+    assert_eq!(find("refs/heads/main")["oid"], main_oid);
+
+    let log = fx.get("/log").await;
+    assert_eq!(log.status, StatusCode::OK, "本體：{}", log.raw);
+    let tips: Vec<&str> = log.json["tips"]
+        .as_array()
+        .expect("tips 應為陣列")
+        .iter()
+        .map(|v| v.as_str().expect("tip 應為字串"))
+        .collect();
+    assert_eq!(tips, [main_oid.as_str()], "tips 不得含 tree 的 oid");
+    assert_eq!(log.json["rows"].as_array().expect("rows").len(), 1);
 }
 
 // ===========================================================================

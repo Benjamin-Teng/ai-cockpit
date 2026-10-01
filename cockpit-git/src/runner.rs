@@ -286,15 +286,7 @@ impl GitRunner {
             .split_first()
             .expect("argv 不應為空（GitQuery::commands 的實作保證每個呼叫至少有程式名）");
 
-        let mut cmd = Command::new(program);
-        cmd.args(rest);
-        cmd.stdin(Stdio::null());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-        cmd.kill_on_drop(true);
-        #[cfg(windows)]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-
+        let mut cmd = build_command(program, rest);
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(io) => return Err(RunnerError::Unavailable(io)),
@@ -318,6 +310,49 @@ impl GitRunner {
             }
         }
     }
+}
+
+/// git 自己定義的「repo 區域」環境變數（`git rev-parse --local-env-vars` 的輸出；2026-10-01 於
+/// git 2.50.1 實測 15 個，ui-fixes design D5）。呼叫端行程若帶著其中任何一個（例如從 git hook
+/// 或帶 `GIT_DIR` 的環境啟動 Cockpit），會讓 `git -C <root>` 讀到別的 repo，所以建立子行程時一律
+/// 移除。清單寫死在這裡，由單元測試對照本機 git 的輸出確保涵蓋（git 升級新增變數時測試會紅）。
+const LOCAL_ENV_VARS: &[&str] = &[
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+];
+
+/// 建立一次 git 呼叫的 [`Command`]（`run_one` 與單元測試共用，讓測試能用
+/// `as_std().get_envs()` 檢查環境設定）。
+fn build_command(program: &str, rest: &[String]) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.args(rest);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd.kill_on_drop(true);
+    // ui-fixes task 3.2 / design D5：不論本機或 WSL 一律套用（對 `wsl.exe` 移除這些變數、設
+    // `LC_ALL` 都無害；WSL 端既有的 `env LC_ALL=C` 前綴與 argv 不變）。`LC_ALL=C` 讓
+    // dubious ownership 的判別字串不受使用者語系影響。
+    for name in LOCAL_ENV_VARS {
+        cmd.env_remove(name);
+    }
+    cmd.env("LC_ALL", "C");
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
 }
 
 /// spawn 之後、分類之前的原始結果。
@@ -479,9 +514,58 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{QueryPlan, RunnerError};
+    use super::{LOCAL_ENV_VARS, QueryPlan, RunnerError, build_command};
     use crate::query::{ChangedFiles, GitQuery, Status};
     use crate::{GitTarget, Side};
+
+    /// ui-fixes task 3.2 / design D5 ①：寫死的清單涵蓋本機 git 的 `--local-env-vars` 全部輸出。
+    /// 找不到 git 時 panic（測試失敗而非略過，避免 gate 假綠；同 `tests/real_git.rs`）。
+    #[test]
+    fn local_env_vars_cover_git_local_env_vars_output() {
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", "--local-env-vars"])
+            .output()
+            .expect("啟動 git 失敗——測試環境應已安裝 git");
+        assert!(
+            out.status.success(),
+            "git rev-parse --local-env-vars 應成功"
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let reported: Vec<&str> = stdout
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        assert!(!reported.is_empty(), "git 應至少回報一個變數");
+        let missing: Vec<&&str> = reported
+            .iter()
+            .filter(|name| !LOCAL_ENV_VARS.contains(name))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "寫死清單缺少 git 回報的變數：{missing:?}"
+        );
+    }
+
+    /// ui-fixes task 3.2 / design D5 ②：建出的命令移除清單中每個變數、`LC_ALL` 為 `C`。
+    /// 在 `std` 的 `get_envs()` 裡，被移除的變數以 `(key, None)` 表示。
+    #[test]
+    fn build_command_removes_local_env_vars_and_sets_lc_all() {
+        let cmd = build_command("git", &["status".to_string()]);
+        let envs: std::collections::HashMap<_, _> = cmd.as_std().get_envs().collect();
+        for name in LOCAL_ENV_VARS {
+            assert_eq!(
+                envs.get(std::ffi::OsStr::new(name)),
+                Some(&None),
+                "{name} 應被明確移除"
+            );
+        }
+        assert_eq!(
+            envs.get(std::ffi::OsStr::new("LC_ALL")),
+            Some(&Some(std::ffi::OsStr::new("C"))),
+            "LC_ALL 應為 C"
+        );
+    }
 
     fn native() -> GitTarget {
         GitTarget::Native {

@@ -509,6 +509,53 @@ fn v1_file_with_active_field_is_rejected() {
     );
 }
 
+/// 斷言載入失敗為 `Parse`，且訊息同時含狀態檔路徑與 `active`（spec「狀態檔載入與容錯」：訊息含路徑與原因）。
+fn assert_active_rejected_with_path(tag: &str, json: &str) {
+    let dir = TempDir::new(tag);
+    let config = load_config(&dir, ACTIVE_CONFIG);
+    let path = state_path(&config);
+    fs::write(&path, json).expect("寫入狀態檔");
+    let runtimes = runtime_ids(&config);
+
+    let error = progress::load_progress(&path, config.projects.clone(), &runtimes)
+        .expect_err("應視為損毀、啟動失敗");
+
+    assert!(matches!(error, ProgressError::Parse { .. }), "{error:?}");
+    let message = error.to_string();
+    assert!(
+        message.contains(&path.display().to_string()),
+        "訊息應含狀態檔路徑：{message}"
+    );
+    assert!(message.contains("active"), "訊息應指出 active：{message}");
+}
+
+/// ui-fixes task 3.4：v1 的 `"active": null` 不得被當成欄位缺席而放行（先紅後綠）。
+#[test]
+fn v1_file_with_null_active_is_rejected() {
+    assert_active_rejected_with_path(
+        "v1-null-active",
+        r#"{"version": 1, "projects": {"p": {"tasks": {}, "overrides": {}, "active": null}}}"#,
+    );
+}
+
+/// ui-fixes task 3.4 回歸：v1 的 `"active": {}` 一直是損毀。
+#[test]
+fn v1_file_with_empty_object_active_is_rejected_with_path() {
+    assert_active_rejected_with_path(
+        "v1-empty-active",
+        r#"{"version": 1, "projects": {"p": {"tasks": {}, "overrides": {}, "active": {}}}}"#,
+    );
+}
+
+/// ui-fixes task 3.4 回歸：v2 的 `"active": null` 維持損毀（型別改成雙層 Option 後不能放行）。
+#[test]
+fn v2_file_with_null_active_is_rejected() {
+    assert_active_rejected_with_path(
+        "v2-null-active",
+        r#"{"version": 2, "projects": {"p": {"tasks": {}, "overrides": {}, "active": null}}}"#,
+    );
+}
+
 #[test]
 fn v2_file_without_active_field_is_rejected() {
     let error = load_active_config(

@@ -50,9 +50,15 @@
 //   git-review/開啟並分批載入                    Git Graph 分頁（task 4.4）
 //   git-review/搜尋跳轉                          Git Graph 分頁（task 4.4）
 //   git-review/分支變更提示                      Git Graph 分頁（task 4.4）
+//   git-review/搜尋命中後背景載入不拉動捲動      Git Graph 分頁（ui-fixes task 4.5）
+//   git-review/有非 commit tag 時不誤報分支變更  Git Graph 分頁（ui-fixes task 4.6）
 //   git-review/重畫不影響 Git Graph               Git Graph 分頁（task 4.4）
 //   git-review/看 commit 的變更並開 diff          commit 詳情與比較（task 4.5）
 //   git-review/比較兩個 commit                    commit 詳情與比較（task 4.5）
+//   git-review/commit 詳情檔案清單被截斷         commit 詳情與比較（ui-fixes task 4.7）
+//   git-review/兩個 commit 比較的檔案清單被截斷  commit 詳情與比較（ui-fixes task 4.7）
+//   git-review/詳情重建後焦點留在對應元素        commit 詳情與比較（ui-fixes task 4.8）
+//   git-review/滑鼠觸發的詳情重建不呈現焦點外框  commit 詳情與比較（ui-fixes task 4.8）
 //   git-review/複製 hash                          commit 詳情與比較（task 4.5）
 //   git-review/看舊版規格                          某版本檔案分頁（task 4.5）
 //   git-review/commit 版本不輪詢                   某版本檔案分頁（task 4.5）
@@ -359,6 +365,16 @@ class CDP {
     await this.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base });
     return true;
   }
+  // 真實按鍵（keyDown＋keyUp；ui-fixes task 4.8 起：詳情重建焦點段需要 Tab／Enter 的真實鍵盤輸入）。
+  async press(name) {
+    const keys = {
+      Tab: { key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 },
+      Enter: { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' },
+    };
+    const k = keys[name];
+    await this.send('Input.dispatchKeyEvent', { type: 'keyDown', ...k });
+    await this.send('Input.dispatchKeyEvent', { type: 'keyUp', key: k.key, code: k.code, windowsVirtualKeyCode: k.windowsVirtualKeyCode });
+  }
 }
 
 async function startChrome(cdpPort, url, label, windowSize = '1536,1024') {
@@ -544,6 +560,33 @@ function addChainedEmptyCommits(repoDir, branchName, subjects) {
   });
   gitTemp(repoDir, ['update-ref', `refs/heads/${branchName}`, parent]);
   return parent;
+}
+
+// ui-fixes task 4.7：造一個「變更檔案多到後端截斷」的 commit。後端截斷來自執行器的 stdout 位元組上限
+// （cockpit-git/src/query.rs 的 CHANGED_FILES_STDOUT_CAP＝4 MiB，commit 詳情與兩點比較共用；不為測試
+// 在產品程式加可設定的上限），所以檔案數用實際上限推算：name-status／numstat 每個檔案各佔「路徑長度＋
+// 3～5 位元組」，N = 上限 / (路徑長度＋3) 再加餘裕，兩個輸出都一定超過上限。路徑刻意拉長（約 1600
+// 字元、四層各約 400）讓需要的檔案數降到數千個，詳情清單不是虛擬清單，檔案數太多會讓 DOM 過重。
+// 用一次 `git fast-import` 在暫存副本 repo 疊在 HEAD 上、指到新分支 `branchName`（只建物件與 ref，
+// 不動工作區與 index）；commit 時間用現在，確保排在 Git Graph 最前面（fixture 歷史是 2026 年初）。
+// 所有檔案共用同一個空 blob，stream 只有路徑本身的大小。
+const CHANGED_FILES_STDOUT_CAP = 4 * 1024 * 1024;
+function addHugeChangeCommit(repoDir, branchName) {
+  const base = gitTemp(repoDir, ['rev-parse', 'HEAD']);
+  const dirs = ['a', 'b', 'c'].map((c) => c.repeat(400));
+  const pathOf = (i) => `${dirs.join('/')}/${'f'.repeat(380)}${String(i).padStart(6, '0')}`;
+  const pathLen = pathOf(0).length;
+  const count = Math.ceil(CHANGED_FILES_STDOUT_CAP / (pathLen + 3)) + 50;
+  const ts = Math.floor(Date.now() / 1000);
+  const ident = `git-check <git-check@invalid> ${ts} +0000`;
+  const message = 'git-check: 變更檔案多到被後端截斷的 commit';
+  const parts = [`blob\nmark :1\ndata 0\n\n`, `commit refs/heads/${branchName}\nauthor ${ident}\ncommitter ${ident}\ndata ${Buffer.byteLength(message)}\n${message}\nfrom ${base}\n`];
+  for (let i = 0; i < count; i += 1) parts.push(`M 100644 :1 ${pathOf(i)}\n`);
+  parts.push('\n');
+  verifyTempRepoToplevel(repoDir);
+  const r = spawnSync('git', ['-C', repoDir, 'fast-import', '--quiet'], { input: parts.join(''), encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  if (r.status !== 0) throw new Error(`git fast-import 於 ${repoDir} 失敗：${r.stderr}`);
+  return { oid: gitTemp(repoDir, ['rev-parse', `refs/heads/${branchName}`]), count, base };
 }
 
 // ---------------------------------------------------------------------------
@@ -1083,8 +1126,8 @@ async function segSelfSegmentArg() {
     check(good, `parseSegmentArg(${JSON.stringify(c.arg)}) → ${c.ok ? '通過' : '拒絕'}（實際 ${JSON.stringify(r).slice(0, 160)}）`);
   }
   check(
-    known.filter((c) => c.startsWith('git-review/')).length === 21,
-    'git-review/ 前綴恰好選中 21 段（task 4.2 三段＋fix round 2 一段＋task 4.3 三段＋目視驗收缺陷修正兩段＋task 4.4 四段＋task 4.5 五段＋code review 缺陷 M1/M2/M3 三段）'
+    known.filter((c) => c.startsWith('git-review/')).length === 27,
+    'git-review/ 前綴恰好選中 27 段（task 4.2 三段＋fix round 2 一段＋task 4.3 三段＋目視驗收缺陷修正兩段＋task 4.4 四段＋task 4.5 五段＋code review 缺陷 M1/M2/M3 三段＋ui-fixes task 4.5／4.6 兩段＋ui-fixes task 4.7 兩段＋ui-fixes task 4.8 兩段）'
   );
   for (const arg of ['git-review/不存在', '']) {
     const r = spawnSync(process.execPath, [__filename, arg], { encoding: 'utf8', timeout: 30000, windowsHide: true });
@@ -2046,6 +2089,275 @@ async function segSearchJump() {
   );
 }
 
+// ui-fixes task 4.5（spec「搜尋命中後背景載入不拉動捲動」）GIVEN Git Graph 已載入前 200 列，搜尋後按
+// Enter 跳到位於清單前段的第一筆命中，接著往下捲到清單底部 WHEN 因捲到底部而載入下一批 THEN 載入完成後
+// `scrollTop` 與載入前相同、「第 i／共 n 筆」的 i 不變、n 反映新的命中數；再按 Enter 後下一筆命中列才被
+// 捲入可見範圍並標示。
+// fixture：疊在 HEAD 上開新分支（addChainedEmptyCommits），由上而下＝40 個無關 commit、命中 X（第 41 列）、
+// 169 個無關 commit、命中 Y（第 211 列，落在第二批）；X 與 Y 相距很遠，Enter 才看得出「捲到下一筆」。
+async function segSearchBackgroundLoadNoScroll() {
+  const HIT = 'git-check-scroll-hit';
+  await withCockpit(
+    'search-bg-load',
+    {
+      beforeLoad: (preview) => {
+        const subjects = [`${HIT} Y`];
+        for (let i = 0; i < 169; i += 1) subjects.push(`git-check-plain-lower ${i}`);
+        subjects.push(`${HIT} X`);
+        for (let i = 0; i < 40; i += 1) subjects.push(`git-check-plain-upper ${i}`);
+        addChainedEmptyCommits(preview.reviewRepo, 'git-check-scroll', subjects);
+      },
+    },
+    async (ctx) => {
+      const root = await rootInfo(ctx, PANE_REVIEW);
+      await openChanges(ctx);
+      await openGraphTab(ctx, root);
+      const loaded = await ctx.cdp.poll((rid) => window.__gc.graphRows(window.__gc.graphPanelOf(rid)).length >= 200, [root.root_id], UI_TIMEOUT_MS);
+      need(!!loaded, '第一批 200 列載入完成');
+      const rows0 = await ctx.cdp.run((rid) => window.__gc.graphRows(window.__gc.graphPanelOf(rid)).length, root.root_id);
+      need(rows0 === 200, `前置：此時恰好 200 列（尚未載入第二批；實際 ${rows0}）`);
+
+      need(await ctx.cdp.clickEl((rid) => window.__gc.graphSearchInput(window.__gc.graphPanelOf(rid)), [root.root_id], '搜尋框'), '點搜尋框');
+      await ctx.cdp.run((rid, q) => {
+        const input = window.__gc.graphSearchInput(window.__gc.graphPanelOf(rid));
+        input.value = q;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        return true;
+      }, root.root_id, HIT);
+      const typed = await ctx.cdp.poll((rid) => window.__gc.graphSearchCount(window.__gc.graphPanelOf(rid)) === '共 1 筆', [root.root_id], UI_TIMEOUT_MS);
+      need(!!typed, '輸入後顯示「共 1 筆」（第二批的命中 Y 尚未載入）');
+
+      async function pressEnter() {
+        await ctx.cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter' });
+        await ctx.cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter' });
+      }
+      await pressEnter();
+      const jumped = await ctx.cdp.poll((rid) => window.__gc.graphSearchCount(window.__gc.graphPanelOf(rid)) === '第 1／共 1 筆', [root.root_id], UI_TIMEOUT_MS);
+      need(!!jumped, 'Enter 後顯示「第 1／共 1 筆」');
+      const hitX = await ctx.cdp.run((rid) => {
+        const p = window.__gc.graphPanelOf(rid);
+        const el = p.querySelector('.is-search-hit');
+        const sc = window.__gc.graphScroller(p);
+        return { subject: el ? window.__gc.txt(el.querySelector('.graph-subject')) : null, scrollTop: sc.scrollTop };
+      }, root.root_id);
+      need(hitX.subject === `${HIT} X` && hitX.scrollTop > 0, `前置：Enter 跳到前段命中 X 且清單已捲離頂端（實際 ${JSON.stringify(hitX)}）`);
+
+      // 捲到清單底部，離開命中列並觸發下一批載入；記下載入前的 scrollTop。
+      const before = await ctx.cdp.run((rid) => {
+        const sc = window.__gc.graphScroller(window.__gc.graphPanelOf(rid));
+        sc.scrollTop = sc.scrollHeight;
+        return sc.scrollTop;
+      }, root.root_id);
+      const batch2 = await ctx.cdp.poll((rid) => window.__gc.graphRows(window.__gc.graphPanelOf(rid)).length > 200, [root.root_id], UI_TIMEOUT_MS);
+      need(!!batch2, '捲到底部後載入了下一批（列數超過 200）');
+      const countUpdated = await ctx.cdp.poll((rid) => /共 2 筆/.test(window.__gc.graphSearchCount(window.__gc.graphPanelOf(rid))), [root.root_id], UI_TIMEOUT_MS);
+      check(!!countUpdated, 'n 反映新的命中數（共 2 筆）');
+      await sleep(500); // 讓載入後的重算與可能的 scrollIntoView 都跑完
+      const after = await ctx.cdp.run((rid) => {
+        const p = window.__gc.graphPanelOf(rid);
+        const sc = window.__gc.graphScroller(p);
+        return { scrollTop: sc.scrollTop, count: window.__gc.graphSearchCount(p), rows: window.__gc.graphRows(p).length };
+      }, root.root_id);
+      check(Math.abs(after.scrollTop - before) <= 1, `載入完成後 scrollTop 與載入前相同（${before} → ${after.scrollTop}）`);
+      check(after.count === '第 1／共 2 筆', `「第 i／共 n 筆」的 i 不變、n 更新（實際「${after.count}」）`);
+
+      // 再按 Enter：下一筆命中 Y 才被捲入可見範圍並標示。
+      await pressEnter();
+      const next = await ctx.cdp.poll((rid) => window.__gc.graphSearchCount(window.__gc.graphPanelOf(rid)) === '第 2／共 2 筆', [root.root_id], UI_TIMEOUT_MS);
+      check(!!next, '再按 Enter 顯示「第 2／共 2 筆」');
+      const hitY = await ctx.cdp.run((rid) => {
+        const p = window.__gc.graphPanelOf(rid);
+        const el = p.querySelector('.is-search-hit');
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        const host = window.__gc.graphScroller(p).getBoundingClientRect();
+        return { subject: window.__gc.txt(el.querySelector('.graph-subject')), inView: r.top >= host.top - 1 && r.bottom <= host.bottom + 1, count: p.querySelectorAll('.is-search-hit').length };
+      }, root.root_id);
+      check(!!hitY && hitY.count === 1 && hitY.subject === `${HIT} Y`, `恰好一列被標示、且是第二筆命中 Y（實際 ${JSON.stringify(hitY)}）`);
+      check(!!hitY && hitY.inView, `按 Enter 後命中列 Y 被捲入可見範圍（實際 ${JSON.stringify(hitY)}）`);
+    }
+  );
+}
+
+// ui-fixes task 4.6（spec「有非 commit tag 時不誤報分支變更」）GIVEN repo 有一個指向 tree 物件的 tag，
+// Git Graph 分頁為目前分頁，repo 沒有任何變動 WHEN 經過 5 秒 THEN 不出現「分支已變更」。
+// 這個 tree tag 只加在本段專用的 ui_preview 暫存副本（每個 withCockpit 各自一份），不牽動其他段的 refs
+// 計數與篩選選單項目數。額外驗：同樣有 tree tag 時，真的新增 commit 仍然 3 秒內出現「分支已變更」
+// （偵測沒有因此失效）。
+async function segNonCommitTagNoFalseBanner() {
+  await withCockpit(
+    'non-commit-tag',
+    {
+      beforeLoad: (preview) => {
+        const tree = gitTemp(preview.reviewRepo, ['rev-parse', 'HEAD^{tree}']);
+        gitTemp(preview.reviewRepo, ['tag', 'tree-tag', tree]);
+      },
+    },
+    async (ctx) => {
+      const root = await rootInfo(ctx, PANE_REVIEW);
+      const refs = await apiJson(ctx, `/api/git/${RUNTIME}/${root.root_id}/refs`);
+      const treeRef = refs.body && Array.isArray(refs.body.refs) ? refs.body.refs.find((r) => r.short === 'tree-tag') : null;
+      need(!!treeRef && treeRef.commit === false, `前置：refs 端點列出 tree-tag 且 commit 為 false（實際 ${JSON.stringify(treeRef)}）`);
+      await openChanges(ctx);
+      await openGraphTab(ctx, root);
+      const loaded = await ctx.cdp.poll((rid) => window.__gc.graphRows(window.__gc.graphPanelOf(rid)).length >= 200, [root.root_id], UI_TIMEOUT_MS);
+      need(!!loaded, '第一批 200 列載入完成（log 沒有因 tree tag 失敗）');
+
+      // 5 秒內每 250 ms 看一次，任何一次出現 banner 就失敗（輪詢間隔 2 秒，涵蓋 2 次以上的 refs 讀取）。
+      let shownAt = null;
+      const t0 = Date.now();
+      while (Date.now() - t0 < 5500) {
+        const hidden = await ctx.cdp.run((rid) => window.__gc.graphBanner(window.__gc.graphPanelOf(rid)).hidden, root.root_id);
+        if (!hidden) {
+          shownAt = Date.now() - t0;
+          break;
+        }
+        await sleep(250);
+      }
+      check(shownAt === null, `有指向 tree 的 tag、repo 沒有變動：5 秒內不出現「分支已變更」（${shownAt === null ? '未出現' : `${shownAt} ms 時出現`}）`);
+
+      gitTemp(ctx.preview.reviewRepo, ['-c', 'user.name=git-check', '-c', 'user.email=git-check@invalid', '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'git-check: tree tag 並存下的分支變更']);
+      const shown = await ctx.cdp.poll((rid) => !window.__gc.graphBanner(window.__gc.graphPanelOf(rid)).hidden, [root.root_id], 3000);
+      check(!!shown, '有 tree tag 時，新增 commit 後 3 秒內仍會出現「分支已變更」（偵測沒有失效）');
+    }
+  );
+}
+
+// ui-fixes task 4.7（spec「commit 詳情與比較」）共用：頁面端探針，回報 commit 詳情區有沒有「變更過多，
+// 只列出前面一部分」提示、提示是否在檔案清單之後（清單末端）、以及清單列數。
+function truncationNoteProbe(rid) {
+  const w = window.__gc.commitDetailWrap(window.__gc.graphPanelOf(rid));
+  if (!w) return null;
+  const note = Array.from(w.querySelectorAll('*')).find((n) => n.children.length === 0 && window.__gc.txt(n) === '變更過多，只列出前面一部分') || null;
+  const list = w.querySelector('.commit-detail-files');
+  return {
+    hasNote: !!note,
+    afterList: !!note && !!list && !!(list.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING),
+    rows: w.querySelectorAll('.commit-detail-file-row').length,
+  };
+}
+
+// GIVEN 某 commit 變更的檔案多到後端回報 truncated 為 true WHEN 在 Git Graph 選取它 THEN 詳情的檔案清單
+// 末端顯示「變更過多，只列出前面一部分」；檔案數未被截斷的 commit（HEAD）不顯示此提示。
+async function segCommitDetailTruncationNote() {
+  await withCockpit(
+    'commit-detail-truncated',
+    {
+      beforeLoad: (preview) => {
+        preview.huge = addHugeChangeCommit(preview.reviewRepo, 'git-check-huge');
+      },
+    },
+    async (ctx) => {
+      const root = await rootInfo(ctx, PANE_REVIEW);
+      const huge = ctx.preview.huge;
+      const apiBig = await apiJson(ctx, `/api/git/${RUNTIME}/${root.root_id}/commit/${huge.oid}`);
+      need(
+        apiBig.status === 200 && apiBig.body && apiBig.body.truncated === true && Array.isArray(apiBig.body.files) && apiBig.body.files.length < huge.count,
+        `前置：後端對大量變更的 commit 回 truncated=true 且檔案數少於實際 ${huge.count}（實際 ${apiBig.status} truncated=${apiBig.body && apiBig.body.truncated} files=${apiBig.body && apiBig.body.files && apiBig.body.files.length}）`
+      );
+      const status = await apiJson(ctx, `/api/git/${RUNTIME}/${root.root_id}/status`);
+      need(status.status === 200 && status.body && status.body.branch, `前置：狀態端點回 200（實際 ${status.status}）`);
+      const headOid = status.body.branch.oid;
+      const apiHead = await apiJson(ctx, `/api/git/${RUNTIME}/${root.root_id}/commit/${headOid}`);
+      need(apiHead.status === 200 && apiHead.body && apiHead.body.truncated === false, `前置：一般 commit（HEAD）的 truncated 為 false（實際 ${JSON.stringify(apiHead.body && apiHead.body.truncated)}）`);
+
+      await openChanges(ctx);
+      await openGraphTab(ctx, root);
+      const rowsLoaded = await ctx.cdp.poll((rid, a, b) => !!window.__gc.graphRowByOid(window.__gc.graphPanelOf(rid), a) && !!window.__gc.graphRowByOid(window.__gc.graphPanelOf(rid), b), [root.root_id, huge.oid, headOid], UI_TIMEOUT_MS);
+      need(!!rowsLoaded, '前置：HEAD 列與大量變更 commit 列都已載入');
+
+      async function openDetail(oid, label) {
+        need(await ctx.cdp.clickEl((rid, o) => window.__gc.graphRowByOid(window.__gc.graphPanelOf(rid), o), [root.root_id, oid], label), `點${label}`);
+        const ready = await ctx.cdp.poll(
+          (rid, o) => {
+            const t = window.__gc.commitDetailText(window.__gc.graphPanelOf(rid));
+            return !!t && t.includes(o) && !t.includes('正在讀取');
+          },
+          [root.root_id, oid],
+          UI_TIMEOUT_MS
+        );
+        need(!!ready, `${label}的詳情載入完成`);
+      }
+
+      await openDetail(headOid, 'HEAD（未被截斷）列');
+      const normal = await ctx.cdp.run(truncationNoteProbe, root.root_id);
+      check(!!normal && normal.rows > 0 && normal.hasNote === false, `未被截斷的 commit：詳情不顯示「變更過多，只列出前面一部分」（實際 ${JSON.stringify(normal)}）`);
+
+      await openDetail(huge.oid, '大量變更（被截斷）commit 列');
+      const big = await ctx.cdp.run(truncationNoteProbe, root.root_id);
+      check(!!big && big.rows > 0 && big.hasNote === true, `被截斷的 commit：詳情顯示「變更過多，只列出前面一部分」（實際 ${JSON.stringify(big)}）`);
+      check(!!big && big.afterList, `提示位於檔案清單末端（在 .commit-detail-files 之後；實際 ${JSON.stringify(big)}）`);
+    }
+  );
+}
+
+// GIVEN commit X 與 Y 之間的變更檔案多到後端回報 truncated 為 true WHEN 以 X 為比較基準、點選 Y THEN
+// 比較詳情的檔案清單末端顯示「變更過多，只列出前面一部分」；檔案數未被截斷的兩個 commit 比較時不顯示。
+async function segCompareTruncationNote() {
+  await withCockpit(
+    'compare-truncated',
+    {
+      beforeLoad: (preview) => {
+        preview.huge = addHugeChangeCommit(preview.reviewRepo, 'git-check-huge');
+      },
+    },
+    async (ctx) => {
+      const root = await rootInfo(ctx, PANE_REVIEW);
+      const huge = ctx.preview.huge;
+      const status = await apiJson(ctx, `/api/git/${RUNTIME}/${root.root_id}/status`);
+      need(status.status === 200 && status.body && status.body.branch, `前置：狀態端點回 200（實際 ${status.status}）`);
+      const headOid = status.body.branch.oid;
+      const refs = await apiJson(ctx, `/api/git/${RUNTIME}/${root.root_id}/refs`);
+      const fRef = refs.status === 200 && refs.body && Array.isArray(refs.body.refs) ? refs.body.refs.find((r) => r.kind === 'branch' && r.short === 'feature/logging') : null;
+      need(!!fRef && /^[0-9a-f]{40}$/.test(fRef.oid), `前置：找到 feature/logging 分支與其 oid（實際 ${JSON.stringify(fRef)}）`);
+      const apiBig = await apiJson(ctx, `/api/git/${RUNTIME}/${root.root_id}/changes?from=${headOid}&to=${huge.oid}`);
+      need(apiBig.status === 200 && apiBig.body && apiBig.body.truncated === true, `前置：changes 端點對 HEAD↔大量變更 commit 回 truncated=true（實際 ${apiBig.status} ${JSON.stringify(apiBig.body && apiBig.body.truncated)}）`);
+      const apiSmall = await apiJson(ctx, `/api/git/${RUNTIME}/${root.root_id}/changes?from=${headOid}&to=${fRef.oid}`);
+      need(apiSmall.status === 200 && apiSmall.body && apiSmall.body.truncated === false, `前置：HEAD↔feature/logging 的 truncated 為 false（實際 ${JSON.stringify(apiSmall.body && apiSmall.body.truncated)}）`);
+
+      await openChanges(ctx);
+      await openGraphTab(ctx, root);
+      const rowsLoaded = await ctx.cdp.poll((rid, a, b) => !!window.__gc.graphRowByOid(window.__gc.graphPanelOf(rid), a) && !!window.__gc.graphRowByOid(window.__gc.graphPanelOf(rid), b), [root.root_id, huge.oid, fRef.oid], UI_TIMEOUT_MS);
+      need(!!rowsLoaded, '前置：大量變更 commit 與 feature/logging tip 列都已載入');
+
+      need(await ctx.cdp.clickEl((rid, o) => window.__gc.graphRowByOid(window.__gc.graphPanelOf(rid), o), [root.root_id, headOid], 'HEAD 列'), '點 HEAD 列');
+      const headReady = await ctx.cdp.poll(
+        (rid) => {
+          const t = window.__gc.commitDetailText(window.__gc.graphPanelOf(rid));
+          return !!t && !t.includes('正在讀取') && !!window.__gc.commitDetailButton(window.__gc.graphPanelOf(rid), '選為比較基準');
+        },
+        [root.root_id],
+        UI_TIMEOUT_MS
+      );
+      need(!!headReady, 'HEAD 的詳情載入完成');
+      need(await ctx.cdp.clickEl((rid) => window.__gc.commitDetailButton(window.__gc.graphPanelOf(rid), '選為比較基準'), [root.root_id], '「選為比較基準」按鈕'), '點「選為比較基準」按鈕');
+
+      async function compareWith(oid, label) {
+        need(await ctx.cdp.clickEl((rid, o) => window.__gc.graphRowByOid(window.__gc.graphPanelOf(rid), o), [root.root_id, oid], label), `點${label}`);
+        const ready = await ctx.cdp.poll(
+          (rid, o) => {
+            const p = window.__gc.graphPanelOf(rid);
+            const t = window.__gc.commitDetailText(p);
+            return !!t && t.includes('比較') && t.includes(o.slice(0, 7)) && !!window.__gc.commitDetailButton(p, '直接比較') && !t.includes('正在讀取');
+          },
+          [root.root_id, oid],
+          UI_TIMEOUT_MS
+        );
+        need(!!ready, `選取${label}後詳情為「比較」畫面且載入完成`);
+      }
+
+      await compareWith(fRef.oid, 'feature/logging tip 列');
+      const normal = await ctx.cdp.run(truncationNoteProbe, root.root_id);
+      check(!!normal && normal.rows > 0 && normal.hasNote === false, `未被截斷的比較（HEAD ↔ feature/logging）：不顯示「變更過多，只列出前面一部分」（實際 ${JSON.stringify(normal)}）`);
+
+      await compareWith(huge.oid, '大量變更（被截斷）commit 列');
+      const big = await ctx.cdp.run(truncationNoteProbe, root.root_id);
+      check(!!big && big.rows > 0 && big.hasNote === true, `被截斷的比較（HEAD ↔ 大量變更 commit）：顯示「變更過多，只列出前面一部分」（實際 ${JSON.stringify(big)}）`);
+      check(!!big && big.afterList, `提示位於比較詳情檔案清單末端（實際 ${JSON.stringify(big)}）`);
+    }
+  );
+}
+
 // GIVEN Git Graph 分頁為目前分頁 WHEN 在 repo 新增一個 commit（`git commit --allow-empty`，控制端
 // 裁決的寫入方式）THEN 3 秒內出現「分支已變更」與「重新載入」按鈕，清單內容與捲動位置不變；按
 // 「重新載入」後新 commit 出現在第一列。
@@ -2880,6 +3192,116 @@ async function segViewVersionButtonKeyboard() {
   });
 }
 
+// ui-fixes task 4.8（spec git-review「commit 詳情與比較」焦點段落、design D7）：詳情區因重新載入而重建時，
+// 焦點必須回到重建後代表同一個對象的元素上，不得落到 body；焦點外框依最近一次輸入方式決定。
+// 兩個 commit（HEAD 與 feature/logging 的 tip）的比較詳情已顯示後，切換「自分岔點起」會重建詳情兩次
+// （載入中、載入完成），焦點兩次都必須留在對應的切換按鈕上。
+async function openCompareDetailForFocus(ctx) {
+  const root = await rootInfo(ctx, PANE_REVIEW);
+  const status = await apiJson(ctx, `/api/git/${RUNTIME}/${root.root_id}/status`);
+  need(status.status === 200 && status.body && status.body.branch, `前置：狀態端點回 200（實際 ${status.status}）`);
+  const eOid = status.body.branch.oid;
+  const refs = await apiJson(ctx, `/api/git/${RUNTIME}/${root.root_id}/refs`);
+  const fRef = refs.body && Array.isArray(refs.body.refs) ? refs.body.refs.find((r) => r.kind === 'branch' && r.short === 'feature/logging') : null;
+  need(!!fRef && /^[0-9a-f]{40}$/.test(fRef.oid), `前置：找到 feature/logging 分支與其 oid（實際 ${JSON.stringify(fRef)}）`);
+  const fOid = fRef.oid;
+  await openChanges(ctx);
+  await openGraphTab(ctx, root);
+  const loaded = await ctx.cdp.poll((rid) => window.__gc.graphRows(window.__gc.graphPanelOf(rid)).length >= 200, [root.root_id], UI_TIMEOUT_MS);
+  need(!!loaded, '前置：第一批 200 列載入完成（E、F 都在其中）');
+  need(await ctx.cdp.clickEl((rid, oid) => window.__gc.graphRowByOid(window.__gc.graphPanelOf(rid), oid), [root.root_id, eOid], 'commit E（HEAD）列'), '點 commit E（HEAD）列');
+  const eReady = await ctx.cdp.poll(
+    (rid) => {
+      const t = window.__gc.commitDetailText(window.__gc.graphPanelOf(rid));
+      return !!t && !t.includes('正在讀取');
+    },
+    [root.root_id],
+    UI_TIMEOUT_MS
+  );
+  need(!!eReady, 'commit E 的詳情載入完成');
+  need(await ctx.cdp.clickEl((rid) => window.__gc.commitDetailButton(window.__gc.graphPanelOf(rid), '選為比較基準'), [root.root_id], '「選為比較基準」按鈕'), '點「選為比較基準」按鈕');
+  need(await ctx.cdp.clickEl((rid, oid) => window.__gc.graphRowByOid(window.__gc.graphPanelOf(rid), oid), [root.root_id, fOid], 'commit F 列'), '點 commit F 列');
+  const compareReady = await ctx.cdp.poll(
+    (rid) => {
+      const p = window.__gc.graphPanelOf(rid);
+      const t = window.__gc.commitDetailText(p);
+      return !!t && t.includes('比較') && !!window.__gc.commitDetailButton(p, '直接比較') && !t.includes('正在讀取');
+    },
+    [root.root_id],
+    UI_TIMEOUT_MS
+  );
+  need(!!compareReady, '前置：比較詳情已顯示且載入完成');
+  return root;
+}
+
+// 目前焦點：是否在詳情區內、是否為「自分岔點起」按鈕、是否匹配 :focus-visible、舊節點是否已脫離 DOM。
+const FOCUS_PROBE = (rid) => {
+  const a = document.activeElement;
+  const p = window.__gc.graphPanelOf(rid);
+  const wrap = window.__gc.commitDetailWrap(p);
+  const forkBtn = window.__gc.commitDetailButton(p, '自分岔點起');
+  return {
+    isBody: a === document.body,
+    inDetail: !!a && !!wrap && wrap.contains(a),
+    isForkBtn: !!a && a === forkBtn,
+    text: a ? (a.textContent || '').trim().slice(0, 20) : null,
+    focusVisible: !!a && a.matches(':focus-visible'),
+    oldConnected: window.__oldFork ? window.__oldFork.isConnected : null,
+    pressed: forkBtn ? forkBtn.getAttribute('aria-pressed') : null,
+  };
+};
+
+const FORK_DONE = (rid) => {
+  const p = window.__gc.graphPanelOf(rid);
+  const toggle = window.__gc.commitDetailToggle(p, '自分岔點起');
+  return !!toggle && toggle.pressed === 'true' && !window.__gc.commitDetailText(p).includes('正在讀取');
+};
+
+// GIVEN 兩個 commit 的比較詳情已顯示，以鍵盤 Tab 把焦點移到「自分岔點起」切換按鈕上（外框可見）
+// WHEN 按 Enter 切換，比較結果載入完成、詳情區重建 THEN 焦點在重建後代表同一個操作的切換按鈕上，
+// 不在 body 上，且該按鈕匹配 :focus-visible。
+async function segDetailRebuildFocusKeyboard() {
+  await withCockpit('detail-rebuild-focus-keyboard', {}, async (ctx) => {
+    const root = await openCompareDetailForFocus(ctx);
+    // 把焦點放到「直接比較」按鈕（程式聚焦），再以真實 Tab 移到下一個可聚焦元素＝「自分岔點起」。
+    await ctx.cdp.run((rid) => window.__gc.commitDetailButton(window.__gc.graphPanelOf(rid), '直接比較').focus(), root.root_id);
+    await ctx.cdp.press('Tab');
+    const before = await ctx.cdp.run(FOCUS_PROBE, root.root_id);
+    need(before.isForkBtn, `前置：Tab 之後焦點在「自分岔點起」按鈕（實際 ${JSON.stringify(before)}）`);
+    check(before.focusVisible === true, `前置：Tab 到按鈕時外框可見（:focus-visible；實際 ${JSON.stringify(before)}）`);
+    await ctx.cdp.run((rid) => {
+      window.__oldFork = window.__gc.commitDetailButton(window.__gc.graphPanelOf(rid), '自分岔點起');
+    }, root.root_id);
+    await ctx.cdp.press('Enter');
+    const done = await ctx.cdp.poll(FORK_DONE, [root.root_id], UI_TIMEOUT_MS);
+    need(!!done, '按 Enter 後「自分岔點起」查詢完成');
+    const after = await ctx.cdp.run(FOCUS_PROBE, root.root_id);
+    check(after.oldConnected === false, `詳情確實重建了（舊的「自分岔點起」節點已脫離 DOM；實際 ${JSON.stringify(after)}）`);
+    check(!after.isBody, `重建後焦點不在 body 上（實際 ${JSON.stringify(after)}）`);
+    check(after.isForkBtn, `重建後焦點在代表同一個操作的「自分岔點起」切換按鈕上（實際 ${JSON.stringify(after)}）`);
+    check(after.focusVisible === true, `鍵盤觸發：重建後的按鈕匹配 :focus-visible、外框照常呈現（實際 ${JSON.stringify(after)}）`);
+  });
+}
+
+// GIVEN 以滑鼠點了詳情中的「自分岔點起」切換按鈕 WHEN 詳情因此重建 THEN 焦點在重建後的對應切換按鈕上，
+// 不在 body 上，且該按鈕不匹配 :focus-visible、沒有焦點外框。（真實滑鼠：CDP Input.dispatchMouseEvent。）
+async function segDetailRebuildFocusMouse() {
+  await withCockpit('detail-rebuild-focus-mouse', {}, async (ctx) => {
+    const root = await openCompareDetailForFocus(ctx);
+    await ctx.cdp.run((rid) => {
+      window.__oldFork = window.__gc.commitDetailButton(window.__gc.graphPanelOf(rid), '自分岔點起');
+    }, root.root_id);
+    need(await ctx.cdp.clickEl((rid) => window.__gc.commitDetailButton(window.__gc.graphPanelOf(rid), '自分岔點起'), [root.root_id], '「自分岔點起」按鈕'), '以真實滑鼠點「自分岔點起」按鈕');
+    const done = await ctx.cdp.poll(FORK_DONE, [root.root_id], UI_TIMEOUT_MS);
+    need(!!done, '點擊後「自分岔點起」查詢完成');
+    const after = await ctx.cdp.run(FOCUS_PROBE, root.root_id);
+    check(after.oldConnected === false, `詳情確實重建了（舊的「自分岔點起」節點已脫離 DOM；實際 ${JSON.stringify(after)}）`);
+    check(!after.isBody, `重建後焦點不在 body 上（實際 ${JSON.stringify(after)}）`);
+    check(after.isForkBtn, `重建後焦點在代表同一個操作的「自分岔點起」切換按鈕上（實際 ${JSON.stringify(after)}）`);
+    check(after.focusVisible === false, `滑鼠觸發：重建後的按鈕不匹配 :focus-visible、沒有焦點外框（實際 ${JSON.stringify(after)}）`);
+  });
+}
+
 function isNonEmptyStringLike(value) {
   return typeof value === 'string' && value.length > 0;
 }
@@ -2903,9 +3325,15 @@ const SEGMENTS = [
   { code: 'git-review/開啟並分批載入', fn: segOpenAndBatchLoad },
   { code: 'git-review/搜尋跳轉', fn: segSearchJump },
   { code: 'git-review/分支變更提示', fn: segRefsChangedBanner },
+  { code: 'git-review/搜尋命中後背景載入不拉動捲動', fn: segSearchBackgroundLoadNoScroll },
+  { code: 'git-review/有非 commit tag 時不誤報分支變更', fn: segNonCommitTagNoFalseBanner },
   { code: 'git-review/重畫不影響 Git Graph', fn: segRepaintKeepsGraph },
   { code: 'git-review/看 commit 的變更並開 diff', fn: segCommitDetailOpenDiff },
   { code: 'git-review/比較兩個 commit', fn: segCompareCommits },
+  { code: 'git-review/commit 詳情檔案清單被截斷', fn: segCommitDetailTruncationNote },
+  { code: 'git-review/兩個 commit 比較的檔案清單被截斷', fn: segCompareTruncationNote },
+  { code: 'git-review/詳情重建後焦點留在對應元素', fn: segDetailRebuildFocusKeyboard },
+  { code: 'git-review/滑鼠觸發的詳情重建不呈現焦點外框', fn: segDetailRebuildFocusMouse },
   { code: 'git-review/複製 hash', fn: segCopyHash },
   { code: 'git-review/看舊版規格', fn: segOldVersion },
   { code: 'git-review/commit 版本不輪詢', fn: segCommitVersionNoPoll },

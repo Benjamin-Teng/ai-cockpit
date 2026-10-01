@@ -414,7 +414,9 @@ fn disconnected_runtime_is_runtime_disconnected_and_does_not_reuse_previous_resu
     assert_eq!(
         resolution,
         BindingResolution::RuntimeDisconnected {
-            runtime: runtime_id("wsl")
+            runtime: runtime_id("wsl"),
+            // 沒有覆蓋、由 `workstream.binding` 自動解析而來（spec「runtime 斷線」）。
+            source: BindingSource::Auto,
         }
     );
 }
@@ -529,7 +531,11 @@ fn override_is_preserved_while_runtime_disconnected_then_bound_after_reconnect()
     let (resolution, stale) = resolve_binding(&ws, Some(&over), &disconnected_store);
     assert!(!stale, "斷線期間覆蓋不應被視為失效");
     match resolution {
-        BindingResolution::RuntimeDisconnected { runtime } => assert_eq!(runtime.as_str(), "wsl"),
+        BindingResolution::RuntimeDisconnected { runtime, source } => {
+            assert_eq!(runtime.as_str(), "wsl");
+            // 覆蓋造成的斷線帶出覆蓋來源（spec「覆蓋造成的斷線帶出覆蓋來源」）。
+            assert_eq!(source, BindingSource::Override);
+        }
         other => panic!("expected RuntimeDisconnected, got {other:?}"),
     }
 
@@ -551,6 +557,43 @@ fn override_is_preserved_while_runtime_disconnected_then_bound_after_reconnect()
         }
         other => panic!("expected Bound(Override), got {other:?}"),
     }
+}
+
+/// ui-fixes 修正波 1 B-M2（回歸測試，現行行為已正確，一開始即綠）：覆蓋指向的 runtime 連線中但
+/// pane 已不存在（覆蓋失效），退回自動解析；自動綁定的是另一個已斷線的 runtime，結果為
+/// `RuntimeDisconnected { source: Auto }`，且 stale 旗標仍為真。
+#[test]
+fn stale_override_falls_back_to_auto_binding_on_a_disconnected_runtime() {
+    // 覆蓋用的 runtime「win」連線中、pane 不存在；自動綁定的 runtime「wsl」只登記、未連線。
+    let mut store = connected_store(
+        "win",
+        vec![labeled_workspace("ws", 1)],
+        vec![tab("t1", "ws", 1)],
+        vec![],
+    );
+    store.register(
+        runtime_id("wsl"),
+        "herdr".to_string(),
+        "endpoint".to_string(),
+    );
+    let ws = workstream_with(Some(binding_spec("wsl", "ws")));
+    let over = Override {
+        runtime: runtime_id("win"),
+        pane_id: PaneId::new("gone"),
+    };
+
+    let (resolution, stale) = resolve_binding(&ws, Some(&over), &store);
+    assert!(
+        stale,
+        "覆蓋的 runtime 連線中但 pane 不存在，覆蓋應標記為失效"
+    );
+    assert_eq!(
+        resolution,
+        BindingResolution::RuntimeDisconnected {
+            runtime: runtime_id("wsl"),
+            source: BindingSource::Auto,
+        }
+    );
 }
 
 #[test]

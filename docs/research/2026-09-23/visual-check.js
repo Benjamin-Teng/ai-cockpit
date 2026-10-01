@@ -8824,6 +8824,14 @@ async function partCssInventory() {
     check(defensive && defensive.ok === true, '[CL1] 注入防禦狀態（五種 agent 狀態＋未知、兩個 tab、connecting／未知連線、未知 task status）');
     await sleep(100);
     await collect('防禦狀態');
+    // ui-fixes task 4.3：style.css 新增 `#app:not([data-channel-state="connected"]) …` 區塊（通道斷線的
+    // 最後已知呈現），其中 .ff-undeclared、.agent-dot-blocked 只有在「通道非 connected＋畫面有未宣告提示／
+    // blocked pane」同時成立時才對得到元素；上面的通道段用的是預設投影（兩者都沒有），防禦狀態又是
+    // connected。補一個「防禦狀態＋通道 disconnected」的取樣，規則仍須對得到元素（死規則斷言不放寬）。
+    await cdp.eval("window.onChannel('disconnected'); true");
+    await sleep(50);
+    await collect('防禦狀態＋通道 disconnected');
+    await cdp.eval("window.onChannel('connected'); true");
 
     const noProjects = await injectState(cdp, craftNoProjectsState());
     check(noProjects && noProjects.ok === true, '[CL1] 注入沒有 Project 的投影');

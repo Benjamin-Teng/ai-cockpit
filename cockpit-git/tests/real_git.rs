@@ -400,6 +400,86 @@ async fn refs_lists_branches_remote_and_annotated_tag_scenario() {
     assert_eq!(tag.oid, c1.as_str(), "附註 tag 的 oid 應為剝皮後的 commit");
 }
 
+/// ui-fixes task 3.1（spec「refs 端點」Scenario「tag 指向非 commit 的物件」、design D4）：
+/// 真實 git 對四種 tag 組合（輕量指 tree、輕量指 blob、附註指 tree、巢狀附註指 tree）與
+/// 附註指 commit 的 `%(objecttype)`／`%(*objecttype)` 行為——tag 仍列出、`oid` 為剝開後的
+/// 物件、`commit` 為 false；其餘 ref 為 true。
+#[tokio::test]
+async fn refs_marks_non_commit_tags_with_peeled_oid_and_commit_false() {
+    let repo = TempRepo::new("refs-non-commit-tags");
+    repo.init();
+    repo.write_file(
+        "a.txt", "1
+",
+    );
+    repo.git_ok(&["add", "."]);
+    repo.commit_at(1, "c1");
+    let c1 = repo.head_oid();
+
+    let rev = |spec: &str| {
+        String::from_utf8_lossy(&repo.git_ok(&["rev-parse", spec]).stdout)
+            .trim()
+            .to_string()
+    };
+    let tree = rev("HEAD^{tree}");
+    let blob = rev("HEAD:a.txt");
+    repo.git_ok(&["tag", "tree-tag", tree.as_str()]);
+    repo.git_ok(&["tag", "blob-tag", blob.as_str()]);
+    // 附註 tag 指向 tree，再以另一個附註 tag 指向它（巢狀）。
+    repo.git_ok(&["tag", "-a", "ann-tree-tag", "-m", "t", tree.as_str()]);
+    repo.git_ok(&["tag", "-a", "nested-tag", "-m", "n", "ann-tree-tag"]);
+    repo.git_ok(&["tag", "-a", "ann-commit-tag", "-m", "c", "HEAD"]);
+    // 附註 tag 指向附註 tag 再指向 commit（巢狀 → commit）。
+    repo.git_ok(&[
+        "tag",
+        "-a",
+        "nested-commit-tag",
+        "-m",
+        "nc",
+        "ann-commit-tag",
+    ]);
+
+    let runner = GitRunner::new();
+    let run_output = runner
+        .run(&Refs, &repo.native_target())
+        .await
+        .expect("Refs 應成功");
+    let refs = Refs.parse(&run_output.calls).expect("Refs 應能解析");
+
+    let find = |name: &str| {
+        refs.refs
+            .iter()
+            .find(|r| r.name == name)
+            .unwrap_or_else(|| panic!("找不到 {name}：{:?}", refs.refs))
+    };
+    let main = find("refs/heads/main");
+    assert!(main.commit);
+    assert_eq!(main.oid, c1.as_str());
+    for (name, expected_oid) in [
+        ("refs/tags/tree-tag", tree.as_str()),
+        ("refs/tags/blob-tag", blob.as_str()),
+        ("refs/tags/ann-tree-tag", tree.as_str()),
+    ] {
+        let entry = find(name);
+        assert_eq!(entry.kind, RefKind::Tag, "{name}");
+        assert!(!entry.commit, "{name} 剝開後不是 commit");
+        assert_eq!(entry.oid, expected_oid, "{name} 的 oid 應為剝開後的物件");
+    }
+    let ann_commit = find("refs/tags/ann-commit-tag");
+    assert!(ann_commit.commit);
+    assert_eq!(ann_commit.oid, c1.as_str());
+    // 巢狀附註 tag：`%(*objecttype)` 在 git 2.50 剝到底、在 2.43 只剝一層（修正波 1 B-I1），
+    // 所以斷言只鎖定與 git 版本無關的部分——巢狀 → commit 必為 true；巢狀 → tree 在新版為
+    // false、舊版因無法確定而為 true，這裡不斷言其 `commit`（`kind` 仍必為 Tag，tag 必須列出）。
+    let nested_commit = find("refs/tags/nested-commit-tag");
+    assert!(
+        nested_commit.commit,
+        "巢狀 tag → commit 在任何 git 版本都必為 true"
+    );
+    let nested_tree = find("refs/tags/nested-tag");
+    assert_eq!(nested_tree.kind, RefKind::Tag);
+}
+
 /// task 2.2 遺留疑慮：`rev-parse --verify -q HEAD` 在懸空分支上合法地以非零結束——
 /// `Refs::parse` 必須把它解讀成「沒有值」而不是讓整個查詢失敗。
 #[tokio::test]
@@ -2042,4 +2122,96 @@ async fn wsl_status_and_file_diff_do_not_go_through_shell() {
         !pwned_check.status.success(),
         "WSL 內不應該出現名為 pwned 的檔案（代表命令注入發生）"
     );
+}
+
+/// ui-fixes 修正波 1 B-I1：WSL 端 git（實測 Ubuntu-24.04 為 2.43）的 `%(*objecttype)` 只剝一層，
+/// 巢狀附註 tag 的 `*objecttype` 仍是 `tag`。巢狀 tag → commit 在任何版本都必須 `commit == true`
+/// （舊判定在 2.43 會是 false，使該 commit 從預設 Graph 消失）；巢狀 tag → tree 的 `commit`
+/// 隨版本而異（新版 false、舊版 true），只斷言它仍被列出。
+#[tokio::test]
+#[ignore = "需要 WSL 與環境變數 COCKPIT_GIT_TEST_WSL_DISTRO；控制端手動執行 --ignored"]
+async fn wsl_refs_nested_annotated_tag_to_commit_is_commit() {
+    let distro = match std::env::var("COCKPIT_GIT_TEST_WSL_DISTRO") {
+        Ok(v) if !v.is_empty() => v,
+        _ => panic!(
+            "需要設定環境變數 COCKPIT_GIT_TEST_WSL_DISTRO 指定要用的 WSL distro（例如 \
+             Ubuntu-24.04）才能跑這個測試；這個 #[ignore] 測試平常不會自動執行，需控制端手動跑 \
+             `cargo test -p cockpit-git -- --ignored`"
+        ),
+    };
+
+    let mktemp_out = wsl_exec_ok(&distro, &["mktemp", "-d"]);
+    let posix_dir = String::from_utf8_lossy(&mktemp_out.stdout)
+        .trim()
+        .to_string();
+    assert!(
+        posix_dir.starts_with("/tmp/"),
+        "mktemp -d 應回傳 /tmp 底下的路徑，實際：{posix_dir:?}"
+    );
+    let _cleanup = WslCleanup {
+        distro: distro.clone(),
+        posix_dir: posix_dir.clone(),
+    };
+
+    wsl_git_ok(&distro, &posix_dir, &["init", "-q", "-b", "main"]);
+    wsl_write_file(&distro, &format!("{posix_dir}/a.txt"), b"1\n");
+    wsl_git_ok(&distro, &posix_dir, &["add", "a.txt"]);
+    wsl_git_commit(&distro, &posix_dir, 1, "c1");
+
+    let tree_out = wsl_git_ok(&distro, &posix_dir, &["rev-parse", "HEAD^{tree}"]);
+    let tree = String::from_utf8_lossy(&tree_out.stdout).trim().to_string();
+    // 附註 tag → commit，再以另一個附註 tag 指向它（巢狀 → commit）。
+    wsl_git_ok(
+        &distro,
+        &posix_dir,
+        &["tag", "-a", "ann-commit-tag", "-m", "c", "HEAD"],
+    );
+    wsl_git_ok(
+        &distro,
+        &posix_dir,
+        &[
+            "tag",
+            "-a",
+            "nested-commit-tag",
+            "-m",
+            "nc",
+            "ann-commit-tag",
+        ],
+    );
+    // 附註 tag → tree，再巢狀。
+    wsl_git_ok(
+        &distro,
+        &posix_dir,
+        &["tag", "-a", "ann-tree-tag", "-m", "t", tree.as_str()],
+    );
+    wsl_git_ok(
+        &distro,
+        &posix_dir,
+        &["tag", "-a", "nested-tree-tag", "-m", "nt", "ann-tree-tag"],
+    );
+
+    let target = GitTarget::Wsl {
+        distro: distro.clone(),
+        posix: posix_dir.clone(),
+    };
+    let runner = GitRunner::new();
+    let run_output = runner.run(&Refs, &target).await.expect("WSL Refs 應成功");
+    let refs = Refs.parse(&run_output.calls).expect("WSL Refs 應能解析");
+
+    let find = |name: &str| {
+        refs.refs
+            .iter()
+            .find(|r| r.name == name)
+            .unwrap_or_else(|| panic!("找不到 {name}：{:?}", refs.refs))
+    };
+    assert!(find("refs/tags/ann-commit-tag").commit);
+    assert!(
+        find("refs/tags/nested-commit-tag").commit,
+        "巢狀 tag → commit 在任何 git 版本都必為 true"
+    );
+    assert!(
+        !find("refs/tags/ann-tree-tag").commit,
+        "單層附註 tag → tree 在任何版本都剝得到 tree，必為 false"
+    );
+    assert_eq!(find("refs/tags/nested-tree-tag").kind, RefKind::Tag);
 }

@@ -190,11 +190,17 @@
 
   // runtime 卡標題列右側的連線狀態：符號（跟頂列燈號、底列通道共用 .conn-symbol 的三種形狀，
   // design D4「連線」列）＋狀態文字，顏色依狀態（style.css .runtime-conn-*）。
+  // ui-fixes task 4.3（spec cockpit-dashboard「畫面整頁重畫」通道斷線段落、design D2）：通道不是
+  // connected 時，連線狀態文字前要標「最後已知」。比照頂列 .runtime-lamp-stale：一律輸出到 DOM、
+  // 由 style.css 依 #app 的 data-channel-state 切換顯示，window.onChannel 不重畫就能生效；它是
+  // .connection-state 的**手足**節點，.connection-state 的 textContent 維持精確等於連線狀態字串
+  // （既有腳本以此精確比對）。
   function renderConnectionState(state) {
     var wrap = el("span", "runtime-conn " + connStateClass("runtime-conn-", state));
     var dot = el("span", "conn-symbol");
     dot.setAttribute("aria-hidden", "true");
     wrap.appendChild(dot);
+    wrap.appendChild(el("span", "runtime-conn-stale", "最後已知"));
     wrap.appendChild(el("span", "connection-state", state));
     return wrap;
   }
@@ -513,6 +519,11 @@
         break;
       case "runtime_disconnected":
         wrap.appendChild(el("span", "ff-binding-text", "runtime 未連線"));
+        // ui-fixes task 4.4（spec「Factory Floor」；design D3）：覆蓋造成的斷線（source 為
+        // override）同樣顯示「改綁」徽章，自動綁定的斷線（auto）沒有；徽章樣式沿用 bound 的。
+        if (binding.source === "override") {
+          wrap.appendChild(el("span", "ff-binding-badge", "改綁"));
+        }
         break;
       case "none":
         wrap.appendChild(el("span", "ff-binding-text", "無綁定"));
@@ -1325,10 +1336,16 @@
   // 不會送出 `pointerdown`／`keydown`，專案裡也沒有任何 `focus` 事件 handler 會因此做事）。
   // 同步呼叫即可（fix round 1 Finding 1 真正的根因與修法在 actions.js 的 `preventDefault()`，
   // 見上方「待還原目標」註解最後一段與 actions.js pointerdown listener 上方註解）。
-  function restoreFocus(appEl, identity) {
+  function restoreFocus(appEl, identity, keepVisible) {
     var target = findByFocusIdentity(appEl, identity);
     if (target !== null && typeof target.focus === "function") {
-      target.focus({ preventScroll: true });
+      // 經 output.js 的共用 helper（ui-fixes task 4.2；design D1）：最後輸入為滑鼠時不呈現焦點外框。
+      // output.js 沒載入的精簡 harness（只載 render.js／actions.js 的驗收腳本）退回原生 focus()。
+      if (window.cockpitFocus && typeof window.cockpitFocus.focus === "function") {
+        window.cockpitFocus.focus(target, keepVisible === true);
+      } else {
+        target.focus({ preventScroll: true });
+      }
     }
   }
 
@@ -1429,13 +1446,28 @@
     var appEl = document.getElementById("app");
     // fix round 1 Finding 1：pointerdown 觸發的同步重畫優先用「待還原目標」（見上方
     // consumePendingFocusIdentity 註解），沒有才照舊看 document.activeElement。
-    var focusIdentity = consumePendingFocusIdentity() || captureFocusIdentity(appEl);
+    var pendingIdentity = consumePendingFocusIdentity();
+    var focusIdentity = pendingIdentity || captureFocusIdentity(appEl);
+    // ui-fixes 修正波 1 F-M1：不是 pointerdown 觸發的重畫（沒有待還原目標）時，若舊的焦點元素本來就
+    // 匹配 :focus-visible（鍵盤使用者 Tab 到的），還原時要保留外框——即使最後輸入是 pointer
+    // （按住捲軸之類不移動焦點的滑鼠操作也會觸發 pointerdown）。pointerdown 觸發的重畫是使用者剛按下
+    // 了某個元素，外框不該出現，維持 false。
+    var keepFocusVisible =
+      pendingIdentity === null &&
+      !!window.cockpitFocus &&
+      typeof window.cockpitFocus.focusVisible === "function" &&
+      window.cockpitFocus.focusVisible(document.activeElement);
     var savedScroll = captureScroll(appEl);
     // file-review task 4.1（design D6）：左欄目前分頁是 files.js 的模組狀態，每次重畫都重新讀。
     var leftTab =
       window.cockpitFiles && typeof window.cockpitFiles.leftTab === "function"
         ? window.cockpitFiles.leftTab()
         : "projects";
+    // ui-fixes task 4.3（design D2）：通道狀態掛在 #app 根節點，style.css 在
+    // `#app:not([data-channel-state="connected"])` 範圍內把來自投影的即時狀態色轉為最後已知的 --text-dim。
+    // replaceChildren 只換子節點、根節點屬性本會跨重畫保留；這裡仍依模組變數 latestChannelState 寫回，
+    // 避免任何路徑重建或清掉根節點屬性時遺失。先於換子節點寫入，新畫面第一個影格就是正確的顏色。
+    appEl.setAttribute("data-channel-state", latestChannelState);
     appEl.replaceChildren(renderState(latestState, ui, leftTab));
     restoreScroll(appEl, savedScroll);
     // #output 不在 #app 底下、不被上面這行換掉（design D8）；每次重畫後仍要交出最新的 pane
@@ -1456,7 +1488,7 @@
     }
     restoringFocus = true;
     try {
-      restoreFocus(appEl, focusIdentity);
+      restoreFocus(appEl, focusIdentity, keepFocusVisible);
     } finally {
       restoringFocus = false;
     }
@@ -1494,7 +1526,8 @@
 
   // 通道狀態更新（spec cockpit-dashboard「畫面整頁重畫」；design D4「連線配色也適用底列通道
   // 狀態」；direction-01-visual task 2.3；task 2.3 fix round 1／Codex C1／使用者決定 I2；
-  // fix round 2／N5）：不呼叫 window.repaint()／paint()，不觸發整頁重畫。四件事都在這裡做：
+  // fix round 2／N5；ui-fixes task 4.3 另寫 #app 的 data-channel-state，見函式內）：不呼叫
+  // window.repaint()／paint()，不觸發整頁重畫。四件事都在這裡做：
   //   1. 更新 latestChannelState（Codex C1）——下一次整頁重畫（不管是新投影還是 UI-only
   //      repaint()）都會用這個值重新產生 renderChannelIndicator()／renderTopbar() 的輸出，
   //      不會再被寫死的 "connected" 蓋掉。
@@ -1513,6 +1546,14 @@
   // 結構被改動）才退回整個 textContent 覆寫，維持防禦性。
   window.onChannel = function (status) {
     latestChannelState = status;
+
+    // ui-fixes task 4.3（design D2）：#app 根節點的 data-channel-state——右欄、中欄、左欄計數的
+    // 「最後已知」轉暗全靠它（style.css），不重畫就立即生效；paint() 結束前也會依 latestChannelState
+    // 寫回同一個屬性。
+    var appEl = document.getElementById("app");
+    if (appEl) {
+      appEl.setAttribute("data-channel-state", status);
+    }
 
     var topbar = document.querySelector('[data-region="topbar"]');
     if (topbar) {

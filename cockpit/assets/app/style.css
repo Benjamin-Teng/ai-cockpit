@@ -1028,6 +1028,13 @@ body {
   color: var(--text-dim);
 }
 
+/* 「最後已知」手足節點（ui-fixes task 4.3；render.js renderConnectionState）：通道 connected 時隱藏，
+   非 connected 時由文末「通道斷線的最後已知呈現」區塊顯示——做法同頂列 .runtime-lamp-stale。 */
+.runtime-conn-stale {
+  display: none;
+  white-space: nowrap;
+}
+
 .connection {
   min-width: 0;
 }
@@ -1326,6 +1333,48 @@ body {
 
 .status-unknown {
   color: var(--text-dim);
+}
+
+/* 通道斷線的「最後已知」呈現（ui-fixes task 4.3；spec cockpit-dashboard「畫面整頁重畫」通道斷線段落與
+   「通道斷線時 runtime 卡顯示最後已知」「通道斷線時中欄與 pane 列的狀態色轉暗」「斷線中整頁重畫後仍為最後
+   已知」；design D2）。render.js 把通道狀態寫在 #app 的 data-channel-state（window.onChannel 與 paint()
+   各寫一次），通道不是 connected（disconnected 或 connecting）時，來自投影的即時狀態一律改用 --text-dim
+   （狀態文字與符號本身仍保留，只是不再用狀態色）。涵蓋：右欄 runtime 卡連線狀態與其內 workspace／tab／
+   pane 的 agent 狀態、中欄 task 節點（色條、狀態文字、running 的強調外框與柔光、failed／blocked 外框）、
+   workstream 列首「未宣告 task」提示、左欄 project 狀態計數。
+   選擇器以 #app 帶 ID 特異度，蓋過上方各規則直接寫的色值，不用 !important；task 節點不逐一列色值，而是覆寫
+   既有的 --task-status-color token（.task-status-*、色條與 failed／blocked 外框都吃它）。
+   按鈕（.action-button，含「取消改綁」）刻意不在這個區塊：斷線時仍可操作，不轉暗。
+   文字對比：--text-dim 對 --bg-base／--surface 皆 ≥7.7:1，符合「Direction 01 視覺語彙」的文字對比。 */
+#app:not([data-channel-state="connected"]) .runtime-conn,
+#app:not([data-channel-state="connected"]) .status,
+#app:not([data-channel-state="connected"]) .ff-undeclared,
+#app:not([data-channel-state="connected"]) .project-count {
+  color: var(--text-dim);
+}
+
+#app:not([data-channel-state="connected"]) .runtime-conn-stale {
+  display: inline;
+}
+
+#app:not([data-channel-state="connected"]) .agent-dot-working,
+#app:not([data-channel-state="connected"]) .agent-dot-blocked {
+  background: var(--text-dim);
+}
+
+#app:not([data-channel-state="connected"]) .agent-dot-done {
+  border-color: var(--text-dim);
+}
+
+#app:not([data-channel-state="connected"]) .task-node {
+  --task-status-color: var(--text-dim);
+}
+
+/* running 節點：強調外框改 --text-dim、拿掉柔光（靜止的發光會讀成「仍在即時運作」）。邊框寬度（2px、
+   左 4px）不動，版面不位移。 */
+#app:not([data-channel-state="connected"]) .task-node.task-status-running {
+  border-color: var(--text-dim);
+  box-shadow: none;
 }
 
 /* 最近事件（D11）：兩行一筆——第一行 時間（只顯示時間部分、等寬、窄欄對齊）→ runtime →

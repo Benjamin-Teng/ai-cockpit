@@ -5,8 +5,9 @@
 //! pane 身分（design D4）：handler 讀「最新一份投影」，找 `binding.state == bound` 且
 //! `pane_id` 等於 `X-Herdr-Pane-Id` 標頭的 workstream，再排除經由 WSL 連線的 runtime（WSL 內
 //! 的 pane id 與 Windows 端互不相通，不能拿來認人）；另外只要兩個以上非 WSL runtime 上都存在
-//! id 等於標頭、未 exited 的 pane（不論有沒有綁定；review M2），就無法分辨請求來源（撞號），
-//! 一律視為沒有任何綁定。判定依據的覆蓋事實（來源 `override` 的 runtime＋pane id，或 `auto`）
+//! id 等於標頭、未 exited 的 pane（不論有沒有綁定；review M2），或有 workstream 以 `bound` 綁到
+//! 該 runtime 的這個 pane id 卻不在它的 pane 樹中（孤兒 pane；ui-fixes task 3.3），就無法分辨請求
+//! 來源（撞號），一律視為沒有任何綁定；斷線 runtime 最後已知的 pane 樹照常參與。判定依據的覆蓋事實（來源 `override` 的 runtime＋pane id，或 `auto`）
 //! 連同請求交給寫入服務，在寫入鎖內重驗（review M1，投影最多落後約 50 ms）。「經由 WSL」取自 [`AppState::path_mappings`]：它由設定檔每個 runtime
 //! 的 endpoint 建立，`HerdrEndpoint::Wsl` 恰好對應 [`PathMapping::Wsl`]，不另開一份清單；
 //! 表裡沒有的 runtime 視為非 WSL（正式啟動時設定中的每個 runtime 都在表內）。
@@ -16,7 +17,7 @@
 //! pane（403 `pane_not_bound`）→ 規則（409）→ 落檔（500）。先查存在再查綁定，打錯 id 才會得到
 //! 404 而不是誤導的 403。實際寫入交給 [`crate::progress_service::ProgressService`]。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -71,12 +72,25 @@ fn bound_workstreams(
     projected: &ProjectedState,
     pane_id: &str,
 ) -> HashMap<(String, String), BindingBasis> {
-    // 撞號（review M2）：兩個以上非 WSL runtime 上都有 id 相同、未 exited 的 pane（不論有沒有
-    // 綁定）就無法分辨請求來自哪裡，一律視為沒有任何綁定。
-    let claiming_runtimes = projected
+    bound_workstreams_in(projected, pane_id, |runtime| is_wsl(app, runtime))
+}
+
+/// [`bound_workstreams`] 的判定本體，只依賴投影與「這個 runtime 是否經由 WSL」的判斷，
+/// 方便以手工組的 [`ProjectedState`] 單元測試（ui-fixes task 3.3）。
+fn bound_workstreams_in(
+    projected: &ProjectedState,
+    pane_id: &str,
+    is_wsl: impl Fn(&RuntimeId) -> bool,
+) -> HashMap<(String, String), BindingBasis> {
+    // 撞號（review M2；ui-fixes task 3.3、design D8）：兩個以上非 WSL runtime「擁有」這個 pane id
+    // 就無法分辨請求來自哪裡，一律視為沒有任何綁定。擁有＝pane 樹中有 id 相同、未 exited 的 pane
+    // （不論有沒有綁定、連線狀態為何，斷線 runtime 最後已知的 pane 樹照常算），或投影中有
+    // workstream 以 `bound` 綁到該 runtime 的這個 pane id（即使 pane 不在樹中，孤兒 pane）。
+    // 以 runtime id 去重，同一個 runtime 兩個條件都成立只算一個。
+    let mut owners: HashSet<&RuntimeId> = projected
         .runtimes
         .iter()
-        .filter(|runtime| !is_wsl(app, &runtime.id))
+        .filter(|runtime| !is_wsl(&runtime.id))
         .filter(|runtime| {
             runtime
                 .workspaces
@@ -85,8 +99,23 @@ fn bound_workstreams(
                 .flat_map(|tab| &tab.panes)
                 .any(|pane| pane.id.as_str() == pane_id && !pane.exited)
         })
-        .count();
-    if claiming_runtimes > 1 {
+        .map(|runtime| &runtime.id)
+        .collect();
+    owners.extend(
+        projected
+            .projects
+            .iter()
+            .flat_map(|project| &project.workstreams)
+            .filter_map(|workstream| match &workstream.binding {
+                ProjectedBinding::Bound {
+                    runtime,
+                    pane_id: bound,
+                    ..
+                } if bound.as_str() == pane_id && !is_wsl(runtime) => Some(runtime),
+                _ => None,
+            }),
+    );
+    if owners.len() > 1 {
         return HashMap::new();
     }
 
@@ -100,7 +129,7 @@ fn bound_workstreams(
                 ..
             } = &workstream.binding
                 && bound.as_str() == pane_id
-                && !is_wsl(app, runtime)
+                && !is_wsl(runtime)
             {
                 let basis = match source {
                     BindingSource::Override => BindingBasis::Override(Override {
@@ -234,5 +263,200 @@ pub(crate) async fn agent_op(
     match result {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => write_error_response(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cockpit_core::{
+        AgentStatus, Focused, PaneId, ProjectedConnection, ProjectedPane, ProjectedRuntime,
+        ProjectedTab, ProjectedWorkspace, ProjectedWorkstream, TabId, WorkspaceId, WorkstreamId,
+    };
+
+    use super::*;
+
+    fn pane(id: &str) -> ProjectedPane {
+        ProjectedPane {
+            id: PaneId::new(id),
+            agent: None,
+            agent_status: AgentStatus::Idle,
+            title: None,
+            cwd: None,
+            label: None,
+            focused: false,
+            exited: false,
+            updated_at: "1970-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    /// 帶一個 workspace／tab、pane 樹為 `panes` 的 runtime。
+    fn runtime(
+        id: &str,
+        connection: ProjectedConnection,
+        panes: Vec<ProjectedPane>,
+    ) -> ProjectedRuntime {
+        ProjectedRuntime {
+            id: RuntimeId::new(id),
+            kind: "herdr".to_string(),
+            endpoint: "test".to_string(),
+            connection,
+            focused: Focused {
+                workspace_id: None,
+                tab_id: None,
+                pane_id: None,
+            },
+            workspaces: vec![ProjectedWorkspace {
+                id: WorkspaceId::new("w1"),
+                label: None,
+                number: 1,
+                agent_status: AgentStatus::Idle,
+                focused: false,
+                tabs: vec![ProjectedTab {
+                    id: TabId::new("w1:t1"),
+                    number: 1,
+                    agent_status: AgentStatus::Idle,
+                    focused: false,
+                    panes,
+                }],
+            }],
+        }
+    }
+
+    fn connected() -> ProjectedConnection {
+        ProjectedConnection::Connected {
+            since: "1970-01-01T00:00:00Z".to_string(),
+            server_version: "test".to_string(),
+            protocol: 1,
+            last_snapshot_at: "1970-01-01T00:00:00Z".to_string(),
+            protocol_warning: None,
+        }
+    }
+
+    fn bound(runtime: &str, pane_id: &str) -> ProjectedBinding {
+        ProjectedBinding::Bound {
+            runtime: RuntimeId::new(runtime),
+            pane_id: PaneId::new(pane_id),
+            source: BindingSource::Override,
+            agent: None,
+            agent_status: AgentStatus::Idle,
+        }
+    }
+
+    fn workstream(id: &str, binding: ProjectedBinding) -> ProjectedWorkstream {
+        ProjectedWorkstream {
+            id: WorkstreamId::new(id),
+            name: id.to_string(),
+            binding,
+            active_task: None,
+            activity_undeclared: false,
+        }
+    }
+
+    fn state(
+        runtimes: Vec<ProjectedRuntime>,
+        workstreams: Vec<ProjectedWorkstream>,
+    ) -> ProjectedState {
+        ProjectedState {
+            version: 1,
+            generated_at: "1970-01-01T00:00:00Z".to_string(),
+            runtimes,
+            projects: vec![ProjectedProject {
+                id: ProjectId::new("p"),
+                name: "p".to_string(),
+                stages: vec!["Plan".to_string()],
+                warnings: Vec::new(),
+                workstreams,
+                tasks: Vec::new(),
+            }],
+            recent_events: Vec::new(),
+        }
+    }
+
+    fn never_wsl(_: &RuntimeId) -> bool {
+        false
+    }
+
+    /// spec「孤兒 pane 與另一個 runtime 撞號」：`win2` 的 pane 樹裡沒有 `w1:p1`，但 `fe` 以 `bound`
+    /// 綁到它（孤兒 pane）；`win` 有 `be` 綁到真實存在的 `w1:p1`。兩個 runtime 都擁有這個 pane id，
+    /// 無法分辨請求來源，結果必須是空集合（ui-fixes task 3.3，design D8）。`GET` 與寫入端點共用
+    /// 這個判定，所以寫入同樣被拒。
+    #[test]
+    fn orphan_bound_pane_collides_with_other_runtime() {
+        let projected = state(
+            vec![
+                runtime("win", connected(), vec![pane("w1:p1")]),
+                runtime("win2", connected(), Vec::new()),
+            ],
+            vec![
+                workstream("be", bound("win", "w1:p1")),
+                workstream("fe", bound("win2", "w1:p1")),
+            ],
+        );
+        assert!(bound_workstreams_in(&projected, "w1:p1", never_wsl).is_empty());
+    }
+
+    /// 對照組：沒有撞號時孤兒 pane 的綁定照常成立（避免上面的測試只是因為判定壞掉而空）。
+    #[test]
+    fn orphan_bound_pane_alone_still_binds() {
+        let projected = state(
+            vec![runtime("win2", connected(), Vec::new())],
+            vec![workstream("fe", bound("win2", "w1:p1"))],
+        );
+        let found = bound_workstreams_in(&projected, "w1:p1", never_wsl);
+        assert_eq!(found.len(), 1);
+        assert!(found.contains_key(&("p".to_string(), "fe".to_string())));
+    }
+
+    /// 同一個 runtime 同時「pane 樹有未 exited 的 pane」又「有 workstream bound 到它」只算一個擁有者
+    /// （以 runtime id 去重），不能因為兩個條件都成立就當成撞號；兩條 workstream 都照常綁定。
+    #[test]
+    fn same_runtime_owning_by_both_conditions_counts_once() {
+        let projected = state(
+            vec![runtime("win", connected(), vec![pane("w1:p1")])],
+            vec![
+                workstream("be", bound("win", "w1:p1")),
+                workstream("fe", bound("win", "w1:p1")),
+            ],
+        );
+        assert_eq!(
+            bound_workstreams_in(&projected, "w1:p1", never_wsl).len(),
+            2
+        );
+    }
+
+    /// 孤兒 pane 若屬於 WSL runtime，不算擁有者（WSL 的 pane id 與 Windows 端互不相通）。
+    #[test]
+    fn orphan_bound_pane_on_wsl_runtime_is_not_a_collision() {
+        let projected = state(
+            vec![
+                runtime("win", connected(), vec![pane("w1:p1")]),
+                runtime("wsl", connected(), Vec::new()),
+            ],
+            vec![
+                workstream("be", bound("win", "w1:p1")),
+                workstream("fe", bound("wsl", "w1:p1")),
+            ],
+        );
+        let found = bound_workstreams_in(&projected, "w1:p1", |r| r.as_str() == "wsl");
+        assert_eq!(found.len(), 1);
+        assert!(found.contains_key(&("p".to_string(), "be".to_string())));
+    }
+
+    /// 已 exited 的 pane 不算擁有。
+    #[test]
+    fn exited_pane_does_not_own() {
+        let mut exited = pane("w1:p1");
+        exited.exited = true;
+        let projected = state(
+            vec![
+                runtime("win", connected(), vec![pane("w1:p1")]),
+                runtime("win2", connected(), vec![exited]),
+            ],
+            vec![workstream("be", bound("win", "w1:p1"))],
+        );
+        assert_eq!(
+            bound_workstreams_in(&projected, "w1:p1", never_wsl).len(),
+            1
+        );
     }
 }

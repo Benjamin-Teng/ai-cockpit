@@ -16,7 +16,7 @@
 //!   標記，並在回傳值的 `warnings[project_id]` 加入一則含 task id 與原 stage 值的訊息——這則要
 //!   顯示給使用者（投影 `warnings`），跟前一條「忽略並 warn」的操作記錄不同層級。
 //! - 設定檔中有、狀態檔中沒有的 task：用初始進度。
-//! - v1 舊檔沒有 `active`（有就是損毀）、v2 每個 project 都必須有 `active`（缺就是損毀）；
+//! - v1 舊檔沒有 `active`（有就是損毀，含 `null`）、v2 每個 project 都必須有 `active` 物件（缺或 `null` 就是損毀）；
 //!   `active` 的無效項目（workstream／task 不存在、task 不屬於該 workstream、載入後標記不是
 //!   none）忽略並 warn（progress-model task 3.1，design D5）。
 
@@ -92,15 +92,31 @@ pub(crate) struct StateFile {
 
 /// 單一 project 在狀態檔中的內容；`tasks`／`overrides` 均為必填（理由見 [`StateFile`]）。
 ///
-/// `active`（workstream id → task id）是 `Option`：v1 檔沒有這個欄位、v2 檔必須有（可為空物件），
+/// `active`（workstream id → task id）是雙層 `Option`：v1 檔沒有這個欄位、v2 檔必須有（可為空物件），
 /// 兩種版本共用同一個結構，由載入時依 `version` 檢查有無（design D5；不用兩個 struct 加
-/// `untagged`，免得錯誤訊息退化成「無法匹配任何變體」）。寫出一律 `Some`。
+/// `untagged`，免得錯誤訊息退化成「無法匹配任何變體」）。寫出一律 `Some(Some(_))`。
+///
+/// 雙層是為了分出欄位缺席與 `null`（ui-fixes task 3.4，design D9）：缺席＝`None`、`null`＝`Some(None)`、
+/// 有值＝`Some(Some(_))`。單層 `Option` 會把 `null` 與缺席都收成 `None`，v1 的 `"active": null`
+/// 就被誤放行。`default` 不可省：只加 `deserialize_with` 時缺席會報 `missing field`，合法的 v1 舊檔
+/// 反被誤判為損毀。
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct StateProject {
     pub(crate) tasks: BTreeMap<String, StateTask>,
     pub(crate) overrides: BTreeMap<String, StateOverride>,
-    pub(crate) active: Option<BTreeMap<String, String>>,
+    #[serde(default, deserialize_with = "deserialize_present_active")]
+    pub(crate) active: Option<Option<BTreeMap<String, String>>>,
+}
+
+/// 欄位出現（含 `null`）就包成 `Some`；缺席時由 `#[serde(default)]` 給 `None`。
+fn deserialize_present_active<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<BTreeMap<String, String>>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<BTreeMap<String, String>>::deserialize(deserializer).map(Some)
 }
 
 /// 單一 task 在狀態檔中的進度。
@@ -165,7 +181,8 @@ pub fn load_progress(
     ))
 }
 
-/// 依 `version` 檢查 `active` 欄位有無：v1 不得有、v2 每個 project 都必須有；其他版本不支援。
+/// 依 `version` 檢查 `active` 欄位有無：v1 不得有（含 `null`）、v2 每個 project 都必須有且非 `null`；
+/// 其他版本不支援。
 fn check_version_shape(path: &Path, state_file: &StateFile) -> Result<(), ProgressError> {
     let parse_error = |message: String| ProgressError::Parse {
         path: path.to_path_buf(),
@@ -180,9 +197,13 @@ fn check_version_shape(path: &Path, state_file: &StateFile) -> Result<(), Progre
             }
         }
         STATE_FILE_VERSION => {
-            if let Some((id, _)) = state_file.projects.iter().find(|(_, p)| p.active.is_none()) {
+            if let Some((id, _)) = state_file
+                .projects
+                .iter()
+                .find(|(_, p)| !matches!(p.active, Some(Some(_))))
+            {
                 return Err(parse_error(format!(
-                    "version 2 的狀態檔每個 project 都必須有 active 欄位（缺 project {id}）"
+                    "version 2 的狀態檔每個 project 的 active 都必須是物件（project {id} 缺少該欄位或為 null）"
                 )));
             }
         }
@@ -247,7 +268,7 @@ fn apply_state_file(
         let project_active = resolve_active(
             path,
             project,
-            state_project.active.as_ref(),
+            state_project.active.as_ref().and_then(Option::as_ref),
             &progress[&project.id],
             &dropped_overrides,
         );
@@ -426,7 +447,7 @@ mod tests {
                 StateProject {
                     tasks: BTreeMap::new(),
                     overrides: BTreeMap::new(),
-                    active: Some(BTreeMap::new()),
+                    active: Some(Some(BTreeMap::new())),
                 },
             )]),
         };

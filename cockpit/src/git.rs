@@ -511,6 +511,7 @@ struct RefEntryBody {
     short: String,
     kind: &'static str,
     oid: String,
+    commit: bool,
 }
 
 #[derive(Serialize)]
@@ -540,6 +541,7 @@ fn refs_response(output: RefsOutput) -> Response {
             short: entry.short,
             kind: ref_kind_str(entry.kind),
             oid: entry.oid,
+            commit: entry.commit,
         })
         .collect();
     json_ok(&RefsBody { head, refs })
@@ -627,6 +629,13 @@ async fn log_inner(
         let mut seen = HashSet::new();
         let mut tips = Vec::new();
         for entry in &refs_output.refs {
+            // ui-fixes task 3.1：剝開後不是 commit 的 ref（例如指向 tree 的 tag）不當起點；
+            // 它仍在 refs 清單中。排除不是為了避免 `git log` 失敗（git 對 tree／blob 起點直接
+            // 忽略），而是讓前端分支變更偵測（`computeExpectedTips`）與後端起點規則一致，
+            // 見 design D4。
+            if !entry.commit {
+                continue;
+            }
             if seen.insert(entry.oid.clone()) {
                 tips.push(Oid::parse(&entry.oid).map_err(|_| GitApiError::Internal)?);
             }

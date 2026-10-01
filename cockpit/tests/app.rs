@@ -21,9 +21,10 @@ use cockpit::config::{Args, Config, ConfigSource, PollingConfig, RuntimeConfig, 
 use cockpit::http::{AppState, router};
 use cockpit::progress_service::ProgressService;
 use cockpit_core::{
-    AgentStatus, ConnectionState, DomainState, Focused, Mark, Override, Pane, PaneId, ProgressOp,
-    ProjectDef, ProjectId, ProjectedBinding, RuntimeId, RuntimeSnapshot, RuntimeStore, StoreHandle,
-    TabId, TaskDef, TaskId, WorkspaceId, WorkstreamDef, WorkstreamId, spawn_projector,
+    AgentStatus, BindingSource, ConnectionState, DomainState, Focused, Mark, Override, Pane,
+    PaneId, ProgressOp, ProjectDef, ProjectId, ProjectedBinding, RuntimeId, RuntimeSnapshot,
+    RuntimeStore, StoreHandle, TabId, TaskDef, TaskId, WorkspaceId, WorkstreamDef, WorkstreamId,
+    spawn_projector,
 };
 use cockpit_herdr::HerdrEndpoint;
 use http_body_util::BodyExt;
@@ -920,8 +921,14 @@ async fn restart_keeps_progress_and_override() {
     match &projected_workstream.binding {
         ProjectedBinding::RuntimeDisconnected {
             runtime: bound_runtime,
+            source,
         } => {
             assert_eq!(*bound_runtime, runtime);
+            assert_eq!(
+                *source,
+                BindingSource::Override,
+                "be 沒有靜態 binding，斷線的綁定來自覆蓋"
+            );
         }
         other => panic!("重啟後 be 的覆蓋應該保留、解析成 runtime_disconnected，實際是：{other:?}"),
     }

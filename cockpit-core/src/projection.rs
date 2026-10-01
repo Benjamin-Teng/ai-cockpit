@@ -95,6 +95,9 @@ pub enum ProjectedBinding {
     RuntimeDisconnected {
         /// 未連線的 runtime id。
         runtime: RuntimeId,
+        /// 這個斷線的綁定來自自動解析（`auto`）或畫面覆蓋（`override`），與 `bound` 的
+        /// `source` 同義（ui-fixes task 2.1）。
+        source: BindingSource,
     },
     /// 恰好解析到一個 pane。
     Bound {
@@ -454,9 +457,10 @@ fn bound_pane<'a>(store: &'a RuntimeStore, resolution: &BindingResolution) -> Op
 fn project_binding(resolution: &BindingResolution, pane: Option<&Pane>) -> ProjectedBinding {
     match resolution {
         BindingResolution::None => ProjectedBinding::None,
-        BindingResolution::RuntimeDisconnected { runtime } => {
+        BindingResolution::RuntimeDisconnected { runtime, source } => {
             ProjectedBinding::RuntimeDisconnected {
                 runtime: runtime.clone(),
+                source: *source,
             }
         }
         BindingResolution::Bound {

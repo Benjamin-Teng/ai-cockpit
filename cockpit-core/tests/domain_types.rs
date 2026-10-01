@@ -83,6 +83,7 @@ fn binding_resolution_has_exactly_five_variants() {
         BindingResolution::None,
         BindingResolution::RuntimeDisconnected {
             runtime: runtime.clone(),
+            source: BindingSource::Auto,
         },
         BindingResolution::Bound {
             runtime: runtime.clone(),

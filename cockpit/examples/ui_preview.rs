@@ -17,6 +17,9 @@
 //! 不改投影：每筆請求在 stdout 印一行 `write-request <METHOD> <PATH> <BODY>`，供瀏覽器驗收
 //! 腳本（`docs/research/2026-09-16/actions-check.js`）比對畫面送出了什麼（task 5.3）。
 //!
+//! 情境補充（ui-fixes task 4.1）：project `cockpit` 末尾的 workstream `ovr` 以覆蓋綁到斷線的 `wsl`
+//! （`runtime_disconnected`＋`source: override`），供驗收「斷線期間可取消改綁」。
+//!
 //! 要模擬慢回應或被拒絕時，設 `COCKPIT_PREVIEW_WRITE_RULES`：以 `;` 分隔的
 //! `<PATH>=<延遲毫秒>:<狀態碼>`，例如
 //! `COCKPIT_PREVIEW_WRITE_RULES=/api/projects/cockpit/tasks/be-1/fail=1500:409`。符合路徑的
@@ -149,6 +152,7 @@ async fn main() -> anyhow::Result<()> {
     add_review_fixture_panes(&mut initial, &review_fixture)
         .context("file-review task 3.4：把 fixture pane 掛進假投影失敗")?;
     apply_progress_scenarios(&mut initial);
+    apply_override_disconnected_scenario(&mut initial);
 
     // R14 要在 `initial` 被搬進 `Arc::new` 之前先蒐集 pane id 集合，晚一步就借不到了。
     let known_panes = known_pane_ids(&initial);
@@ -1256,6 +1260,31 @@ fn apply_progress_scenarios(state: &mut ProjectedState) {
     });
 }
 
+/// 斷線 runtime 上的覆蓋綁定情境（ui-fixes task 4.1）：在 project `cockpit` 的 workstream 末尾附加
+/// `ovr`，以覆蓋綁到斷線的 `wsl` runtime，投影為 `runtime_disconnected`＋`source: override`
+/// （fixture 內 `docs` 是同一狀態但 `source: auto`，沒有覆蓋可取消）。供前端驗收「斷線期間可取消改綁」
+/// （`DELETE …/workstreams/ovr/override`，`ui_preview` 的寫入替身照舊只記錄並回 204）。
+///
+/// 放在 project `cockpit` 的最後、不掛任何 task：既有腳本以 `data-workstream` 選 workstream，
+/// 也不計 workstream 或 task 數；不新增 project（`factory-floor-check.js` 斷言左欄恰好兩個）。
+fn apply_override_disconnected_scenario(state: &mut ProjectedState) {
+    let project = state
+        .projects
+        .iter_mut()
+        .find(|p| p.id.as_str() == "cockpit")
+        .expect("fixture 缺少 project cockpit");
+    project.workstreams.push(ProjectedWorkstream {
+        id: WorkstreamId::new("ovr"),
+        name: "Override".to_string(),
+        binding: ProjectedBinding::RuntimeDisconnected {
+            runtime: RuntimeId::new("wsl"),
+            source: BindingSource::Override,
+        },
+        active_task: None,
+        activity_undeclared: false,
+    });
+}
+
 /// `COCKPIT_PREVIEW_PUSH_MS`（正整數毫秒）→ 推送間隔；未設定為 2 秒。
 fn push_interval() -> anyhow::Result<Duration> {
     match env::var("COCKPIT_PREVIEW_PUSH_MS") {
@@ -2220,6 +2249,47 @@ mod tests {
         assert_eq!(task.mark, Mark::None);
         assert_ne!(task.stage, p.stages[0], "不在第一站");
         assert_eq!(state.projects.len(), before, "不新增 project");
+    }
+
+    #[test]
+    fn apply_override_disconnected_scenario_adds_override_binding_to_disconnected_runtime() {
+        let mut state: ProjectedState =
+            serde_json::from_str(FIXTURE).expect("fixture 應該能反序列化");
+        let projects_before = state.projects.len();
+        let cockpit_before = state.projects[0].workstreams.len();
+        let ids_before: Vec<String> = state.projects[0]
+            .workstreams
+            .iter()
+            .map(|w| w.id.as_str().to_string())
+            .collect();
+        apply_override_disconnected_scenario(&mut state);
+
+        assert_eq!(state.projects.len(), projects_before, "不新增 project");
+        let project = &state.projects[0];
+        assert_eq!(project.id.as_str(), "cockpit");
+        assert_eq!(project.workstreams.len(), cockpit_before + 1);
+        // 既有 workstream 的順序不變，新的接在最後（不打亂既有腳本的選擇器）。
+        let ids_after: Vec<&str> = project.workstreams.iter().map(|w| w.id.as_str()).collect();
+        assert_eq!(&ids_after[..cockpit_before], ids_before.as_slice());
+        let ovr = project.workstreams.last().unwrap();
+        assert_eq!(ovr.id.as_str(), "ovr");
+        assert_eq!(
+            ovr.binding,
+            ProjectedBinding::RuntimeDisconnected {
+                runtime: RuntimeId::new("wsl"),
+                source: BindingSource::Override,
+            }
+        );
+        // 目標 runtime 確實是 disconnected，情境才自洽。
+        let wsl = state
+            .runtimes
+            .iter()
+            .find(|r| r.id.as_str() == "wsl")
+            .expect("fixture 有 wsl runtime");
+        assert!(matches!(
+            wsl.connection,
+            cockpit_core::ProjectedConnection::Disconnected { .. }
+        ));
     }
 
     #[test]
