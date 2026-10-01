@@ -2,7 +2,7 @@
 
 ## Purpose
 
-定義 Live Output：把使用者選定的那個 pane 的畫面輸出以純文字顯示在 Cockpit。涵蓋讀取端點（路徑、回應、
+定義 Live Output：把使用者選定的那個 pane 的畫面輸出依 HERDR 的樣式上色顯示在 Cockpit（內容仍是不含控制序列的純文字）。涵蓋讀取端點（路徑、回應、
 錯誤對應、本機同源檢查）與畫面面板的行為（選取、輪詢、失敗呈現、作為下半部第一個分頁的顯示）。Live Output 是
 HERDR pane 輸出的投影，不是 terminal，不接受輸入。證據：`docs/cockpit-spec.md` §12 與 Scenario E、
 `CONTEXT.md`「Live Output」、`docs/research/2026-09-19/pane-read-probe.md`。

@@ -21,7 +21,8 @@ pub use projection::{
     ProjectedWorkstream, StaleOverride, project, project_with_stale,
 };
 pub use runtime::{
-    AgentRuntime, OutputFormat, PaneOutput, RuntimeError, RuntimeEvents, UnstartedEvents,
+    AgentRuntime, AnsiColor, OutputFormat, OutputSegment, PaneOutput, RuntimeError, RuntimeEvents,
+    SegmentStyle, UnstartedEvents,
 };
 pub use store::{Drift, RECENT_EVENTS_CAPACITY, RecentEvent, RuntimeState, RuntimeStore};
 pub use types::{

@@ -666,8 +666,9 @@ async fn write_method_not_allowed() -> Response {
     )
 }
 
-/// 200 回應本體（spec 逐字欄位名：`runtime`、`pane_id`、`format`、`text`、`truncated`；
-/// `runtime`／`pane_id` 就是路徑上解碼後的值，不是從 `output` 推的）。標頭見
+/// 200 回應本體（spec 逐字欄位名：`runtime`、`pane_id`、`format`、`text`、`segments`、
+/// `truncated`；`runtime`／`pane_id` 就是路徑上解碼後的值，不是從 `output` 推的；`segments`
+/// 是 `text` 的樣式切分，live-output-color task 4.1／design D6）。標頭見
 /// [`with_no_store_headers`]。
 fn output_response(runtime: &str, pane_id: &str, output: cockpit_core::PaneOutput) -> Response {
     #[derive(Serialize)]
@@ -676,17 +677,19 @@ fn output_response(runtime: &str, pane_id: &str, output: cockpit_core::PaneOutpu
         pane_id: &'a str,
         format: OutputFormat,
         text: &'a str,
+        segments: &'a [cockpit_core::OutputSegment],
         truncated: bool,
     }
 
     let body = serde_json::to_string(&OutputBody {
         runtime,
         pane_id,
-        format: output.format,
-        text: &output.text,
-        truncated: output.truncated,
+        format: output.format(),
+        text: output.text(),
+        segments: output.segments(),
+        truncated: output.truncated(),
     })
-    .expect("輸出回應只含字串與布林，序列化不會失敗");
+    .expect("輸出回應只含字串、布林與樣式片段，序列化不會失敗");
 
     with_no_store_headers(
         (

@@ -58,6 +58,12 @@
 //! - `notfound`：一律 404（`RuntimeError::PaneNotFound`）。
 //! - `html`：固定回一段含 `<script>window.pwned=1</script>` 與 `<b>x</b>` 的文字，內容不隨
 //!   時間變化——供「內容不被當成 HTML」。
+//! - `ansi`：固定回一份帶樣式的樣本（前景＋背景全組合、反白、粗體／斜體／底線／變暗、上了色的
+//!   `<script>`／`<b>`、256 色與真彩色、非 SGR 序列），內容不隨時間變化；做法是把 ansi 字串交給
+//!   `cockpit_herdr::ansi::parse`，不手寫片段。每個有樣式的片段文字是唯一標籤，清單見
+//!   `ansi_sample` 的文件註解（live-output-color task 5.1；供「輸出依樣式上色」）。
+//! - `ansi-flip`：固定回文字 `status`，但每次讀取在紅（31）與綠（32）之間切換，第 1 次為紅——
+//!   供「只有顏色改變也會重畫」（live-output-color task 5.1）。
 //!
 //! 「pane 被關掉」情境（spec「失敗與消失的呈現」）：設
 //! `COCKPIT_PREVIEW_VANISH_PANE=<pane>=<毫秒>`，該 pane 會在推送迴圈經過那麼久之後，從之後
@@ -89,10 +95,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{post, put};
 use cockpit::http::{AppState, router};
 use cockpit_core::{
-    AgentRuntime, AgentStatus, BindingSource, Mark, OutputFormat, PaneId, PaneOutput,
-    ProjectedBinding, ProjectedPane, ProjectedState, ProjectedTab, ProjectedTask,
-    ProjectedWorkstream, RuntimeError, RuntimeEvents, RuntimeId, RuntimeSnapshot, StageStatus,
-    TabId, TaskId, WorkstreamId,
+    AgentRuntime, AgentStatus, BindingSource, Mark, PaneId, PaneOutput, ProjectedBinding,
+    ProjectedPane, ProjectedState, ProjectedTab, ProjectedTask, ProjectedWorkstream, RuntimeError,
+    RuntimeEvents, RuntimeId, RuntimeSnapshot, StageStatus, TabId, TaskId, WorkstreamId,
 };
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -1389,6 +1394,13 @@ enum OutputMode {
     NotFound,
     /// 固定回 [`HTML_PROBE_TEXT`]，內容不隨時間變化。
     Html,
+    /// 固定回 [`ansi_sample`] 經 `cockpit_herdr::ansi::parse` 解析的結果，內容不隨時間變化
+    /// （live-output-color task 5.1；design D8）。
+    Ansi,
+    /// 回同一段文字 `status`，但樣式在紅（31）與綠（32）之間每次讀取切換一次，第 1 次為紅
+    /// （live-output-color task 5.1；驗「只有顏色改變也重畫」）。用 `AtomicU32` 計次同
+    /// [`OutputMode::FailThenRecover`]。
+    AnsiFlip { reads: AtomicU32 },
 }
 
 /// 假 `AgentRuntime`：`snapshot`／`subscribe` 不會被呼叫到（ui_preview 不經
@@ -1439,11 +1451,12 @@ impl AgentRuntime for FakeOutputRuntime {
             OutputMode::NotFound => Err(RuntimeError::PaneNotFound {
                 pane_id: pane.clone(),
             }),
-            OutputMode::Html => Ok(PaneOutput {
-                format: OutputFormat::Text,
-                text: HTML_PROBE_TEXT.to_string(),
-                truncated: false,
-            }),
+            OutputMode::Html => Ok(PaneOutput::plain(HTML_PROBE_TEXT, false)),
+            OutputMode::Ansi => Ok(ansi_output(&ansi_sample())),
+            OutputMode::AnsiFlip { reads } => {
+                let read_index = reads.fetch_add(1, Ordering::SeqCst);
+                Ok(ansi_output(&ansi_flip_text(read_index)))
+            }
             OutputMode::Growing { start_lines, delay } => {
                 if !delay.is_zero() {
                     tokio::time::sleep(*delay).await;
@@ -1480,11 +1493,149 @@ fn growing_output(start_lines: u64, started: Instant, max_lines: u32) -> PaneOut
         .map(|n| format!("line {n}"))
         .collect::<Vec<_>>()
         .join("\n");
-    PaneOutput {
-        format: OutputFormat::Text,
-        text,
-        truncated: total_lines > max_lines,
+    PaneOutput::plain(text, total_lines > max_lines)
+}
+
+/// 把 ansi 字串交給真正的解析器（不手寫片段；design D8）。
+fn ansi_output(ansi: &str) -> PaneOutput {
+    PaneOutput::from_segments(cockpit_herdr::ansi::parse(ansi), false)
+}
+
+/// `ansi-flip` 第 `read_index`（從 0 起算）次讀取的 ansi 字串：偶數次紅（31）、奇數次綠（32），
+/// 文字固定為 `status`，後接一個未上色的換行。
+fn ansi_flip_text(read_index: u32) -> String {
+    let code = if read_index.is_multiple_of(2) { 31 } else { 32 };
+    format!("\x1b[{code}mstatus\x1b[0m\n")
+}
+
+/// 前景色票名稱與 SGR 碼（背景為碼 + 10）：樣本的「7 種色票」。
+const ANSI_PALETTE: [(&str, u8); 7] = [
+    ("red", 31),
+    ("green", 32),
+    ("yellow", 33),
+    ("blue", 34),
+    ("magenta", 35),
+    ("white", 37),
+    ("bright_black", 90),
+];
+
+/// 16 色的名稱與前景 SGR 碼（30–37、90–97；背景為碼 + 10，即 40–47、100–107）：樣本的「16 種前景、16 種背景」。
+const ANSI_16: [(&str, u8); 16] = [
+    ("black", 30),
+    ("red", 31),
+    ("green", 32),
+    ("yellow", 33),
+    ("blue", 34),
+    ("magenta", 35),
+    ("cyan", 36),
+    ("white", 37),
+    ("bright_black", 90),
+    ("bright_red", 91),
+    ("bright_green", 92),
+    ("bright_yellow", 93),
+    ("bright_blue", 94),
+    ("bright_magenta", 95),
+    ("bright_cyan", 96),
+    ("bright_white", 97),
+];
+
+/// `ansi` 模式的固定樣本（live-output-color task 5.1；design D8）；經解析後每個有樣式的片段，
+/// 其文字就是下列唯一標籤，供驗收腳本（task 5.3）以完整文字定位。標籤之間以未上色的空白或換行
+/// 隔開，相鄰片段不會因樣式相同而被合併。
+///
+/// - 開頭先有 `ESC[2J` 與一段 OSC 標題（`sample-title`），解析後必須整段消失；其後第一個片段是
+///   **未上色**的 `"[fg=none bg=none]\n"`（無前景＋無背景那一格，樣式為預設）。
+/// - 全組合（63 個，每行一種背景、行內依序一種前景）：`[fg=<F> bg=<B>]`，`<F>` 為
+///   `none`／`red`／`green`／`yellow`／`blue`／`magenta`／`white`／`bright_black`，`<B>` 同，
+///   但 `none`×`none` 那一格是上面那個未上色片段，不另有有樣式的片段。`none` 表示未指定。
+/// - 反白（8 個）：`[rev fg=<F>]`，`<F>` 同上（含 `none`＝只帶 `reverse`）。
+/// - `[bg=black]`（`40`）、`[bg=bright_black]`（`100`）：只有背景、沒有前景。
+/// - `[fg=red bg=white rev]`（`31;47;7`）。
+/// - `[bold]`、`[italic]`、`[underline]`、`[dim]`：各自只帶那一個屬性。
+/// - `<script>window.pwned=1</script>`（`fg: red`）、`<b>x</b>`（`bold`）：文字本身就是標籤。
+/// - `[bg=cyan]`（`46`）：七種色票的背景組合不含 cyan（與 blue 同為 `--accent`），補這一格讓 `.ansi-bg-cyan`
+///   在 visual-check CL1 對得到元素（live-output-color task 5.2）。
+/// - 16 色全覽（32 個）：`[fg16=<C>]`（前景，SGR 碼 30–37、90–97，各一格、只有前景）與 `[bg16=<C>]`（背景，SGR 碼
+///   40–47、100–107，各一格、只有背景），`<C>` 為 16 色名稱 `black`、`red`、`green`、`yellow`、`blue`、`magenta`、`cyan`、
+///   `white` 與各自加 `bright_` 前綴的版本（live-output-color task 5.6 F1；design D8 的「16 種前景、各背景」）。
+/// - `[fg=cyan]`（`36`）、`[fg=256-196]`（`38;5;196`）、`[fg=rgb-215-119-87]`
+///   （`38;2;215;119;87`，即 Claude Code 的橘色 `#d77757`）：解析後分別是 `cyan`、`red`、`yellow`
+///   （256 色與真彩色依 design D4 以色相歸色）。
+///
+/// 以上共 116 個有樣式的片段，文字各不相同。
+fn ansi_sample() -> String {
+    const ESC: &str = "\x1b";
+    // 每個有樣式的片段：SGR 前導、標籤、重設。
+    let cell = |codes: &str, label: &str| format!("{ESC}[{codes}m{label}{ESC}[0m");
+    let mut out = String::new();
+    // 非 SGR 序列（清螢幕、OSC 設標題，BEL 結尾）：必須消失。
+    out.push_str(&format!("{ESC}[2J{ESC}]0;sample-title\x07"));
+    out.push_str("[fg=none bg=none]\n");
+
+    let with_none: Vec<(&str, Option<u8>)> = std::iter::once(("none", None))
+        .chain(ANSI_PALETTE.iter().map(|&(name, code)| (name, Some(code))))
+        .collect();
+    // 全組合：每種背景一行。
+    for &(bg_name, bg) in &with_none {
+        for &(fg_name, fg) in &with_none {
+            let codes: Vec<String> = fg
+                .into_iter()
+                .map(|code| code.to_string())
+                .chain(bg.map(|code| (code + 10).to_string()))
+                .collect();
+            if codes.is_empty() {
+                continue;
+            }
+            out.push_str(&cell(
+                &codes.join(";"),
+                &format!("[fg={fg_name} bg={bg_name}]"),
+            ));
+            out.push(' ');
+        }
+        out.push('\n');
     }
+    // 每種前景色票（含無前景）的反白。
+    for &(fg_name, fg) in &with_none {
+        let codes = match fg {
+            Some(code) => format!("{code};7"),
+            None => "7".to_string(),
+        };
+        out.push_str(&cell(&codes, &format!("[rev fg={fg_name}]")));
+        out.push(' ');
+    }
+    out.push('\n');
+    // 其餘片段：各自獨立，以空白隔開。
+    for (codes, label) in [
+        ("40", "[bg=black]"),
+        ("100", "[bg=bright_black]"),
+        ("31;47;7", "[fg=red bg=white rev]"),
+        ("1", "[bold]"),
+        ("3", "[italic]"),
+        ("4", "[underline]"),
+        ("2", "[dim]"),
+        ("31", "<script>window.pwned=1</script>"),
+        ("1", "<b>x</b>"),
+        ("36", "[fg=cyan]"),
+        ("46", "[bg=cyan]"),
+        ("38;5;196", "[fg=256-196]"),
+        ("38;2;215;119;87", "[fg=rgb-215-119-87]"),
+    ] {
+        out.push_str(&cell(codes, label));
+        out.push(' ');
+    }
+    out.push('\n');
+    // 16 色全覽：一行前景、一行背景。
+    for (prefix, offset) in [("fg16", 0), ("bg16", 10)] {
+        for &(name, code) in &ANSI_16 {
+            out.push_str(&cell(
+                &(code + offset).to_string(),
+                &format!("[{prefix}={name}]"),
+            ));
+            out.push(' ');
+        }
+        out.push('\n');
+    }
+    out
 }
 
 /// 沒有 `COCKPIT_PREVIEW_OUTPUT_MODES` 覆寫時的預設分配（檔頭文件節錄）：`wJ:p1` 為
@@ -1565,6 +1716,10 @@ fn parse_output_mode(spec: &str) -> anyhow::Result<OutputMode> {
             }),
             "notfound" => Ok(OutputMode::NotFound),
             "html" => Ok(OutputMode::Html),
+            "ansi" => Ok(OutputMode::Ansi),
+            "ansi-flip" => Ok(OutputMode::AnsiFlip {
+                reads: AtomicU32::new(0),
+            }),
             other => anyhow::bail!("不認識的模式：{other:?}"),
         },
     }
@@ -1807,6 +1962,7 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cockpit_core::{AnsiColor, OutputSegment, SegmentStyle};
 
     /// `parse_output_mode`／`parse_output_modes` 覆蓋 brief 的六種模式與「規則不合法」路徑。
 
@@ -1959,6 +2115,363 @@ mod tests {
                 assert_eq!(cwd, old);
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // live-output-color task 5.1：`ansi`／`ansi-flip` 輸出模式
+    // -----------------------------------------------------------------------
+
+    /// 測試用的前景色票（名稱，對應的 `AnsiColor`），與樣本產生器的 SGR 碼表各自獨立寫一份，
+    /// 避免產生器與測試同錯。
+    const PALETTE: [(&str, AnsiColor); 7] = [
+        ("red", AnsiColor::Red),
+        ("green", AnsiColor::Green),
+        ("yellow", AnsiColor::Yellow),
+        ("blue", AnsiColor::Blue),
+        ("magenta", AnsiColor::Magenta),
+        ("white", AnsiColor::White),
+        ("bright_black", AnsiColor::BrightBlack),
+    ];
+
+    /// 16 色全表（名稱，對應的 `AnsiColor`），與樣本產生器的 `ANSI_16` 各自獨立寫一份。
+    const COLORS_16: [(&str, AnsiColor); 16] = [
+        ("black", AnsiColor::Black),
+        ("red", AnsiColor::Red),
+        ("green", AnsiColor::Green),
+        ("yellow", AnsiColor::Yellow),
+        ("blue", AnsiColor::Blue),
+        ("magenta", AnsiColor::Magenta),
+        ("cyan", AnsiColor::Cyan),
+        ("white", AnsiColor::White),
+        ("bright_black", AnsiColor::BrightBlack),
+        ("bright_red", AnsiColor::BrightRed),
+        ("bright_green", AnsiColor::BrightGreen),
+        ("bright_yellow", AnsiColor::BrightYellow),
+        ("bright_blue", AnsiColor::BrightBlue),
+        ("bright_magenta", AnsiColor::BrightMagenta),
+        ("bright_cyan", AnsiColor::BrightCyan),
+        ("bright_white", AnsiColor::BrightWhite),
+    ];
+
+    /// 取出 `ansi` 模式第一次讀取的結果。
+    async fn read_ansi_sample() -> PaneOutput {
+        let modes = parse_output_modes(Some("wJ:p1=ansi")).expect("ansi 應該是合法模式");
+        let runtime = FakeOutputRuntime::new(OUTPUT_RUNTIME_ID, modes);
+        runtime
+            .read_output(&PaneId::new("wJ:p1"), 200)
+            .await
+            .expect("ansi 模式應該成功回應")
+    }
+
+    /// 以完整文字找出唯一一段；找不到或不唯一就 panic。
+    fn only_segment<'a>(output: &'a PaneOutput, label: &str) -> &'a OutputSegment {
+        let found: Vec<_> = output
+            .segments()
+            .iter()
+            .filter(|segment| segment.text == label)
+            .collect();
+        assert_eq!(found.len(), 1, "標籤 {label:?} 應該恰好出現一次");
+        found[0]
+    }
+
+    #[test]
+    fn parse_output_modes_accepts_ansi_and_ansi_flip() {
+        let modes = parse_output_modes(Some("wJ:p1=ansi;wJ:p3=ansi-flip"))
+            .expect("ansi 與 ansi-flip 應該是合法模式");
+        assert!(matches!(
+            modes.get(&PaneId::new("wJ:p1")),
+            Some(OutputMode::Ansi)
+        ));
+        assert!(matches!(
+            modes.get(&PaneId::new("wJ:p3")),
+            Some(OutputMode::AnsiFlip { .. })
+        ));
+        // 預設分配不變。
+        let defaults = parse_output_modes(None).expect("預設應該成功");
+        assert!(matches!(
+            defaults.get(&PaneId::new("wJ:p1")),
+            Some(OutputMode::Growing { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn ansi_sample_text_has_no_control_sequences() {
+        let output = read_ansi_sample().await;
+        assert!(!output.text().contains('\x1b'), "text 不得含 ESC");
+        assert!(!output.text().contains('\x07'), "text 不得含 BEL");
+        assert!(!output.text().contains("[2J"), "非 SGR 序列必須整段消失");
+        assert!(
+            !output.text().contains("sample-title"),
+            "OSC 標題必須整段消失"
+        );
+        assert!(!output.truncated());
+    }
+
+    #[tokio::test]
+    async fn ansi_sample_covers_full_fg_bg_grid() {
+        let output = read_ansi_sample().await;
+        // 無前景或無背景的 7 + 7 格，加上 7 × 7 全組合；無前景無背景那格是未上色的開頭片段。
+        let fgs: Vec<(&str, Option<AnsiColor>)> = std::iter::once(("none", None))
+            .chain(PALETTE.iter().map(|(name, color)| (*name, Some(*color))))
+            .collect();
+        let mut cells = 0;
+        for (bg_name, bg) in &fgs {
+            for (fg_name, fg) in &fgs {
+                if fg.is_none() && bg.is_none() {
+                    continue;
+                }
+                let label = format!("[fg={fg_name} bg={bg_name}]");
+                let segment = only_segment(&output, &label);
+                assert_eq!(segment.style.fg, *fg, "{label} 的前景");
+                assert_eq!(segment.style.bg, *bg, "{label} 的背景");
+                assert_eq!(
+                    SegmentStyle {
+                        fg: *fg,
+                        bg: *bg,
+                        ..SegmentStyle::default()
+                    },
+                    segment.style,
+                    "{label} 不得帶其他屬性"
+                );
+                cells += 1;
+            }
+        }
+        assert_eq!(cells, 63);
+        // 無前景無背景：未上色，位於樣本最前面。
+        let first = &output.segments()[0];
+        assert_eq!(first.text, "[fg=none bg=none]\n");
+        assert_eq!(first.style, SegmentStyle::default());
+    }
+
+    #[tokio::test]
+    async fn ansi_sample_covers_all_16_foregrounds_and_backgrounds() {
+        let output = read_ansi_sample().await;
+        for (name, color) in &COLORS_16 {
+            let fg_label = format!("[fg16={name}]");
+            assert_eq!(
+                only_segment(&output, &fg_label).style,
+                SegmentStyle {
+                    fg: Some(*color),
+                    ..SegmentStyle::default()
+                },
+                "{fg_label}"
+            );
+            let bg_label = format!("[bg16={name}]");
+            assert_eq!(
+                only_segment(&output, &bg_label).style,
+                SegmentStyle {
+                    bg: Some(*color),
+                    ..SegmentStyle::default()
+                },
+                "{bg_label}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ansi_sample_covers_reverse_black_bg_and_combined() {
+        let output = read_ansi_sample().await;
+        let fgs: Vec<(&str, Option<AnsiColor>)> = std::iter::once(("none", None))
+            .chain(PALETTE.iter().map(|(name, color)| (*name, Some(*color))))
+            .collect();
+        for (name, fg) in &fgs {
+            let label = format!("[rev fg={name}]");
+            let segment = only_segment(&output, &label);
+            assert_eq!(
+                segment.style,
+                SegmentStyle {
+                    fg: *fg,
+                    reverse: true,
+                    ..SegmentStyle::default()
+                },
+                "{label}"
+            );
+        }
+        assert_eq!(
+            only_segment(&output, "[bg=black]").style,
+            SegmentStyle {
+                bg: Some(AnsiColor::Black),
+                ..SegmentStyle::default()
+            }
+        );
+        assert_eq!(
+            only_segment(&output, "[bg=bright_black]").style,
+            SegmentStyle {
+                bg: Some(AnsiColor::BrightBlack),
+                ..SegmentStyle::default()
+            }
+        );
+        assert_eq!(
+            only_segment(&output, "[bg=cyan]").style,
+            SegmentStyle {
+                bg: Some(AnsiColor::Cyan),
+                ..SegmentStyle::default()
+            }
+        );
+        assert_eq!(
+            only_segment(&output, "[fg=red bg=white rev]").style,
+            SegmentStyle {
+                fg: Some(AnsiColor::Red),
+                bg: Some(AnsiColor::White),
+                reverse: true,
+                ..SegmentStyle::default()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn ansi_sample_covers_attributes_html_and_extended_colors() {
+        let output = read_ansi_sample().await;
+        let only = |label: &str, style: SegmentStyle| {
+            assert_eq!(only_segment(&output, label).style, style, "{label}");
+        };
+        only(
+            "[bold]",
+            SegmentStyle {
+                bold: true,
+                ..SegmentStyle::default()
+            },
+        );
+        only(
+            "[italic]",
+            SegmentStyle {
+                italic: true,
+                ..SegmentStyle::default()
+            },
+        );
+        only(
+            "[underline]",
+            SegmentStyle {
+                underline: true,
+                ..SegmentStyle::default()
+            },
+        );
+        only(
+            "[dim]",
+            SegmentStyle {
+                dim: true,
+                ..SegmentStyle::default()
+            },
+        );
+        // 上了色的 HTML／script 字樣：文字本身就是標籤。
+        only(
+            "<script>window.pwned=1</script>",
+            SegmentStyle {
+                fg: Some(AnsiColor::Red),
+                ..SegmentStyle::default()
+            },
+        );
+        only(
+            "<b>x</b>",
+            SegmentStyle {
+                bold: true,
+                ..SegmentStyle::default()
+            },
+        );
+        // 16 色以外的前景：36 直接對應 cyan；256 色 196 依 design D4 歸到 red，真彩色 (215,119,87)
+        // （`#d77757`）歸到 yellow（design D4 的例子）。
+        only(
+            "[fg=cyan]",
+            SegmentStyle {
+                fg: Some(AnsiColor::Cyan),
+                ..SegmentStyle::default()
+            },
+        );
+        only(
+            "[fg=256-196]",
+            SegmentStyle {
+                fg: Some(AnsiColor::Red),
+                ..SegmentStyle::default()
+            },
+        );
+        only(
+            "[fg=rgb-215-119-87]",
+            SegmentStyle {
+                fg: Some(AnsiColor::Yellow),
+                ..SegmentStyle::default()
+            },
+        );
+    }
+
+    #[tokio::test]
+    async fn ansi_sample_styled_segments_are_exactly_the_documented_labels() {
+        let output = read_ansi_sample().await;
+        let mut expected: Vec<String> = Vec::new();
+        let names: Vec<&str> = std::iter::once("none")
+            .chain(PALETTE.iter().map(|(name, _)| *name))
+            .collect();
+        for bg in &names {
+            for fg in &names {
+                if *fg != "none" || *bg != "none" {
+                    expected.push(format!("[fg={fg} bg={bg}]"));
+                }
+            }
+        }
+        expected.extend(names.iter().map(|fg| format!("[rev fg={fg}]")));
+        for (name, _) in &COLORS_16 {
+            expected.push(format!("[fg16={name}]"));
+            expected.push(format!("[bg16={name}]"));
+        }
+        for label in [
+            "[bg=black]",
+            "[bg=bright_black]",
+            "[fg=red bg=white rev]",
+            "[bold]",
+            "[italic]",
+            "[underline]",
+            "[dim]",
+            "<script>window.pwned=1</script>",
+            "<b>x</b>",
+            "[bg=cyan]",
+            "[fg=cyan]",
+            "[fg=256-196]",
+            "[fg=rgb-215-119-87]",
+        ] {
+            expected.push(label.to_string());
+        }
+        let mut actual: Vec<String> = output
+            .segments()
+            .iter()
+            .filter(|segment| segment.style != SegmentStyle::default())
+            .map(|segment| segment.text.clone())
+            .collect();
+        expected.sort();
+        actual.sort();
+        assert_eq!(
+            actual, expected,
+            "有樣式的片段文字必須與文件列的標籤一致、無重複"
+        );
+        // 相鄰片段樣式不同、不含空片段（from_segments 的不變式）與串接一致。
+        let joined: String = output.segments().iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(joined, output.text());
+    }
+
+    #[tokio::test]
+    async fn ansi_flip_alternates_red_and_green_with_identical_text() {
+        let modes = parse_output_modes(Some("wJ:p1=ansi-flip")).expect("ansi-flip 應該是合法模式");
+        let runtime = FakeOutputRuntime::new(OUTPUT_RUNTIME_ID, modes);
+        let pane = PaneId::new("wJ:p1");
+        let mut texts = Vec::new();
+        let mut colors = Vec::new();
+        for _ in 0..4 {
+            let output = runtime
+                .read_output(&pane, 200)
+                .await
+                .expect("ansi-flip 應該成功回應");
+            assert!(!output.text().contains('\x1b'));
+            colors.push(only_segment(&output, "status").style.fg);
+            texts.push(output.text().to_string());
+        }
+        assert_eq!(
+            colors,
+            vec![
+                Some(AnsiColor::Red),
+                Some(AnsiColor::Green),
+                Some(AnsiColor::Red),
+                Some(AnsiColor::Green)
+            ]
+        );
+        assert!(texts.iter().all(|text| text == &texts[0]), "text 必須不變");
     }
 
     fn known_ids(ids: &[&str]) -> HashSet<PaneId> {

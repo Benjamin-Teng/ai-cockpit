@@ -8513,7 +8513,8 @@ async function partCssInventory() {
       {
         COCKPIT_PREVIEW_WRITE_RULES: '/api/projects/cockpit/tasks/be-1/fail=0:409',
         // wJ:p1 一律 503（過期＋失敗原因）；wJ:p3 維持預設 long（截斷提示）；wJ:p2 預設 404（pane 已不存在）。
-        COCKPIT_PREVIEW_OUTPUT_MODES: 'wJ:p1=fail:1000000',
+        // live-output-color task 5.2：wJ:p5 回 ansi 樣本（上色片段與過期覆寫規則才有元素可對）。
+        COCKPIT_PREVIEW_OUTPUT_MODES: 'wJ:p1=fail:1000000;wJ:p5=ansi',
       },
       'preview-CL1'
     );
@@ -8554,6 +8555,27 @@ async function partCssInventory() {
     await cdp.eval("window.liveOutput.select('win', 'wJ:p1'); true");
     await cdp.waitFor("(() => { var o = document.getElementById('output'); var r = o.querySelector('.output-error-reason'); return o.classList.contains('is-stale') && !!r && !r.hidden; })()", 5000, '[CL1] 選 wJ:p1（503）：過期＋失敗原因出現');
     await collect('輸出過期＋失敗原因');
+
+    // live-output-color task 5.2（spec live-output「輸出依樣式上色」「失敗與消失的呈現」）：`ansi-*` 規則
+    // 與 `.output-panel.is-stale .output-text span` 只在輸出有上色片段時才有元素——先選 wJ:p5（ansi 樣本）
+    // 走一次上色畫面，再把 /output 請求換成 503，走一次「過期＋上色片段」，最後還原 fetch。
+    await cdp.eval("window.liveOutput.select('win', 'wJ:p5'); true");
+    await cdp.waitFor("!!document.querySelector('#output .output-text span.ansi-fg')", 5000, '[CL1] 選 wJ:p5（ansi）：出現上色片段');
+    await collect('輸出（上色片段）');
+    await cdp.eval(`(() => {
+      if (!window.__cl1OrigFetch) window.__cl1OrigFetch = window.fetch;
+      window.fetch = function (input, init) {
+        var u = typeof input === 'string' ? input : input.url;
+        if (u.indexOf('/output') !== -1) {
+          return Promise.resolve(new Response(JSON.stringify({ error: 'CL1 模擬暫時失敗' }), { status: 503, headers: { 'content-type': 'application/json' } }));
+        }
+        return window.__cl1OrigFetch.apply(this, arguments);
+      };
+      return true;
+    })()`);
+    await cdp.waitFor("(() => { var o = document.getElementById('output'); return o.classList.contains('is-stale') && !!o.querySelector('.output-text span.ansi-fg'); })()", 5000, '[CL1] 模擬 503：過期且上色片段仍在');
+    await collect('輸出過期＋上色片段');
+    await cdp.eval("(() => { if (window.__cl1OrigFetch) { window.fetch = window.__cl1OrigFetch; } return true; })()");
 
     await cdp.eval("window.liveOutput.select('win', 'wJ:p2'); true");
     await cdp.waitFor("(() => { var n = document.querySelector('#output .output-gone-notice'); return !!n && !n.hidden; })()", 5000, '[CL1] 選 wJ:p2（404）：pane 已不存在出現');

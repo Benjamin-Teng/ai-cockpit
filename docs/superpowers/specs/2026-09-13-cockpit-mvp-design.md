@@ -773,7 +773,7 @@ Codex review 沙箱唯讀而 cargo 必寫 `target/`，`AGENTS.md` 只給 `cargo 
 | 2 | 各平台 transport | §2.2；WSL 經 nc 傳話 |
 | 3 | agent status 是否穩定 | 五值 enum 四層皆有；`done` 為衍生，不當完成訊號；即時變化只能每 pane 訂閱（§2.3） |
 | 4 | `pane.read` 增量策略 | ~~無增量，靠 `revision`~~（2026-09-19 實測 `revision` 恆為 0，不可用）；change 3 改為無增量、由前端比對文字，見 §12 |
-| 5 | ANSI parsing crate | change 3 再查證套件名 |
+| 5 | ANSI parsing crate | `vte` 0.15（change 8 `live-output-color` 採用，只在 `cockpit-herdr` 解析 SGR） |
 | 6 | worktree 與 project／workstream 對應 | change 2 |
 | 7 | 設定格式 | TOML |
 | 8 | 第一版是否存 event history | 不存；記憶體 ring buffer 50 筆僅供除錯 |
@@ -798,4 +798,4 @@ Codex review 沙箱唯讀而 cargo 必寫 `target/`，`AGENTS.md` 只給 `cargo 
 | Chrome PWA：是否要求 service worker | 從瀏覽器選單安裝**不需要**（Chrome 112 桌面版起）；只有「自動跳出安裝提示」仍要求 fetch handler，本專案不需要 | developer.chrome.com blog「update-install-criteria」（2023-12-05） |
 | Chrome PWA：manifest 最少欄位 | `name` 或 `short_name`；`icons` 含 192px 與 512px；`start_url`；`display` 為 standalone 等值之一 | web.dev install-criteria（2024-09-19 更新） |
 | Rust JSON Schema 驗證 crate | `jsonschema` 0.56.0（2026-09-10 發布），有 `draft202012` 模組，直接驗 `serde_json::Value`。次選 `boon` 0.6.1（更新較慢） | crates.io API、docs.rs |
-| ANSI parsing crate | change 3 再查 | — |
+| ANSI parsing crate | `vte` 0.15.0（Apache-2.0 OR MIT；alacritty 的解析器，預設 feature 只帶 `arrayvec`、`memchr`）；change 8 採用 | crates.io、`cargo info vte`（2026-10-02） |

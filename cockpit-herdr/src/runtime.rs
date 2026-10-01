@@ -33,8 +33,8 @@ use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use cockpit_core::{
-    AgentRuntime, OutputFormat, PaneId, PaneOutput, RuntimeError, RuntimeEvent, RuntimeEvents,
-    RuntimeId, RuntimeSnapshot,
+    AgentRuntime, PaneId, PaneOutput, RuntimeError, RuntimeEvent, RuntimeEvents, RuntimeId,
+    RuntimeSnapshot,
 };
 use herdr_client::client::{
     Client, EventStream, IncomingEvent, PaneReadRequest, RequestError, SessionSnapshotRequest,
@@ -48,6 +48,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc::{Sender, WeakSender};
 use tokio::task::{AbortHandle, JoinHandle};
 
+use crate::ansi;
 use crate::probe::DistroProber;
 use crate::translate;
 
@@ -492,26 +493,28 @@ impl AgentRuntime for HerdrRuntime {
         Ok(unstarted.start(tasks))
     }
 
-    /// 讀取一個 pane 的輸出：以 `pane.read` 固定參數 `source=recent`、`format=text`、
+    /// 讀取一個 pane 的輸出：以 `pane.read` 固定參數 `source=recent`、`format=ansi`、
     /// `lines=max_lines`、不送 `strip_ansi`，走與 [`HerdrRuntime::snapshot`] 相同的
-    /// `Client::request` 路徑（spec `herdr-runtime-session`「讀取 pane 輸出」；design D2、
-    /// D4）。回應的 `text`／`truncated` 原樣交回，不讀取 `revision`。
+    /// `Client::request` 路徑（spec `herdr-runtime-session`「讀取 pane 輸出」；design
+    /// （live-output）D2、D4，read 參數以 design（live-output-color）D5 為準）。回應的 `text`
+    /// 交給 [`ansi::parse`] 轉成帶樣式的片段（不檢查回應的 `format`：不含控制序列時即為一段
+    /// 無樣式片段），`truncated` 原樣交回，不讀取 `revision`。
     ///
-    /// live-output task 2.2／3.1／3.2：不做 WSL 探測、不重試（design D4：重試節奏在前端）。
+    /// live-output task 2.2／3.1／3.2、live-output-color task 3.2：不做 WSL 探測、不重試（design D4：重試節奏在前端）。
     /// 錯誤對應見 [`map_read_output_error`]：`pane_not_found` 錯誤碼對應成
     /// `RuntimeError::PaneNotFound`，其他錯誤碼、端點不存在、回應無法解析一律
     /// `RuntimeError::Failed`（spec「讀取 pane 輸出」情境「pane 不存在」「其他錯誤碼」
     /// 「連不上」）。
     ///
     /// live-output task 3.3：整段（含開連線、送 request、讀回應）持有 `read_output_lock`，
-    /// 同一個 runtime 的多筆 `read_output` 因此彼此排隊、不並發（design D5；spec「同 runtime
-    /// 不並發」）。不與 `snapshot()`／`subscribe()` 互斥——那兩個方法不碰這把鎖。
+    /// 同一個 runtime 的多筆 `read_output` 因此彼此排隊、不並發（design（live-output）D5；spec
+    /// 「同 runtime 不並發」）。不與 `snapshot()`／`subscribe()` 互斥——那兩個方法不碰這把鎖。
     async fn read_output(&self, pane: &PaneId, max_lines: u32) -> Result<PaneOutput, RuntimeError> {
         let _guard = self.read_output_lock.lock().await;
         let params = PaneReadParams {
             pane_id: pane.as_str().to_string(),
             source: ReadSource::Recent,
-            format: Some(ReadFormat::Text),
+            format: Some(ReadFormat::Ansi),
             lines: Some(max_lines),
             strip_ansi: None,
         };
@@ -520,11 +523,10 @@ impl AgentRuntime for HerdrRuntime {
             .request(PaneReadRequest(params))
             .await
             .map_err(|e| map_read_output_error(pane, e))?;
-        Ok(PaneOutput {
-            format: OutputFormat::Text,
-            text: result.read.text,
-            truncated: result.read.truncated,
-        })
+        Ok(PaneOutput::from_segments(
+            ansi::parse(&result.read.text),
+            result.read.truncated,
+        ))
     }
 }
 

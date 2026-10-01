@@ -1788,6 +1788,102 @@ body {
   max-height: 40vh;
 }
 
+/* 輸出依樣式上色（live-output-color task 5.2；design D7；spec live-output「輸出依樣式上色」）：
+   output.js 依片段建 <span>，class 來自固定對照表（只有 ansi-* 一族，不使用 style 屬性）。
+   色系對應色票：red→--bad、green→--ok、yellow→--warn、blue 與 cyan→--accent、
+   magenta→--graph-lane-4、white→--text、dim（bright_black／前景 black）→--text-dim。
+   背景是 20% 淡底（透明疊在面板 --bg-deep 上）；前景同時有色時降為 14%，讓「有色字疊在另一種
+   顏色的淡底」維持 4.5:1（--bad 字疊 --text 淡底 20% 時只有約 3.86:1，14% 約 4.69:1）。
+   實際對比以 Chrome 計算值驗收（--graph-lane-4 是 oklab 混色）。 */
+.ansi-fg-red {
+  color: var(--bad);
+}
+
+.ansi-fg-green {
+  color: var(--ok);
+}
+
+.ansi-fg-yellow {
+  color: var(--warn);
+}
+
+.ansi-fg-blue,
+.ansi-fg-cyan {
+  color: var(--accent);
+}
+
+.ansi-fg-magenta {
+  color: var(--graph-lane-4);
+}
+
+.ansi-fg-white {
+  color: var(--text);
+}
+
+.ansi-fg-dim {
+  color: var(--text-dim);
+}
+
+.ansi-bg-red {
+  --ansi-bg: var(--bad);
+}
+
+.ansi-bg-green {
+  --ansi-bg: var(--ok);
+}
+
+.ansi-bg-yellow {
+  --ansi-bg: var(--warn);
+}
+
+.ansi-bg-blue,
+.ansi-bg-cyan {
+  --ansi-bg: var(--accent);
+}
+
+.ansi-bg-magenta {
+  --ansi-bg: var(--graph-lane-4);
+}
+
+.ansi-bg-white {
+  --ansi-bg: var(--text);
+}
+
+.ansi-bg-dim {
+  --ansi-bg: var(--text-dim);
+}
+
+.ansi-bg {
+  background: color-mix(in srgb, var(--ansi-bg) 20%, transparent);
+}
+
+.ansi-bg.ansi-fg {
+  background: color-mix(in srgb, var(--ansi-bg) 14%, transparent);
+}
+
+/* 反白：以目前文字色（currentColor）當淡底。帶反白的片段 output.js 不會同時加 ansi-bg*
+   （spec：反白優先於背景），所以這裡不需要靠規則順序蓋過背景色。 */
+.ansi-reverse {
+  background: color-mix(in srgb, currentColor 20%, transparent);
+}
+
+.ansi-bold {
+  font-weight: 600;
+}
+
+/* 變暗只在沒有前景色時改成 --text-dim；有前景色就保留該色（不再疊一層變暗）。 */
+.ansi-dim:not(.ansi-fg) {
+  color: var(--text-dim);
+}
+
+.ansi-italic {
+  font-style: italic;
+}
+
+.ansi-underline {
+  text-decoration: underline;
+}
+
 /* 「標為過期」（spec live-output「失敗與消失的呈現」；direction-01-visual task 4.2；design
    D7）：output.js 的 setStale() 加在 #output 上。原本用 opacity 讓內容框呈現看得出來的視覺
    差異，會把文字對比拉到 4.5:1 以下（違反「Direction 01 視覺語彙」，見
@@ -1797,6 +1893,13 @@ body {
    .output-error-reason 本來就是 --warn（見上方），符合 D7「原因訊息用 --warn」，本 task 不用改。 */
 .output-panel.is-stale .output-text {
   color: var(--text-dim);
+}
+
+/* live-output-color task 5.2（spec「失敗與消失的呈現」；design D7）：過期時內容整片改成
+   --text-dim，上色片段的前景與底色一併失效（特異度高於所有 ansi-* 規則）。 */
+.output-panel.is-stale .output-text span {
+  color: var(--text-dim);
+  background: none;
 }
 
 /* 面板左緣 --warn 色條（design D7；task 4.2）：只在過期時出現。用 inset box-shadow，不是

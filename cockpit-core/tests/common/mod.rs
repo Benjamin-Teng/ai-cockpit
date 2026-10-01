@@ -10,9 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use cockpit_core::{
-    Agent, AgentRuntime, AgentStatus, Focused, OutputFormat, Pane, PaneId, PaneOutput,
-    RuntimeError, RuntimeEvent, RuntimeEvents, RuntimeId, RuntimeSnapshot, Tab, TabId, Workspace,
-    WorkspaceId,
+    Agent, AgentRuntime, AgentStatus, Focused, Pane, PaneId, PaneOutput, RuntimeError,
+    RuntimeEvent, RuntimeEvents, RuntimeId, RuntimeSnapshot, Tab, TabId, Workspace, WorkspaceId,
 };
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -384,11 +383,7 @@ impl AgentRuntime for FakeRuntime {
         _max_lines: u32,
     ) -> Result<PaneOutput, RuntimeError> {
         match self.outputs.lock().unwrap().get(pane) {
-            Some(text) => Ok(PaneOutput {
-                format: OutputFormat::Text,
-                text: text.clone(),
-                truncated: false,
-            }),
+            Some(text) => Ok(PaneOutput::plain(text.clone(), false)),
             None => Err(RuntimeError::PaneNotFound {
                 pane_id: pane.clone(),
             }),

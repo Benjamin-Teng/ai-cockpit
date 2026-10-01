@@ -6,8 +6,8 @@ mod common;
 use std::time::{Duration, SystemTime};
 
 use cockpit_core::{
-    AgentRuntime, OutputFormat, RuntimeError, RuntimeEvent, RuntimeStore, StoreHandle,
-    spawn_projector,
+    AgentRuntime, OutputFormat, OutputSegment, RuntimeError, RuntimeEvent, RuntimeStore,
+    SegmentStyle, StoreHandle, spawn_projector,
 };
 
 use common::{FakeRuntime, empty_focused, pane, pane_id, runtime_id, snapshot, tab, workspace};
@@ -24,9 +24,20 @@ async fn fake_runtime_read_output() {
         .read_output(&target, 200)
         .await
         .expect("讀取已腳本化的 pane 應成功");
-    assert_eq!(output.format, OutputFormat::Text);
-    assert_eq!(output.text, "one\ntwo\nthree");
-    assert!(!output.truncated, "沒有設定過 truncated，應為 false");
+    assert_eq!(output.format(), OutputFormat::Text);
+    assert_eq!(output.text(), "one\ntwo\nthree");
+    assert!(!output.truncated(), "沒有設定過 truncated，應為 false");
+    assert_eq!(
+        output.segments(),
+        &[OutputSegment {
+            text: "one
+two
+three"
+                .to_string(),
+            style: SegmentStyle::default(),
+        }],
+        "假 runtime 的輸出應是單一段無樣式片段"
+    );
 
     let missing = pane_id("p9");
     let err = fake

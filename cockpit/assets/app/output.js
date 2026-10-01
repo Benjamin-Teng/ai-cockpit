@@ -35,8 +35,10 @@
 //   - 世代序號（`generation`）在 select／clear／「pane 已不存在」時遞增；回應回來時序號
 //     不符就丟棄，不動面板、不多排輪詢（`select()` 自己已經在换選取當下排好了新的輪詢，不再
 //     需要靠舊請求的 settle「補發」）。
-//   - 文字一律 `textContent` 寫進 `<pre>`；不用 `innerHTML`（spec「內容不被當成 HTML」）。
-//   - `text` 與面板目前內容相同時不重寫（也就不會誤觸發捲動）。
+//   - 片段文字一律以 `textContent`／文字節點寫進 `<pre>` 底下的節點；不用 `innerHTML`（spec「內容不被當成
+//     HTML」）。內容框裡是未上色片段的文字節點與帶樣式片段的 `<span>`（design D7）。
+//   - 片段（含樣式）與上次渲染的相同時不重寫：去重鍵是 `JSON.stringify(segments)`，不是只比 `text`——只有
+//     顏色改變也要重畫（spec「只有顏色改變也會重畫」）；相同時也就不會誤觸發捲動。
 //   - 貼底判定：**寫入新內容之前**量 `scrollHeight - scrollTop - clientHeight`，小於
 //     NEAR_BOTTOM_PX 才在寫入之後捲到底（量測在 `<pre>` 本身，它是可捲動的內容框）。
 //
@@ -46,8 +48,8 @@
 //   - 503／504／其他非 2xx／請求本身失敗（`fetch` reject）→ `markStaleWithReason()`：保留最後
 //     一份文字並標為過期、顯示原因（回應本體的 `error` 字串；本體不是 JSON 或沒有 `error` 時
 //     退回顯示狀態碼；請求本身失敗時顯示固定的中文說明），依節奏繼續重試（task 5.5）。
-//   - 200 → `applySuccess()` 一律先清掉過期標示與原因（即使 `text` 與目前內容相同、
-//     `writeText()` 提早 return 不重寫 `<pre>`，也不能連帶略過清除標示——這兩件事分開處理）。
+//   - 200 → `applySuccess()` 一律先清掉過期標示與原因（即使片段與目前內容相同、
+//     `writeOutput()` 提早 return 不重寫 `<pre>`，也不能連帶略過清除標示——這兩件事分開處理）。
 //
 // 「標為過期」（direction-01-visual task 4.2；design D7）：`#output` 加 `is-stale` class
 // （`setStale()`），CSS 依此把內容文字改成 `--text-dim`、面板左緣加一條 `--warn` 色條
@@ -79,7 +81,7 @@
 //     settle 後排的下一次輪詢在不可見期間一律不發。
 //   - `tabShown(change)`：分頁變為可見。執行 `change()`（拿掉 hidden）後寫回切走時記下的捲動狀態——
 //     切走前貼底就捲到底、否則回到原本的 scrollTop（被 hidden 的捲動容器 scrollTop 不保證保留）；
-//     有選取時立即請求一次（切回時還沒完成的舊請求先 abort 並遞增世代序號淘汰，fix round 1）。之後到達的新內容照 writeText() 的貼底判定跟著走（spec「切回時保持貼底」
+//     有選取時立即請求一次（切回時還沒完成的舊請求先 abort 並遞增世代序號淘汰，fix round 1）。之後到達的新內容照 writeOutput() 的貼底判定跟著走（spec「切回時保持貼底」
 //     含切回後立即到達的新內容）。記下／寫回沿用 keepPinnedAcross() 同一組 capturePin()／restorePin()，
 //     只是跨越一段時間（memory stick-to-bottom-lost-when-container-resizes）。
 // 以任何方式選定 pane（select()）時通知 files.js（`window.cockpitFiles.paneSelected`），由它切到 Live
@@ -286,7 +288,9 @@
   var generation = 0;
   var current = null; // { runtime, paneId } | null；gone 之後仍保留（給標題用），直到 clear()／取消選取／重新 select()
   var gone = false;
-  var lastRenderedText = null;
+  // 上次畫出的片段去重鍵（live-output-color task 5.2；design D7）：`JSON.stringify(segments)`。
+  // 只比純文字會漏掉「文字不變、只有顏色改變」的更新，所以改比整份片段。
+  var lastRenderedKey = null;
   var pollTimer = null;
   // 目前追蹤的那個進行中請求的 AbortController；null 表示沒有請求在飛（G4 fix wave R20）。
   // 用它（而不是單一布林值）當「這次 settle 是不是我要的那個請求」的身分識別，見 runPoll()。
@@ -325,7 +329,7 @@
     outputSection.classList.remove("is-open");
     titleEl.textContent = "";
     preEl.textContent = "";
-    lastRenderedText = null;
+    lastRenderedKey = null;
     truncatedNotice.hidden = true;
     goneNotice.hidden = true;
     hideReason();
@@ -335,7 +339,7 @@
   function resetPanelForSelection(runtime, paneId) {
     titleEl.textContent = runtime + " / " + paneId;
     preEl.textContent = "";
-    lastRenderedText = null;
+    lastRenderedKey = null;
     truncatedNotice.hidden = true;
     goneNotice.hidden = true;
     hideReason();
@@ -346,13 +350,122 @@
     return preEl.scrollHeight - preEl.scrollTop - preEl.clientHeight < NEAR_BOTTOM_PX;
   }
 
-  function writeText(text) {
-    if (text === lastRenderedText) {
+  // 片段樣式 → class 的固定對照表（live-output-color task 5.2；design D7）。名稱不在表內就不加
+  // class；不使用 style 屬性、不用 innerHTML，片段文字一律以 textContent／文字節點寫入。
+  // 色系：去掉 `bright_` 的名稱；`bright_black` 與前景的 `black` 歸 `dim` 色系（--text-dim），
+  // 背景的 `black` 不加任何 class（黑底在深色面板上本來就看不出來）。
+  var ANSI_COLOR_FAMILIES = {
+    red: "red",
+    green: "green",
+    yellow: "yellow",
+    blue: "blue",
+    magenta: "magenta",
+    cyan: "cyan",
+    white: "white",
+    bright_red: "red",
+    bright_green: "green",
+    bright_yellow: "yellow",
+    bright_blue: "blue",
+    bright_magenta: "magenta",
+    bright_cyan: "cyan",
+    bright_white: "white",
+    bright_black: "dim",
+  };
+
+  function ansiFamily(name, isBackground) {
+    if (typeof name !== "string") {
+      return null;
+    }
+    if (name === "black") {
+      return isBackground ? null : "dim";
+    }
+    return Object.prototype.hasOwnProperty.call(ANSI_COLOR_FAMILIES, name) ? ANSI_COLOR_FAMILIES[name] : null;
+  }
+
+  // 一個片段要加的 class 清單（空陣列＝純文字節點）。帶 `reverse` 時不加任何 `ansi-bg*`：spec 規定
+  // 反白優先於背景，而 `.ansi-bg.ansi-fg` 的特異度高於 `.ansi-reverse`，靠 CSS 先後擋不住，
+  // 由這裡從源頭排除（design D7）。
+  function segmentClasses(segment) {
+    var classes = [];
+    var fg = ansiFamily(segment.fg, false);
+    if (fg !== null) {
+      classes.push("ansi-fg", "ansi-fg-" + fg);
+    }
+    if (segment.reverse !== true) {
+      var bg = ansiFamily(segment.bg, true);
+      if (bg !== null) {
+        classes.push("ansi-bg", "ansi-bg-" + bg);
+      }
+    }
+    if (segment.bold === true) {
+      classes.push("ansi-bold");
+    }
+    if (segment.dim === true) {
+      classes.push("ansi-dim");
+    }
+    if (segment.italic === true) {
+      classes.push("ansi-italic");
+    }
+    if (segment.underline === true) {
+      classes.push("ansi-underline");
+    }
+    if (segment.reverse === true) {
+      classes.push("ansi-reverse");
+    }
+    return classes;
+  }
+
+  // 防禦（design D7）：`segments` 不是陣列時視同 `[{ text: payload.text }]`（`text` 不是字串時視同
+  // 空字串）；陣列中 `text` 不是字串的元素略過。`payload.text` 是字串、而可用片段串接後不等於它時
+  // （端點違反自身不變式），一樣退回 `[{ text: payload.text }]`：不論走哪條路徑，面板 textContent 都
+  // 恆等於回應的 `text`（spec「輪詢與顯示」；live-output-color task 5.6 F3）。
+  function segmentsOf(payload) {
+    var text = typeof payload.text === "string" ? payload.text : null;
+    if (Array.isArray(payload.segments)) {
+      var usable = [];
+      var joined = "";
+      for (var i = 0; i < payload.segments.length; i += 1) {
+        var segment = payload.segments[i];
+        if (segment === null || typeof segment !== "object" || typeof segment.text !== "string") {
+          continue;
+        }
+        usable.push(segment);
+        joined += segment.text;
+      }
+      if (text === null || joined === text) {
+        return usable;
+      }
+    }
+    return [{ text: text === null ? "" : text }];
+  }
+
+  // `segments` 已由 segmentsOf() 篩過：每個元素都是 `text` 為字串的物件。
+  function buildFragment(segments) {
+    var fragment = document.createDocumentFragment();
+    for (var i = 0; i < segments.length; i += 1) {
+      var segment = segments[i];
+      var classes = segmentClasses(segment);
+      if (classes.length === 0) {
+        fragment.appendChild(document.createTextNode(segment.text));
+      } else {
+        var span = document.createElement("span");
+        span.className = classes.join(" ");
+        span.textContent = segment.text;
+        fragment.appendChild(span);
+      }
+    }
+    return fragment;
+  }
+
+  function writeOutput(payload) {
+    var segments = segmentsOf(payload);
+    var key = JSON.stringify(segments);
+    if (key === lastRenderedKey) {
       return;
     }
     var pinned = isPinnedToBottom();
-    preEl.textContent = text;
-    lastRenderedText = text;
+    preEl.replaceChildren(buildFragment(segments));
+    lastRenderedKey = key;
     if (pinned) {
       preEl.scrollTop = preEl.scrollHeight;
     }
@@ -415,8 +528,8 @@
     });
   }
 
-  // 成功回應之後統一清除「過期」的兩個視覺線索（標示＋原因）。獨立於 writeText()：即使
-  // `text` 與目前內容相同、writeText() 提早 return 不重寫 `<pre>`，過期標示與原因仍然必須
+  // 成功回應之後統一清除「過期」的兩個視覺線索（標示＋原因）。獨立於 writeOutput()：即使
+  // 片段與目前內容相同、writeOutput() 提早 return 不重寫 `<pre>`，過期標示與原因仍然必須
   // 消失（brief「精確值」：「相同內容不重寫 `<pre>`」的最佳化不可以連帶略過清除標示）。
   function clearFailure() {
     setStale(false);
@@ -613,9 +726,15 @@
       // 呼叫端仍會依節奏排下一次。過期標示／原因是否存在維持原樣，不在這裡動它。
       return;
     }
-    clearFailure(); // 恢復成功：過期標示與原因消失（即使下面 writeText 判定內容相同而不
+    // 合法 JSON 但不是物件（null、陣列、數字、字串）：同樣不應該發生，處理方式與上面一致。必須在
+    // 讀 `payload.segments` 之前擋下：`null` 會在那裡拋出 TypeError，例外落在 complete() 的 cb 裡，
+    // onPollSettled 後面的 schedulePoll() 就不會執行，輪詢永久停止（live-output-color task 5.6 F2）。
+    if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+      return;
+    }
+    clearFailure(); // 恢復成功：過期標示與原因消失（即使下面 writeOutput 判定內容相同而不
     // 重寫 <pre>，這兩件事也要發生——見 clearFailure() 上方註解）。
-    writeText(typeof payload.text === "string" ? payload.text : "");
+    writeOutput(payload);
     setTruncated(payload.truncated === true);
   }
 

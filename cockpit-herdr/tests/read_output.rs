@@ -12,7 +12,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use cockpit_core::{AgentRuntime, OutputFormat, PaneId, RuntimeError, RuntimeId};
+use cockpit_core::{
+    AgentRuntime, AnsiColor, OutputFormat, OutputSegment, PaneId, RuntimeError, RuntimeId,
+    SegmentStyle,
+};
 use cockpit_herdr::probe::DistroProber;
 use cockpit_herdr::runtime::{HerdrRuntime, WslProbe};
 use herdr_client::connector::Connector;
@@ -57,8 +60,8 @@ fn sole_request(fake: &FakeHerdr) -> Value {
 }
 
 /// spec「送出的參數」：以行數上限 200 讀取 pane `w1:p1` 的輸出 → 假 HERDR 收到 `pane.read`，
-/// params 為 `pane_id`＝`w1:p1`、`source`＝`recent`、`format`＝`text`、`lines`＝200，
-/// 沒有 `strip_ansi` 鍵。
+/// params 為 `pane_id`＝`w1:p1`、`source`＝`recent`、`format`＝`ansi`、`lines`＝200，
+/// 沒有 `strip_ansi` 鍵（live-output-color task 3.2：由 `text` 改送 `ansi`）。
 #[tokio::test]
 async fn sends_fixed_params_with_max_lines() {
     let config = FakeHerdrConfig::new().with_method_response(
@@ -81,7 +84,7 @@ async fn sends_fixed_params_with_max_lines() {
     let params = &request["params"];
     assert_eq!(params["pane_id"], "w1:p1");
     assert_eq!(params["source"], "recent");
-    assert_eq!(params["format"], "text");
+    assert_eq!(params["format"], "ansi");
     assert_eq!(params["lines"], 200);
     assert!(
         params.get("strip_ansi").is_none(),
@@ -90,7 +93,8 @@ async fn sends_fixed_params_with_max_lines() {
 }
 
 /// spec「回應原樣交回」：假 HERDR 回應 `text` 為 `a\nb`、`truncated` 為 `true`、`revision`
-/// 為 0 → 得到文字 `a\nb`、`truncated` 為 `true`、格式為純文字。
+/// 為 0 → 得到文字 `a\nb`、單一段無樣式的片段、`truncated` 為 `true`、格式為純文字
+/// （live-output-color task 3.2 加斷言單一段無樣式片段）。
 #[tokio::test]
 async fn returns_response_text_and_truncated_as_is() {
     let config = FakeHerdrConfig::new().with_method_response(
@@ -105,9 +109,58 @@ async fn returns_response_text_and_truncated_as_is() {
         .await
         .expect("read_output 應成功");
 
-    assert_eq!(output.text, "a\nb");
-    assert!(output.truncated, "truncated 應原樣交回 true");
-    assert_eq!(output.format, OutputFormat::Text);
+    assert_eq!(output.text(), "a\nb");
+    assert!(output.truncated(), "truncated 應原樣交回 true");
+    assert_eq!(output.format(), OutputFormat::Text);
+    assert_eq!(
+        output.segments(),
+        [OutputSegment {
+            text: "a\nb".to_string(),
+            style: SegmentStyle::default(),
+        }],
+        "應為單一段無樣式的片段"
+    );
+}
+
+/// spec「帶樣式的回應」（live-output-color task 3.2）：假 HERDR 回應 `text` 為
+/// `ESC[0m ESC[38;5;1m err ESC[0m ok\r\n`（ESC 為 `\x1b`）、`truncated` 為 `false` → 得到文字
+/// `err ok\n`，片段為 `err`（`fg: red`）與其後的空格加 `ok\n`（無樣式）。
+#[tokio::test]
+async fn styled_response_is_parsed_into_segments() {
+    let config = FakeHerdrConfig::new().with_method_response(
+        "pane.read",
+        MethodResponse::Success(pane_read_result(
+            "w1:p1",
+            "\x1b[0m\x1b[38;5;1merr\x1b[0m ok\r\n",
+            false,
+        )),
+    );
+    let fake = FakeHerdr::start(config).await.expect("啟動假 HERDR 失敗");
+    let runtime = runtime(&fake);
+
+    let output = runtime
+        .read_output(&PaneId::new("w1:p1"), 200)
+        .await
+        .expect("read_output 應成功");
+
+    assert_eq!(output.text(), "err ok\n");
+    assert!(!output.truncated(), "truncated 應原樣交回 false");
+    assert_eq!(
+        output.segments(),
+        [
+            OutputSegment {
+                text: "err".to_string(),
+                style: SegmentStyle {
+                    fg: Some(AnsiColor::Red),
+                    ..SegmentStyle::default()
+                },
+            },
+            OutputSegment {
+                text: " ok\n".to_string(),
+                style: SegmentStyle::default(),
+            },
+        ]
+    );
 }
 
 /// spec「pane 不存在」：假 HERDR 對 `pane.read` 回 `error` 物件、`code` 為 `pane_not_found`
@@ -313,7 +366,7 @@ async fn read_output_does_not_probe_wsl() {
         .await
         .expect("read_output 不做 WSL 探測，即使探測器一律失敗也該成功取得文字");
 
-    assert_eq!(output.text, "irrelevant");
+    assert_eq!(output.text(), "irrelevant");
     assert_eq!(
         probe_calls.load(Ordering::SeqCst),
         0,

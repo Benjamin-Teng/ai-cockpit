@@ -27,8 +27,8 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};
 use cockpit::http::{self, AppState};
 use cockpit_core::{
-    AgentRuntime, OutputFormat, PaneId, PaneOutput, RuntimeError, RuntimeEvents, RuntimeId,
-    RuntimeSnapshot, RuntimeStore, StoreHandle,
+    AgentRuntime, AnsiColor, OutputSegment, PaneId, PaneOutput, RuntimeError, RuntimeEvents,
+    RuntimeId, RuntimeSnapshot, RuntimeStore, SegmentStyle, StoreHandle,
 };
 use http_body_util::BodyExt;
 use serde_json::Value;
@@ -43,6 +43,11 @@ const RUNTIME: &str = "win";
 enum Behavior {
     Success {
         text: String,
+        truncated: bool,
+    },
+    /// 帶樣式片段的輸出（live-output-color task 4.1）：用 `PaneOutput::from_segments` 組出。
+    Styled {
+        segments: Vec<OutputSegment>,
         truncated: bool,
     },
     Failed(String),
@@ -110,11 +115,13 @@ impl AgentRuntime for FakeOutputRuntime {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.last_max_lines.store(max_lines, Ordering::SeqCst);
         match self.behaviors.get(pane) {
-            Some(Behavior::Success { text, truncated }) => Ok(PaneOutput {
-                format: OutputFormat::Text,
-                text: text.clone(),
-                truncated: *truncated,
-            }),
+            Some(Behavior::Success { text, truncated }) => {
+                Ok(PaneOutput::plain(text.clone(), *truncated))
+            }
+            Some(Behavior::Styled {
+                segments,
+                truncated,
+            }) => Ok(PaneOutput::from_segments(segments.clone(), *truncated)),
             None => Err(RuntimeError::PaneNotFound {
                 pane_id: pane.clone(),
             }),
@@ -229,9 +236,155 @@ fn success_behavior(text: &str) -> Behavior {
     }
 }
 
+/// 不帶任何樣式的片段（所有樣式欄位為預設值）。
+fn plain_segment(text: &str) -> OutputSegment {
+    OutputSegment {
+        text: text.to_string(),
+        style: SegmentStyle::default(),
+    }
+}
+
+/// `segments` 的共通不變量（spec「輸出讀取端點」）：片段串接等於 `text`、每個片段的 `text`
+/// 非空、相鄰片段的樣式不同（以去掉 `text` 的 JSON 鍵值比較）。
+fn assert_segments_invariants(body: &Value) {
+    let segments = body["segments"].as_array().expect("segments 應該是陣列");
+    let joined: String = segments
+        .iter()
+        .map(|seg| seg["text"].as_str().expect("每個片段都有字串 text"))
+        .collect();
+    assert_eq!(
+        Value::String(joined),
+        body["text"],
+        "segments 串接應該等於 text"
+    );
+    for seg in segments {
+        assert!(
+            seg["text"].as_str().is_some_and(|t| !t.is_empty()),
+            "每個片段的 text 都不得為空，實際：{seg:?}"
+        );
+    }
+    let style_of = |seg: &Value| {
+        let mut map = seg.as_object().expect("片段是物件").clone();
+        map.remove("text");
+        map
+    };
+    for pair in segments.windows(2) {
+        assert_ne!(
+            style_of(&pair[0]),
+            style_of(&pair[1]),
+            "相鄰片段的樣式必須不同（否則應合併），實際：{pair:?}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // spec `live-output`「輸出讀取端點」
 // ---------------------------------------------------------------------------
+
+/// Scenario「讀到輸出」（live-output-color task 4.1）：三行、第二行是紅色 `error`；回應帶
+/// `segments`，串接等於 `text`，含 `error` 的片段 `fg` 為 `red`。
+#[tokio::test]
+async fn read_output_returns_segments_with_styled_line() {
+    let red = SegmentStyle {
+        fg: Some(AnsiColor::Red),
+        ..SegmentStyle::default()
+    };
+    let fake = Arc::new(FakeOutputRuntime::new(RUNTIME).with_behavior(
+        "w1:p1",
+        Behavior::Styled {
+            segments: vec![
+                plain_segment("line1\n"),
+                OutputSegment {
+                    text: "error".to_string(),
+                    style: red,
+                },
+                plain_segment("\nline3"),
+            ],
+            truncated: false,
+        },
+    ));
+    let router = http::router(build(fake.clone()));
+
+    let (status, body, content_type, headers) =
+        send(&router, "GET", &output_uri(RUNTIME, "w1:p1")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type.as_deref(), Some("application/json"));
+    assert_eq!(body["format"], "text");
+    assert_eq!(body["text"], "line1\nerror\nline3");
+    assert_eq!(body["truncated"], false);
+    assert_no_store_and_nosniff(&headers);
+    assert_segments_invariants(&body);
+    let error_segment = body["segments"]
+        .as_array()
+        .expect("segments 應該是陣列")
+        .iter()
+        .find(|seg| seg["text"].as_str().is_some_and(|t| t.contains("error")))
+        .expect("應該有含 error 的片段");
+    assert_eq!(error_segment["fg"], "red");
+    assert_eq!(fake.call_count(), 1);
+}
+
+/// Scenario「沒有樣式的輸出」（live-output-color task 4.1）：單行 `hello` 沒有任何樣式，
+/// `segments` 恰為 `[{"text":"hello"}]`，不含任何樣式鍵。
+#[tokio::test]
+async fn read_output_without_style_has_single_unstyled_segment() {
+    let fake =
+        Arc::new(FakeOutputRuntime::new(RUNTIME).with_behavior("w1:p1", success_behavior("hello")));
+    let router = http::router(build(fake));
+
+    let (status, body, _, _) = send(&router, "GET", &output_uri(RUNTIME, "w1:p1")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["text"], "hello");
+    assert_eq!(body["segments"], serde_json::json!([{"text": "hello"}]));
+    assert_segments_invariants(&body);
+}
+
+/// spec「輸出讀取端點」：`text` 為空字串時 `segments` 為空陣列（端點層；core 層的 `plain("")`／
+/// `from_segments` 空輸入另有測試）。live-output-color 4.3 審查 F5。
+#[tokio::test]
+async fn read_output_empty_text_has_empty_segments_array() {
+    let fake =
+        Arc::new(FakeOutputRuntime::new(RUNTIME).with_behavior("w1:p1", success_behavior("")));
+    let router = http::router(build(fake));
+
+    let (status, body, _, _) = send(&router, "GET", &output_uri(RUNTIME, "w1:p1")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["text"], "");
+    assert_eq!(body["segments"], serde_json::json!([]));
+}
+
+/// spec「輸出讀取端點」：200 回應的頂層鍵恰為 `runtime`、`pane_id`、`format`、`text`、`segments`、
+/// `truncated`，日後誤加欄位會在這裡被發現。live-output-color 4.3 審查 F5。
+#[tokio::test]
+async fn read_output_body_has_exactly_the_six_documented_keys() {
+    let fake =
+        Arc::new(FakeOutputRuntime::new(RUNTIME).with_behavior("w1:p1", success_behavior("hello")));
+    let router = http::router(build(fake));
+
+    let (status, body, _, _) = send(&router, "GET", &output_uri(RUNTIME, "w1:p1")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    let mut keys: Vec<&str> = body
+        .as_object()
+        .expect("本體應該是 JSON 物件")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    let mut expected = vec![
+        "runtime",
+        "pane_id",
+        "format",
+        "text",
+        "segments",
+        "truncated",
+    ];
+    expected.sort_unstable();
+    assert_eq!(keys, expected);
+}
 
 /// Scenario「讀到輸出」。
 #[tokio::test]

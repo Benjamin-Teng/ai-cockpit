@@ -12,6 +12,7 @@ serde_json = "1.0.151"
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["sync", "time", "rt", "macros", "process"] }
 tracing = "0.1.44"
+vte = "0.15"
 
 [dev-dependencies]
 herdr-client = { path = "../herdr-client", features = ["test-support"] }
