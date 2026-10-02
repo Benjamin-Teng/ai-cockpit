@@ -34,7 +34,7 @@
 - [x] 1.5 全 gate：Rust gate、`cargo test -p cockpit --example ui_preview`、markdownlint、`openspec validate --all`、12 支既有驗收腳本（清單見 `docs/handover.md`
   第 1 節）、`deid-check.js`（檔案模式）0 命中
 - [x] 1.6 A 段審查（Opus 5.5 取代 Codex）：範圍 `main..HEAD`；findings 實測後才改
-- [ ] 1.7 A 段 squash 併回 `main`（已授權），刪除 `feat/deidentify` 分支；`main` 上 `deid-check.js`（檔案模式）0 命中
+- [x] 1.7 A 段 squash 併回 `main`（已授權），刪除 `feat/deidentify` 分支；`main` 上 `deid-check.js`（檔案模式）0 命中
 
 ## 2. B 段：改寫歷史（不可逆，design D5）
 
