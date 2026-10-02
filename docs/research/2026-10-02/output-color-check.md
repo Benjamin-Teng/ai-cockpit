@@ -57,9 +57,9 @@ node docs/research/2026-10-02/output-color-check.js --screenshots  # 斷言後�
 | A2 | `fg red`＋`bg white` 底為 `--text` 14%、文字 `--bad`（對照：無前景的 `bg white` 為 20%） | 有色字疊在淡底上 |
 | A3 | `fg red`＋`bg white`＋反白：底為 `--bad` 20%、文字 `--bad`；只帶反白：底為 `--text` 20% | 反白優先於背景 |
 | A4 | `bg black` 沒有背景；`bg bright_black` 為 `--text-dim` 20% | 黑與亮黑背景 |
-| A5 | 粗體字重 600、斜體、底線，文字色皆 `--text` | 粗體、斜體與底線 |
+| A5 | 粗體字重 700、斜體、底線，文字色皆 `--text` | 粗體、斜體與底線 |
 | A6 | 只帶 `dim`：`--text-dim`；`dim` 加 `fg red`：維持 `--bad`（用攔截回應補樣本沒有的組合） | 變暗的預設色文字 |
-| A7 | `window.pwned` 未設定、面板沒有 `script`／`b` 元素、字樣原樣出現；`<script>` 字樣為 `--bad`、`<b>x</b>` 字重 600 | 上色後內容仍不被當成 HTML |
+| A7 | `window.pwned` 未設定、面板沒有 `script`／`b` 元素、字樣原樣出現；`<script>` 字樣為 `--bad`、`<b>x</b>` 字重 700 | 上色後內容仍不被當成 HTML |
 | A8 | 以 CDP `Fetch` 攔截輸出請求，回含 `fg`／`bg` 為 `orange; background: red` 的片段：以預設文字色呈現、無背景，面板內沒有元素的 class 或 style 含該字串（對照組 `fg red` 仍為 `--bad`，確認攔截內容真的被畫出）；另斷言這幾個片段是獨立節點，且（含 A7 之後的整個 ansi 樣本）內容框內沒有任何元素帶 `style` 屬性（design D7「不使用 `style` 屬性」） | 不認得的顏色名稱 |
 | A9 | 117 項（116 個有樣式片段加無樣式的 `[fg=none bg=none]`）的文字色對實測底色合成後 >= 4.5:1；另斷言量測集合涵蓋 7 種色票文字色與至少 8 種底色，避免全預設色時對比恆過的空轉 | 對比 |
 | A10 | 256 色 196 為 `--bad`、真彩色 `#d77757` 為 `--warn`、`cyan` 為 `--accent`（前端畫出後端歸色結果） | 前景對照表 |

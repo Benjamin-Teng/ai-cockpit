@@ -1868,7 +1868,7 @@ body {
 }
 
 .ansi-bold {
-  font-weight: 600;
+  font-weight: 700;
 }
 
 /* 變暗只在沒有前景色時改成 --text-dim；有前景色就保留該色（不再疊一層變暗）。 */

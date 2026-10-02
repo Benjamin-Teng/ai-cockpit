@@ -467,7 +467,7 @@ function problemsOf(item, exp, tokens) {
   } else if (item.bg.a > ALPHA_TOL) {
     out.push(`背景 ${fmt(item.bg)}，應為不畫背景`);
   }
-  if (exp.bold !== (item.weight === '600')) out.push(`字重 ${item.weight}，bold 應為 ${exp.bold}`);
+  if (exp.bold !== (item.weight === '700')) out.push(`字重 ${item.weight}，bold 應為 ${exp.bold}`);
   if (exp.italic !== (item.fontStyle === 'italic')) out.push(`font-style ${item.fontStyle}，italic 應為 ${exp.italic}`);
   if (exp.underline !== item.deco.includes('underline')) out.push(`text-decoration-line ${item.deco}，underline 應為 ${exp.underline}`);
   return out;
@@ -561,8 +561,8 @@ async function colorCase(cdp) {
   const i = items['[italic]'];
   const u = items['[underline]'];
   check(
-    b.found && b.weight === '600' && near(b.color, tokens.text, 1),
-    `A5 bold：字重 600、文字 --text（實際 weight ${b.weight}、${fmt(b.color)}）`
+    b.found && b.weight === '700' && near(b.color, tokens.text, 1),
+    `A5 bold：字重 700、文字 --text（實際 weight ${b.weight}、${fmt(b.color)}）`
   );
   check(
     i.found && i.fontStyle === 'italic' && near(i.color, tokens.text, 1),
@@ -590,7 +590,7 @@ async function colorCase(cdp) {
   const scriptSeg = items['<script>window.pwned=1</script>'];
   const boldSeg = items['<b>x</b>'];
   check(scriptSeg.found && near(scriptSeg.color, tokens.bad, 1), `A7：fg red 的 <script> 字樣以 --bad 顯示（實際 ${fmt(scriptSeg.color)}）`);
-  check(boldSeg.found && boldSeg.weight === '600', `A7：bold 的 <b>x</b> 字樣字重 600（實際 ${boldSeg.weight}）`);
+  check(boldSeg.found && boldSeg.weight === '700', `A7：bold 的 <b>x</b> 字樣字重 700（實際 ${boldSeg.weight}）`);
 
   // A10 歸色（256 色與真彩色已在後端歸為 red／yellow／cyan，這裡確認前端畫出對應色票）。
   const c256 = items['[fg=256-196]'];

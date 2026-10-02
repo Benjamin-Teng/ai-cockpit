@@ -387,7 +387,7 @@ fn semicolon_color_consumes_exact_param_count() {
             ..SegmentStyle::default()
         }
     );
-    // `38;2;1;2;3` 吃掉 1、2、3（RGB(1,2,3)：最大減最小 2 < 64 → 無彩，(3+1)/2 = 2 < 48 → black），
+    // `38;2;1;2;3` 吃掉 1、2、3（RGB(1,2,3)：最大減最小 2 < 16 → 無彩，(3+1)/2 = 2 < 48 → black），
     // 之後的 `4` 照常套用。
     assert_eq!(
         style_after("38;2;1;2;3;4"),
@@ -469,9 +469,10 @@ fn palette_cube_and_grayscale_boundaries() {
         (102, BrightBlack),
         // 145 = 16＋36·3＋6·3＋3 → (175,175,175)：平均 175 ≥ 160 → white。
         (145, White),
-        // 95 = 16＋36·2＋6·1＋1 → (135,95,95)：差 40 < 64 → 無彩，平均 115 → bright_black。
-        (95, BrightBlack),
-        // 131 = 16＋36·3＋6·1＋1 → (175,95,95)：差 80 ≥ 64 → 有彩，色相 0° → red。
+        // 95 = 16＋36·2＋6·1＋1 → (135,95,95)：差 40 ≥ 16，且 10×40 = 400 ≥ 最大 135 → 有彩，
+        // 色相 0° → red（output-color-tuning 前的門檻「差 < 64」會歸 bright_black）。
+        (95, Red),
+        // 131 = 16＋36·3＋6·1＋1 → (175,95,95)：差 80，10×80 = 800 ≥ 175 → 有彩，色相 0° → red。
         (131, Red),
         // 52 = 16＋36·1 → (95,0,0)：差 95 → 色相 0° → red。
         (52, Red),
@@ -492,19 +493,37 @@ fn palette_cube_and_grayscale_boundaries() {
     }
 }
 
-/// 無彩門檻：最大分量減最小分量 63 為無彩、64 為有彩。
+/// spec「無彩門檻的界線」（`output-color-tuning` design D1）：無彩 ⇔ 差 < 16 或 10×差 < 最大分量。
 #[test]
-fn chroma_threshold_63_and_64() {
-    // (150,87,87)：差 63 → 無彩，(150+87)/2 = 118.5 → bright_black。
-    assert_eq!(truecolor_fg(150, 87, 87), fg(BrightBlack));
-    // (151,87,87)：差 64 → 有彩，色相 0° → red。
-    assert_eq!(truecolor_fg(151, 87, 87), fg(Red));
-    // (87,150,87)：差 63 → bright_black；(87,151,87)：差 64，色相 120° → green。
-    assert_eq!(truecolor_fg(87, 150, 87), fg(BrightBlack));
-    assert_eq!(truecolor_fg(87, 151, 87), fg(Green));
-    // (63,0,0)：差 63 → 無彩，31.5 → black；(64,0,0)：差 64 → red。
-    assert_eq!(truecolor_fg(63, 0, 0), fg(Black));
-    assert_eq!(truecolor_fg(64, 0, 0), fg(Red));
+fn scenario_achromatic_threshold_boundaries() {
+    // (128,128,143)：差 15 < 16 → 無彩，(143+128)/2 = 135.5 → bright_black。
+    assert_eq!(truecolor_fg(128, 128, 143), fg(BrightBlack));
+    // (128,128,144)：差 16（不小於 16），10×16 = 160 ≥ 最大 144 → 有彩；
+    // 最大為 B：sector = R−G＋4c = 64，色相 = 60·64/16 = 240° → blue。
+    assert_eq!(truecolor_fg(128, 128, 144), fg(Blue));
+    // (230,230,255)：差 25 ≥ 16，但 10×25 = 250 < 最大 255 → 無彩，(255+230)/2 = 242.5 ≥ 160 → white。
+    assert_eq!(truecolor_fg(230, 230, 255), fg(White));
+    // (228,228,255)：差 27，10×27 = 270 ≥ 255 → 有彩，色相 240° → blue。
+    assert_eq!(truecolor_fg(228, 228, 255), fg(Blue));
+    // 相對門檻的等號邊界（同差 25）：(226,226,251) 10×25 = 250 < 251 → 無彩，(251+226)/2 = 238.5 → white；
+    // (225,225,250) 10×25 = 250，不小於 250 → 有彩，色相 240° → blue。
+    assert_eq!(truecolor_fg(226, 226, 251), fg(White));
+    assert_eq!(truecolor_fg(225, 225, 250), fg(Blue));
+}
+
+/// spec「深色主題 diff 底色不被歸成灰」：Claude Code 深色主題的四個 diff 背景色（真彩色）。
+#[test]
+fn scenario_dark_theme_diff_backgrounds_keep_hue() {
+    // (34,92,43)：差 58，最大 G：sector = B−R＋2c = 9＋116 = 125，色相 = 60·125/58 ≈ 129° → green。
+    assert_eq!(style_after("48;2;34;92;43"), bg(Green));
+    // (122,41,54)：差 81，最大 R：sector = (G−B) mod 6c = −13＋486 = 473，色相 ≈ 350.4° ≥ 330° → red。
+    assert_eq!(style_after("48;2;122;41;54"), bg(Red));
+    // (71,88,74)：差 17 ≥ 16，10×17 = 170 ≥ 最大 88 → 有彩；最大 G：sector = 74−71＋34 = 37，
+    // 色相 = 60·37/17 ≈ 130.6° → green（舊門檻差 < 64 會歸 bright_black）。
+    assert_eq!(style_after("48;2;71;88;74"), bg(Green));
+    // (105,72,77)：差 33，10×33 = 330 ≥ 最大 105 → 有彩；最大 R：sector = (72−77) mod 198 = 193，
+    // 色相 = 60·193/33 ≈ 350.9° ≥ 330° → red（舊門檻會歸 bright_black）。
+    assert_eq!(style_after("48;2;105;72;77"), bg(Red));
 }
 
 /// 無彩的明度界線：(最大＋最小)÷2 小於 48 為 black、小於 160 為 bright_black、其餘 white。
@@ -516,13 +535,13 @@ fn achromatic_lightness_boundaries() {
     // 灰 159 → bright_black；灰 160 → white。
     assert_eq!(truecolor_fg(159, 159, 159), fg(BrightBlack));
     assert_eq!(truecolor_fg(160, 160, 160), fg(White));
-    // 奇數和：(79,16,16) 差 63 → (79+16)/2 = 47.5 < 48 → black；
-    // (80,17,17) 差 63 → 48.5 → bright_black。
-    assert_eq!(truecolor_fg(79, 16, 16), fg(Black));
-    assert_eq!(truecolor_fg(80, 17, 17), fg(BrightBlack));
-    // (191,128,128) 差 63 → 159.5 < 160 → bright_black；(192,129,129) 差 63 → 160.5 → white。
-    assert_eq!(truecolor_fg(191, 128, 128), fg(BrightBlack));
-    assert_eq!(truecolor_fg(192, 129, 129), fg(White));
+    // 奇數和（差 15 < 16 仍為無彩）：(55,40,40) 和 95 → 47.5 < 48 → black；
+    // (56,41,41) 和 97 → 48.5 → bright_black。
+    assert_eq!(truecolor_fg(55, 40, 40), fg(Black));
+    assert_eq!(truecolor_fg(56, 41, 41), fg(BrightBlack));
+    // (167,152,152) 和 319 → 159.5 < 160 → bright_black；(168,153,153) 和 321 → 160.5 → white。
+    assert_eq!(truecolor_fg(167, 152, 152), fg(BrightBlack));
+    assert_eq!(truecolor_fg(168, 153, 153), fg(White));
 }
 
 /// 每個色相界線（12°、75°、165°、200°、270°、330°）兩側；區間含下界不含上界。

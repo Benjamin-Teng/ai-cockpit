@@ -216,8 +216,13 @@ fn palette(index: u8) -> AnsiColor {
     }
 }
 
-/// RGB → 16 色（design D4）：最大與最小分量差小於 64 為無彩，依明度歸 `black`／`bright_black`／
-/// `white`；其餘依色相歸到六個非 `bright_` 色之一。
+/// RGB → 16 色（design D4）：最大與最小分量差小於 16，或該差乘以 10 小於最大分量時為無彩
+/// （`output-color-tuning` design D1），依明度歸 `black`／`bright_black`／`white`；其餘依色相歸到
+/// 六個非 `bright_` 色之一。
+///
+/// 絕對下限 16 讓極接近灰的顏色不因相對比例大而被當成有色；相對 10% 讓帶色調但飽和度低的深色
+/// diff 底色（例如 `(71,88,74)`，差 17）歸到其色相，同時讓接近白的淡色（例如 `(255,233,233)`，
+/// 差 22，10×22 = 220 < 255）仍視為白。
 ///
 /// 全程用整數比較，界線（例如色相恰為 12°）不受浮點誤差影響。
 fn quantize(r: u8, g: u8, b: u8) -> AnsiColor {
@@ -225,7 +230,8 @@ fn quantize(r: u8, g: u8, b: u8) -> AnsiColor {
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
     let chroma = max - min;
-    if chroma < 64 {
+    // 差 < 16，或差 < 最大分量的 10 %（以 10·差 < 最大分量避免浮點）。
+    if chroma < 16 || 10 * chroma < max {
         // (max＋min)÷2 < 48 ⇔ max＋min < 96；< 160 ⇔ max＋min < 320。
         let sum = max + min;
         return if sum < 96 {
