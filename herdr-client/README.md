@@ -266,7 +266,7 @@ method，這兩個 builder 後呼叫者勝出）／`with_snapshot_result`／`wit
 |---|---|---|
 | `HERDR_CLIENT_TEST_WIN_SOCKET` | Windows 端 HERDR API socket 路徑 | `default_socket_path_from_env()` |
 | `HERDR_CLIENT_TEST_WSL_DISTRO` | WSL 發行版名稱 | `Ubuntu-24.04` |
-| `HERDR_CLIENT_TEST_WSL_SOCKET` | WSL 端 HERDR API unix socket 路徑 | `/home/<user>/.config/herdr/herdr.sock` |
+| `HERDR_CLIENT_TEST_WSL_SOCKET` | WSL 端 HERDR API unix socket 路徑 | 由 WSL 的 `$HOME` 推得：`<HOME>/.config/herdr/herdr.sock`（取不到時測試失敗並提示設定本變數） |
 | `HERDR_CLIENT_TEST_ALLOW_WSL_WRITES` | 是否允許在 WSL 端 workspace `wD` 建立/操作/關閉測試 tab | 未設定＝不允許（唯讀，寫入測試印訊息後直接跳過並算通過） |
 
 執行方式（需要對應端的 HERDR server 正在跑，全程只送 `session.snapshot`／

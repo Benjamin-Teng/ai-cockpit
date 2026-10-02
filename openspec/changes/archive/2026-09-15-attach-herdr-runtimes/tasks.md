@@ -243,5 +243,6 @@ HERDR 回 `server is shutting down`），重連
   驗收：`markdownlint-cli2 "**/*.md"` 0 issue 且 `Linting` 檔數不為 0。
 - [x] 4.6 收尾 gate：全 workspace gate 全綠、`openspec validate attach-herdr-runtimes` 無 ERROR、
   `tests/fixtures/`、`cockpit.example.toml` 與 acceptance 紀錄無未去識別化的本機路徑或使用者名稱
-  （`grep -rn "<user>\|<user>@\|/home/<user>\b" docs/research/<執行日期>/ cockpit/tests/fixtures/ cockpit.example.toml`
-  為空）；重寫 `docs/handover.md`（下一步 change 2 propose）。驗收：貼上各 gate 的原始輸出。
+  （當時以使用者名稱等個人字串對 `docs/research/<執行日期>/`、`cockpit/tests/fixtures/`、
+  `cockpit.example.toml` 做 grep，結果為空；指令中的字串已於 2026-10-02 去識別化，不可照抄重跑，
+  現行檢查改用 `docs/research/2026-10-02/deid-check.js`）；重寫 `docs/handover.md`（下一步 change 2 propose）。驗收：貼上各 gate 的原始輸出。

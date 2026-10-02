@@ -67,7 +67,7 @@ kind = "herdr"
 [[runtime]]
 id = "wsl"
 kind = "herdr"
-wsl = { distro = "Ubuntu-24.04", socket = "/home/<user>/.config/herdr/herdr.sock" }
+wsl = { distro = "Ubuntu-24.04", socket = "/home/user/.config/herdr/herdr.sock" }
 
 # 通用逃生口：任何能把 stdio 接到 HERDR socket 的指令
 # [[runtime]]
@@ -123,7 +123,7 @@ fn design_doc_example_parses() {
         config.runtimes[1].endpoint,
         HerdrEndpoint::Wsl {
             distro: "Ubuntu-24.04".to_string(),
-            socket: "/home/<user>/.config/herdr/herdr.sock".to_string(),
+            socket: "/home/user/.config/herdr/herdr.sock".to_string(),
         }
     );
     assert_eq!(config.polling.resnapshot_secs, 30);

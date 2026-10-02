@@ -16,7 +16,7 @@
 //! |---|---|---|
 //! | `HERDR_CLIENT_TEST_WIN_SOCKET` | Windows 端 HERDR API socket 路徑 | `default_socket_path_from_env()` |
 //! | `HERDR_CLIENT_TEST_WSL_DISTRO` | WSL 發行版名稱 | `Ubuntu-24.04` |
-//! | `HERDR_CLIENT_TEST_WSL_SOCKET` | WSL 端 HERDR API unix socket 路徑 | `/home/<user>/.config/herdr/herdr.sock` |
+//! | `HERDR_CLIENT_TEST_WSL_SOCKET` | WSL 端 HERDR API unix socket 路徑 | 由 WSL 的 `$HOME` 推得：`<HOME>/.config/herdr/herdr.sock` |
 //! | `HERDR_CLIENT_TEST_ALLOW_WSL_WRITES` | 是否允許在 WSL 端 workspace `wD` 建立/操作/關閉測試 tab | 未設定＝不允許（唯讀） |
 //!
 //! **預設唯讀、寫入需明確 opt-in**：`real_wsl_lifecycle_stream_via_child_stdio`（建立 tab 觸發
@@ -27,7 +27,7 @@
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -56,9 +56,38 @@ fn wsl_distro() -> String {
     std::env::var("HERDR_CLIENT_TEST_WSL_DISTRO").unwrap_or_else(|_| "Ubuntu-24.04".to_string())
 }
 
+/// WSL 端 socket 路徑；整個測試 binary 只解析一次（`OnceLock` 快取，成功或失敗都記住），
+/// 避免每次呼叫都同步 spawn 一次 `wsl.exe`。不會 panic：取不到回 `None`，供 `Drop` 路徑使用
+/// （測試正在 unwinding 時再 panic 會讓整個測試 binary abort）。
+fn wsl_socket_opt() -> Option<&'static str> {
+    static WSL_SOCKET: OnceLock<Option<String>> = OnceLock::new();
+    WSL_SOCKET
+        .get_or_init(|| {
+            if let Ok(socket) = std::env::var("HERDR_CLIENT_TEST_WSL_SOCKET") {
+                return Some(socket);
+            }
+            // 沒指定就問 WSL 的 $HOME（--exec 不經 shell），預設 socket 在其 .config/herdr 下。
+            let output = std::process::Command::new("wsl.exe")
+                .args(["-d", &wsl_distro(), "--exec", "printenv", "HOME"])
+                .output();
+            output
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| String::from_utf8(output.stdout).ok())
+                .map(|stdout| stdout.trim().to_string())
+                .filter(|home| !home.is_empty())
+                .map(|home| format!("{home}/.config/herdr/herdr.sock"))
+        })
+        .as_deref()
+}
+
+/// 測試主體用：取不到就 panic 並給出可行動的訊息。`Drop` 路徑一律改用 [`wsl_socket_opt`]。
 fn wsl_socket() -> String {
-    std::env::var("HERDR_CLIENT_TEST_WSL_SOCKET")
-        .unwrap_or_else(|_| "/home/<user>/.config/herdr/herdr.sock".to_string())
+    wsl_socket_opt()
+        .expect(
+            "無法取得 WSL 的 $HOME；請設定 HERDR_CLIENT_TEST_WSL_SOCKET 指定 WSL 端 socket 路徑",
+        )
+        .to_string()
 }
 
 /// 是否明確 opt-in 允許本檔案內會操作 WSL 端 HERDR 測試 tab 的測試執行；預設不允許（唯讀）。
@@ -216,7 +245,11 @@ impl Drop for TabGuard {
         let label = self.label.clone();
         let before_ids = self.before_ids.clone();
         let distro = wsl_distro();
-        let socket = wsl_socket();
+        // Drop 可能發生在 unwinding 中，這裡不可 panic：取不到 socket 就略過清理。
+        let Some(socket) = wsl_socket_opt().map(str::to_string) else {
+            eprintln!("TabGuard: 無法取得 WSL socket 路徑，略過清理");
+            return;
+        };
         let joined = std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()

@@ -8,7 +8,7 @@
 //!
 //! 環境變數：
 //!   HERDR_CLIENT_TEST_WSL_DISTRO（預設 `Ubuntu-24.04`）
-//!   HERDR_CLIENT_TEST_WSL_SOCKET（預設 `/home/<user>/.config/herdr/herdr.sock`）
+//!   HERDR_CLIENT_TEST_WSL_SOCKET（預設由 WSL 的 `$HOME` 推得：`<HOME>/.config/herdr/herdr.sock`）
 //!
 //! 硬性限制：全程只送 `session.snapshot`；不得執行 `herdr server stop`；不得動 Windows 端 HERDR。
 
@@ -41,7 +41,9 @@ async fn main() -> std::io::Result<()> {
         eprintln!();
         eprintln!("環境變數:");
         eprintln!("  HERDR_CLIENT_TEST_WSL_DISTRO（預設 Ubuntu-24.04）");
-        eprintln!("  HERDR_CLIENT_TEST_WSL_SOCKET（預設 /home/<user>/.config/herdr/herdr.sock）");
+        eprintln!(
+            "  HERDR_CLIENT_TEST_WSL_SOCKET（預設由 WSL 的 $HOME 推得：<HOME>/.config/herdr/herdr.sock）"
+        );
     }
 
     /// 在讀任何環境變數或啟動子程序之前完整解析 argv：只接受 `--with-window`；
@@ -70,8 +72,32 @@ async fn main() -> std::io::Result<()> {
     let with_window = parse_with_window_flag();
     let distro = std::env::var("HERDR_CLIENT_TEST_WSL_DISTRO")
         .unwrap_or_else(|_| "Ubuntu-24.04".to_string());
-    let socket = std::env::var("HERDR_CLIENT_TEST_WSL_SOCKET")
-        .unwrap_or_else(|_| "/home/<user>/.config/herdr/herdr.sock".to_string());
+    let socket = match std::env::var("HERDR_CLIENT_TEST_WSL_SOCKET") {
+        Ok(socket) => socket,
+        Err(_) => {
+            // 沒指定就問 WSL 的 $HOME（--exec 不經 shell），預設 socket 在其 .config/herdr 下。
+            // 探測本身也要加 CREATE_NO_WINDOW，否則它自己閃出的視窗會干擾本範例要量測的結果。
+            use std::os::windows::process::CommandExt;
+            let home = std::process::Command::new("wsl.exe")
+                .args(["-d", &distro, "--exec", "printenv", "HOME"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| String::from_utf8(output.stdout).ok())
+                .map(|stdout| stdout.trim().to_string())
+                .filter(|home| !home.is_empty());
+            match home {
+                Some(home) => format!("{home}/.config/herdr/herdr.sock"),
+                None => {
+                    eprintln!(
+                        "無法取得 WSL 的 $HOME；請設定 HERDR_CLIENT_TEST_WSL_SOCKET 指定 WSL 端 socket 路徑"
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+    };
 
     eprintln!("本程式 pid: {}", std::process::id());
     eprintln!(

@@ -100,6 +100,7 @@ runtime 卡的 endpoint 欄位含真實 Windows 使用者名稱（遮罩前頁�
 截圖前在頁面裝一個 `MutationObserver`，把文字節點中的使用者名稱與主機名稱換成 `<user>`／`<host>`（整頁重畫後仍生效），
 再截圖；截圖時頁面可見文字已確認不含兩者，截圖中 endpoint 顯示為 `C:\Users\<user>\AppData\Roaming\herdr\herdr.sock`。
 本紀錄的路徑同樣寫成 `C:\Users\<user>\...`。遮罩只改文字內容，顏色量測不受影響。
+三張截圖另已遮蓋私人 repo 名稱（2026-10-02，change deidentify）：runtime 卡的 workspace 標題（含緊接其後的 `#n` 標號，避免由標題長度推測名稱）與 cwd 列以面板底色填滿。
 
 ## ① 焦點外框
 
