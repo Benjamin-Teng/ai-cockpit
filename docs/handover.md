@@ -8,8 +8,9 @@
 
 ## 0. 三十秒版本
 
-1. **沒有 active change**，`main` 乾淨、無 feature 分支，**repo 已可推上 remote**。尚未建立 remote、尚未推送——建立 GitHub repo、公開與否、推送
-   都等使用者指示。**每次推送前**先跑 `node docs/research/2026-10-02/deid-check.js --history`（0 命中才推）。
+1. **沒有 active change**，`main` 乾淨、無 feature 分支。**已推上私人 remote** `https://github.com/Benjamin-Teng/ai-cockpit`（2026-10-02，使用者授權
+   全權收尾；選私人是因為之後可改公開、反之不可收回）。**每次推送前**先跑 `node docs/research/2026-10-02/deid-check.js --history`（0 命中才推）。
+   要改為公開由使用者決定。
 2. **git 歷史已於 2026-10-02 改寫**，所有 commit 編號都換了；文件裡的舊編號用 `docs/research/2026-10-02/commit-map.txt` 查（第 1 節）。
 3. change 7、8、9 以 Opus 取代 Codex 都是使用者對各該 change 的個別決定，**不延伸到下一個 change**；之後照 CLAUDE.md 一律 Codex
    （週限額 2026-10-04 10:55 恢復，之前要審查就先問使用者）。
@@ -17,7 +18,8 @@
 ## 1. 現在的狀態
 
 - **`main`**：change 1a／1b／2／3／4／5a／5b／6／7／8／9 與小 change `html-charset`。本段 commit（改寫後編號）：`ca4fad1`（change 9 A 段 squash）、
-  `1dd8b68`（B 段完成與對照表）、archive 與本檔。change 8 squash 是 `f065468`、其 archive 是 `bd8bb6e`。沒有 remote。
+  `1dd8b68`（B 段完成與對照表）、archive 與本檔。change 8 squash 是 `f065468`、其 archive 是 `bd8bb6e`。remote：`origin`（GitHub 私人 repo，
+  `main` 追蹤 `origin/main`）。
 - **歷史改寫**（細節：archive `openspec/changes/archive/2026-10-02-deidentify/` 的 design D5）：
   - 作者與 committer 全為 `Benjamin-Teng <68319994+Benjamin-Teng@users.noreply.github.com>`；本 repo 的 `git config user.name／user.email` 已設成同一身分。
   - **舊編號對照**：`docs/research/2026-10-02/commit-map.txt`（首行 `old new`，之後每行 40 碼舊→新）。用法：`grep '^<舊短編號>' docs/research/2026-10-02/commit-map.txt`。
@@ -45,11 +47,12 @@
 - **測試數字**（2026-10-02、改寫後 `main`，當場跑為準）：workspace 1151 passed／0 failed／13 ignored；ui_preview 48；12 支腳本全 PASS；
   markdownlint 0 issues；`openspec validate --all` 19 passed；`deid-check.js --history` 0 命中。
 
-## 2. 立刻要做：等使用者決定推送方式
+## 2. 立刻要做：等使用者選下一段
 
-- 使用者指示建立 remote 時：GitHub 帳號 `Benjamin-Teng`（`gh` 已登入）。建 repo、設定 remote、推送都是對外動作，**每一步先跟使用者確認**（公開／私人、repo 名稱）。
-- 推送前必跑 `deid-check.js`（檔案模式＋`--history`），只推 `main`。
-- 推送之後若要再改寫歷史，代價變高（要 force push、所有 clone 失效），所以有疑慮要在第一次推送前提出。
+- 已推送：遠端 `main` 與本機相同，遠端只有 `main`，GitHub 上的 commit 作者 email 只有 noreply。之後依 CLAUDE.md：feature 分支開發、`git push -u origin <branch>`，
+  建 PR 要使用者明確要求。
+- 推送前必跑 `deid-check.js`（檔案模式＋`--history`）。**已推送後再改寫歷史要 force push**，有疑慮先問使用者。
+- 下一段候選見第 4 節「待使用者決定」各列與第 5 節。
 
 ## 3. 這一段踩過的坑
 
@@ -72,8 +75,9 @@ change 8 與更早仍有效的坑：本檔改寫前的版本第 3 節（`git sho
 
 | 決策 | 狀態 |
 |---|---|
-| 建立 GitHub remote、公開或私人、推送 | **待使用者指示** |
-| 改寫前的兩份備份（含原始個人資料）保留或刪除 | **待使用者決定** |
+| 建立 GitHub remote 並推送 | **已完成**（2026-10-02，私人 repo；Claude 依「全權收尾」授權決定） |
+| repo 改為公開 | **待使用者決定** |
+| 改寫前的兩份備份（含原始個人資料）保留或刪除 | **保留**（Claude 收尾時判斷刪除不可逆、不刪）；要刪由使用者決定 |
 | 色相歸色無彩門檻（change 8 審查 M1）：HERDR 改傳 256／真彩色前要不要先調 | **待使用者決定**，建議另開小 change |
 | Live Output 粗體 600 在 12px 等寬字與一般字差距小，是否改 700（spec 變更） | **待使用者決定** |
 | change 5b（Sonnet 驗收）、change 6／7／8／9（Opus 審查）未經 Codex | 要不要補審由使用者決定（舊編號範圍用 `commit-map.txt` 換算） |
@@ -86,7 +90,7 @@ change 8 與更早仍有效的坑：本檔改寫前的版本第 3 節（`git sho
 
 ## 5. 之後的路
 
-使用者指示推送 → 評估 Tauri 桌面殼（ADR-0005）。
+評估 Tauri 桌面殼（ADR-0005）；或先處理第 4 節的待決項（色相歸色門檻、粗體字重、補 Codex 審查）。
 
 ## 版本紀錄
 
@@ -103,3 +107,4 @@ change 8 與更早仍有效的坑：本檔改寫前的版本第 3 節（`git sho
 | 30–31 | 2026-10-01 | change 7 `ui-fixes`（Opus 審查取代 Codex）併回並 archive |
 | 32 | 2026-10-02 | change 8 `live-output-color`（Opus 審查取代 Codex）併回並 archive |
 | 33 | 2026-10-02 | change 9 `deidentify`：A 段清理併回、B 段改寫全部 git 歷史（Opus 審查與獨立驗證），archive；repo 可推送 |
+| 34 | 2026-10-02 | 建立 GitHub 私人 repo 並推送 `main`（使用者授權全權收尾） |
