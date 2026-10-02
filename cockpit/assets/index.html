@@ -96,7 +96,10 @@
         </div>
       </section>
     </div>
-    <!-- 載入順序：output.js → viewers.js → git.js → files.js → render.js → actions.js → channel.js。
+    <!-- 載入順序：output.js → viewers.js → git.js → files.js → notify.js → render.js → actions.js → channel.js。
+         notify.js 在 render.js 之前（desktop-launch-notify task 3.3；design D7）：render.js 的
+         window.onState 重畫後呼叫 window.cockpitNotify.observe(state)；通知設定面板是 notify.js
+         自己建在 body 底下、#app 之外的節點（design D8），不在整頁重畫的範圍內。
          output.js 放最前面，因為 render.js 每次重畫後會呼叫 window.liveOutput.setKnownPanes(...)
          （design D8；接線在 live-output task 5.3），必須先存在。git.js 在 files.js 之前（git-review
          task 4.1：files.js 的分頁框架在建立／還原 "diff"／"graph"／"rev" 分頁時讀
@@ -110,6 +113,7 @@
     <script src="/app/viewers.js"></script>
     <script src="/app/git.js"></script>
     <script src="/app/files.js"></script>
+    <script src="/app/notify.js"></script>
     <script src="/app/render.js"></script>
     <script src="/app/actions.js"></script>
     <script src="/app/channel.js"></script>

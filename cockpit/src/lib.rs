@@ -6,6 +6,7 @@ pub mod config;
 pub mod files;
 pub mod git;
 pub mod http;
+pub mod launch;
 pub mod progress;
 pub mod progress_service;
 pub mod runtimes;

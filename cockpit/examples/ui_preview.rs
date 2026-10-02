@@ -74,6 +74,24 @@
 //! `COCKPIT_PREVIEW_CWD_TO_OTHER_REPO=<pane>=<毫秒>`，該 pane 的 `cwd` 會在推送迴圈經過那麼久之後
 //! 改成 `other-repo` 的路徑（格式同 `COCKPIT_PREVIEW_VANISH_PANE`；只支援一個 pane）。推送迴圈只在
 //! 每個推送間隔檢查一次，搭配較短的 `COCKPIT_PREVIEW_PUSH_MS` 使用。
+//!
+//! 「排程轉換」情境（desktop-launch-notify task 3.1，design D9；供通知驗收腳本）：設
+//! `COCKPIT_PREVIEW_TRANSITIONS`，以 `;` 分隔的規則，兩種形式：
+//!
+//! - `<毫秒>:pane:<runtime>/<pane>=<agent_status>`：推送迴圈經過那麼久之後，把該 pane 的
+//!   `agent_status` 改成指定值（`idle`／`working`／`blocked`／`done`／`unknown`），並讓每個
+//!   `binding.state=bound` 且指向該 pane 的 workstream 的 `binding.agent_status` 同步。
+//! - `<毫秒>:task:<project>/<task>=<status>`：改該 task 的 `status`（`pending`／`ready`／
+//!   `running`／`blocked`／`failed`／`completed`）；`completed`／`failed` 時 `mark` 一併設成同值，
+//!   其他狀態 `mark` 設回 `none`。
+//!
+//! 例如 `COCKPIT_PREVIEW_TRANSITIONS="1500:pane:win/wJ:p4=blocked;2500:task:cockpit/be-1=failed"`。
+//! 每條規則只套用一次，套用後 `version` 遞增並推送。**設了這個變數就停止既有的輪替**（原本每個間隔
+//! 輪替 `wJ:p1` 的 `agent_status`），避免干擾通知驗收；其餘推送照常。變數有設但是空白、或只有 `;`
+//! （沒有任何一條規則）時視同未設，照常輪替（修正波 3.6 M10；有單元測試）。fixture 是直接建好的投影、沒有
+//! 推導邏輯，所以只改上述欄位。注意 `wJ:p2` 在 fixture 是 `exited`，驗收請用 `wJ:p1`、`wJ:p3`、
+//! `wJ:p4`、`wJ:p5`。規則不合法或指到不存在的 pane／task 時啟動失敗（訊息點名環境變數）。推送迴圈
+//! 只在每個推送間隔檢查一次，搭配較短的 `COCKPIT_PREVIEW_PUSH_MS` 使用。
 
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -95,9 +113,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{post, put};
 use cockpit::http::{AppState, router};
 use cockpit_core::{
-    AgentRuntime, AgentStatus, BindingSource, Mark, PaneId, PaneOutput, ProjectedBinding,
-    ProjectedPane, ProjectedState, ProjectedTab, ProjectedTask, ProjectedWorkstream, RuntimeError,
-    RuntimeEvents, RuntimeId, RuntimeSnapshot, StageStatus, TabId, TaskId, WorkstreamId,
+    AgentRuntime, AgentStatus, BindingSource, Mark, PaneId, PaneOutput, ProjectId,
+    ProjectedBinding, ProjectedPane, ProjectedState, ProjectedTab, ProjectedTask,
+    ProjectedWorkstream, RuntimeError, RuntimeEvents, RuntimeId, RuntimeSnapshot, StageStatus,
+    TabId, TaskId, WorkstreamId,
 };
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -158,6 +177,10 @@ async fn main() -> anyhow::Result<()> {
         .context("file-review task 3.4：把 fixture pane 掛進假投影失敗")?;
     apply_progress_scenarios(&mut initial);
     apply_override_disconnected_scenario(&mut initial);
+
+    // desktop-launch-notify task 3.1（design D9）：排程轉換；解析與目標檢查失敗都在啟動時回錯。
+    let transitions = parse_transitions(env::var(TRANSITIONS_VAR).ok().as_deref())?;
+    validate_transitions(&transitions, &initial)?;
 
     // R14 要在 `initial` 被搬進 `Arc::new` 之前先蒐集 pane id 集合，晚一步就借不到了。
     let known_panes = known_pane_ids(&initial);
@@ -223,6 +246,7 @@ async fn main() -> anyhow::Result<()> {
         path_mappings: Arc::new(path_mappings),
         files: Arc::new(cockpit::files::FileSettings::embedded()),
         git_runner: Arc::new(cockpit_git::GitRunner::new()),
+        activity: cockpit::http::ClientActivity::new(),
     };
 
     // 寫入路由放外層、其餘交給真正的 dashboard router 當 fallback：`Router::merge` 遇到同一
@@ -255,7 +279,14 @@ async fn main() -> anyhow::Result<()> {
     println!("review-repo: {}", review_fixture.review_repo.display());
     println!("other-repo: {}", review_fixture.other_repo.display());
 
-    let cycle_task = tokio::spawn(push_loop(tx, push_every, vanish, cwd_move, Instant::now()));
+    let cycle_task = tokio::spawn(push_loop(
+        tx,
+        push_every,
+        vanish,
+        cwd_move,
+        transitions,
+        Instant::now(),
+    ));
 
     tokio::select! {
         result = axum::serve(listener, app) => {
@@ -1854,17 +1885,212 @@ fn remove_pane(state: &mut ProjectedState, target: &PaneId) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// desktop-launch-notify task 3.1：排程轉換（design D9）
+// ---------------------------------------------------------------------------
+
+/// 設定這個環境變數時，推送迴圈在指定時間把某個 pane 的 `agent_status` 或某個 task 的 `status`
+/// 改成指定值（格式見檔頭）。
+const TRANSITIONS_VAR: &str = "COCKPIT_PREVIEW_TRANSITIONS";
+
+/// 一條排程轉換要改的東西。
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TransitionTarget {
+    /// 把 `runtime` 底下 `pane` 的 `agent_status` 改成 `status`。
+    Pane {
+        runtime: RuntimeId,
+        pane: PaneId,
+        status: AgentStatus,
+    },
+    /// 把 `project` 底下 `task` 的 `status` 改成 `status`。
+    Task {
+        project: ProjectId,
+        task: TaskId,
+        status: StageStatus,
+    },
+}
+
+/// [`TRANSITIONS_VAR`] 的一條規則：推送迴圈經過 `after` 之後套用一次 `target`。
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Transition {
+    after: Duration,
+    target: TransitionTarget,
+}
+
+/// 解析 [`TRANSITIONS_VAR`]（格式見檔頭）；未設定或空白為空陣列，規則之間以 `;` 分隔
+/// （空段略過）。任何一條不合法就整個失敗，訊息點名環境變數與壞掉的規則。
+fn parse_transitions(raw: Option<&str>) -> anyhow::Result<Vec<Transition>> {
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    raw.split(';')
+        .map(str::trim)
+        .filter(|rule| !rule.is_empty())
+        .map(|rule| {
+            parse_transition(rule)
+                .with_context(|| format!("{TRANSITIONS_VAR} 規則不合法：{rule:?}"))
+        })
+        .collect()
+}
+
+/// 解析單條規則 `<毫秒>:pane:<runtime>/<pane>=<agent_status>` 或
+/// `<毫秒>:task:<project>/<task>=<status>`。pane id 本身含冒號（`wJ:p1`），所以只切前兩個 `:`；
+/// 狀態在最後一個 `=` 之後。
+fn parse_transition(rule: &str) -> anyhow::Result<Transition> {
+    let (ms, rest) = rule
+        .split_once(':')
+        .context("缺毫秒（`<毫秒>:<種類>:...`）")?;
+    let after = Duration::from_millis(ms.parse().context("毫秒必須是非負整數")?);
+    let (kind, rest) = rest.split_once(':').context("缺種類（`pane` 或 `task`）")?;
+    let (subject, status) = rest.rsplit_once('=').context("缺 `=<狀態>`")?;
+    let (owner, name) = subject
+        .split_once('/')
+        .context("目標必須是 `<runtime>/<pane>` 或 `<project>/<task>`")?;
+    anyhow::ensure!(
+        !owner.is_empty() && !name.is_empty(),
+        "`/` 前後都不能是空的"
+    );
+    // 狀態字串交給既有 serde 小寫列舉解析，不另外維護一份清單。
+    let status_value = serde_json::Value::String(status.to_string());
+    let target = match kind {
+        "pane" => TransitionTarget::Pane {
+            runtime: RuntimeId::new(owner),
+            pane: PaneId::new(name),
+            status: serde_json::from_value(status_value).with_context(|| {
+                format!("{status:?} 不是 agent_status（idle／working／blocked／done／unknown）")
+            })?,
+        },
+        "task" => TransitionTarget::Task {
+            project: ProjectId::new(owner),
+            task: TaskId::new(name),
+            status: serde_json::from_value(status_value).with_context(|| {
+                format!(
+                    "{status:?} 不是 task status（pending／ready／running／blocked／failed／completed）"
+                )
+            })?,
+        },
+        other => anyhow::bail!("種類必須是 `pane` 或 `task`，實際 {other:?}"),
+    };
+    Ok(Transition { after, target })
+}
+
+/// 啟動時檢查每條規則指到的 pane（含所屬 runtime）／task 都在 `state` 裡，否則回清楚的錯誤——
+/// 同 R14，打錯 id 不能靜默變成「什麼都沒發生」的假綠。
+fn validate_transitions(transitions: &[Transition], state: &ProjectedState) -> anyhow::Result<()> {
+    for transition in transitions {
+        match &transition.target {
+            TransitionTarget::Pane { runtime, pane, .. } => {
+                let exists = state
+                    .runtimes
+                    .iter()
+                    .filter(|r| &r.id == runtime)
+                    .flat_map(|r| &r.workspaces)
+                    .flat_map(|w| &w.tabs)
+                    .flat_map(|t| &t.panes)
+                    .any(|p| &p.id == pane);
+                anyhow::ensure!(
+                    exists,
+                    "{TRANSITIONS_VAR} 指到 fixture 投影裡不存在的 pane：{runtime}/{pane}"
+                );
+            }
+            TransitionTarget::Task { project, task, .. } => {
+                let exists = state
+                    .projects
+                    .iter()
+                    .filter(|p| &p.id == project)
+                    .flat_map(|p| &p.tasks)
+                    .any(|t| &t.id == task);
+                anyhow::ensure!(
+                    exists,
+                    "{TRANSITIONS_VAR} 指到 fixture 投影裡不存在的 task：{project}/{task}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 把一條轉換直接寫進投影（design D9：fixture 是建好的投影、沒有推導邏輯，所以只改欄位）。
+///
+/// - pane：改該 pane 的 `agent_status`，並讓每個 `binding.state=bound` 且指向該 runtime／pane 的
+///   workstream 的 `binding.agent_status` 同步。
+/// - task：改 `status`；`completed`／`failed` 時一併設 `mark`，其他狀態一律把 `mark` 設回 `none`。
+fn apply_transition(state: &mut ProjectedState, transition: &Transition) {
+    match &transition.target {
+        TransitionTarget::Pane {
+            runtime,
+            pane,
+            status,
+        } => {
+            for rt in state.runtimes.iter_mut().filter(|r| &r.id == runtime) {
+                for workspace in &mut rt.workspaces {
+                    for tab in &mut workspace.tabs {
+                        for p in tab.panes.iter_mut().filter(|p| &p.id == pane) {
+                            p.agent_status = *status;
+                        }
+                    }
+                }
+            }
+            for workstream in state
+                .projects
+                .iter_mut()
+                .flat_map(|project| &mut project.workstreams)
+            {
+                if let ProjectedBinding::Bound {
+                    runtime: bound_runtime,
+                    pane_id,
+                    agent_status,
+                    ..
+                } = &mut workstream.binding
+                    && bound_runtime == runtime
+                    && pane_id == pane
+                {
+                    *agent_status = *status;
+                }
+            }
+        }
+        TransitionTarget::Task {
+            project,
+            task,
+            status,
+        } => {
+            for t in state
+                .projects
+                .iter_mut()
+                .filter(|p| &p.id == project)
+                .flat_map(|p| &mut p.tasks)
+                .filter(|t| &t.id == task)
+            {
+                t.status = *status;
+                t.mark = match status {
+                    StageStatus::Completed => Mark::Completed,
+                    StageStatus::Failed => Mark::Failed,
+                    _ => Mark::None,
+                };
+            }
+        }
+    }
+}
+
 /// 每個推送間隔把第一個 runtime、第一個 workspace、第一個 tab、第一個 pane 的 `agent_status`
 /// 在 working／idle／blocked 之間輪替，`version` 遞增、`generated_at` 更新為現在時間，讓
 /// 連著的瀏覽器（`/ws`）與下一次 `/api/state` 都看得到變化（design D14）。`vanish` 有設定時，
 /// 經過指定時間後把該 pane 從投影拿掉一次（task 5.1）。
+///
+/// `transitions` 非空時（desktop-launch-notify task 3.1，design D9）**不再輪替**第一個 pane
+/// （否則 `wJ:p1` 會每三次推送變 `blocked`，干擾通知驗收）；改成每條轉換在經過各自的 `after` 之後
+/// 套用一次，其餘推送（`version` 遞增、`generated_at` 更新）照常。
 async fn push_loop(
     tx: watch::Sender<Arc<ProjectedState>>,
     every: Duration,
     vanish: Option<VanishConfig>,
     cwd_move: Option<CwdMove>,
+    transitions: Vec<Transition>,
     started: Instant,
 ) {
+    // 每條轉換各自記「是否已套用」，到時間只套一次。
+    let mut pending: Vec<Option<Transition>> = transitions.iter().cloned().map(Some).collect();
+    let cycling = transitions.is_empty();
     const CYCLE: [AgentStatus; 3] = [
         AgentStatus::Working,
         AgentStatus::Idle,
@@ -1900,22 +2126,33 @@ async fn push_loop(
             moved = true;
         }
 
-        index = (index + 1) % CYCLE.len();
+        for slot in &mut pending {
+            if let Some(transition) = slot
+                && started.elapsed() >= transition.after
+            {
+                apply_transition(&mut next, transition);
+                *slot = None;
+            }
+        }
 
-        let updated = next
-            .runtimes
-            .first_mut()
-            .and_then(|runtime| runtime.workspaces.first_mut())
-            .and_then(|workspace| workspace.tabs.first_mut())
-            .and_then(|tab| tab.panes.first_mut());
+        if cycling {
+            index = (index + 1) % CYCLE.len();
 
-        let Some(pane) = updated else {
-            // fixture 形狀跑掉（例如被改成沒有任何 pane）：沒東西可輪替，結束這個任務，
-            // 但不影響 server 本身繼續服務目前這一份投影。
-            break;
-        };
+            let updated = next
+                .runtimes
+                .first_mut()
+                .and_then(|runtime| runtime.workspaces.first_mut())
+                .and_then(|workspace| workspace.tabs.first_mut())
+                .and_then(|tab| tab.panes.first_mut());
 
-        pane.agent_status = CYCLE[index];
+            let Some(pane) = updated else {
+                // fixture 形狀跑掉（例如被改成沒有任何 pane）：沒東西可輪替，結束這個任務，
+                // 但不影響 server 本身繼續服務目前這一份投影。
+                break;
+            };
+
+            pane.agent_status = CYCLE[index];
+        }
         next.version += 1;
         next.generated_at = to_rfc3339(SystemTime::now());
 
@@ -2518,6 +2755,349 @@ mod tests {
         let known = known_ids(&["wJ:p1", "wJ:p2", "wJ:p3", "wJ:p4", "wJ:p5"]);
         let modes = default_output_modes();
         assert!(validate_known_panes(&modes, &None, &known).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // desktop-launch-notify task 3.1：COCKPIT_PREVIEW_TRANSITIONS
+    // -----------------------------------------------------------------------
+
+    fn fixture_state() -> ProjectedState {
+        serde_json::from_str(FIXTURE).expect("fixture 應該能反序列化")
+    }
+
+    fn find_pane<'a>(state: &'a ProjectedState, id: &str) -> &'a ProjectedPane {
+        state
+            .runtimes
+            .iter()
+            .flat_map(|r| &r.workspaces)
+            .flat_map(|w| &w.tabs)
+            .flat_map(|t| &t.panes)
+            .find(|p| p.id.as_str() == id)
+            .expect("fixture 有這個 pane")
+    }
+
+    fn find_task<'a>(state: &'a ProjectedState, project: &str, task: &str) -> &'a ProjectedTask {
+        state
+            .projects
+            .iter()
+            .find(|p| p.id.as_str() == project)
+            .and_then(|p| p.tasks.iter().find(|t| t.id.as_str() == task))
+            .expect("fixture 有這個 task")
+    }
+
+    fn find_binding<'a>(
+        state: &'a ProjectedState,
+        project: &str,
+        workstream: &str,
+    ) -> &'a ProjectedBinding {
+        &state
+            .projects
+            .iter()
+            .find(|p| p.id.as_str() == project)
+            .and_then(|p| p.workstreams.iter().find(|w| w.id.as_str() == workstream))
+            .expect("fixture 有這個 workstream")
+            .binding
+    }
+
+    #[test]
+    fn parse_transitions_unset_or_blank_is_empty() {
+        assert!(parse_transitions(None).unwrap().is_empty());
+        assert!(parse_transitions(Some("")).unwrap().is_empty());
+        assert!(parse_transitions(Some("  ")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_transitions_parses_pane_and_task_rules_in_order() {
+        let rules = parse_transitions(Some(
+            "1500:pane:win/wJ:p4=blocked;2500:task:cockpit/be-1=failed",
+        ))
+        .expect("合法規則應該解析成功");
+        assert_eq!(
+            rules,
+            vec![
+                Transition {
+                    after: Duration::from_millis(1500),
+                    target: TransitionTarget::Pane {
+                        runtime: RuntimeId::new("win"),
+                        pane: PaneId::new("wJ:p4"),
+                        status: AgentStatus::Blocked,
+                    },
+                },
+                Transition {
+                    after: Duration::from_millis(2500),
+                    target: TransitionTarget::Task {
+                        project: ProjectId::new("cockpit"),
+                        task: TaskId::new("be-1"),
+                        status: StageStatus::Failed,
+                    },
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_transitions_ignores_trailing_separator_and_spaces() {
+        let rules = parse_transitions(Some(" 100:pane:win/wJ:p1=idle ; ;")).unwrap();
+        assert_eq!(rules.len(), 1);
+    }
+
+    #[test]
+    fn parse_transitions_accepts_every_agent_and_stage_status() {
+        for status in ["idle", "working", "blocked", "done", "unknown"] {
+            let raw = format!("0:pane:win/wJ:p1={status}");
+            assert_eq!(parse_transitions(Some(&raw)).unwrap().len(), 1, "{raw}");
+        }
+        for status in [
+            "pending",
+            "ready",
+            "running",
+            "blocked",
+            "failed",
+            "completed",
+        ] {
+            let raw = format!("0:task:cockpit/be-1={status}");
+            assert_eq!(parse_transitions(Some(&raw)).unwrap().len(), 1, "{raw}");
+        }
+    }
+
+    #[test]
+    fn parse_transitions_rejects_invalid_rules_naming_the_variable() {
+        for bad in [
+            "pane:win/wJ:p1=idle",          // 缺毫秒
+            "abc:pane:win/wJ:p1=idle",      // 毫秒不是整數
+            "-5:pane:win/wJ:p1=idle",       // 毫秒為負
+            "100:node:win/wJ:p1=idle",      // 未知種類
+            "100:pane:win/wJ:p1",           // 缺 `=`
+            "100:pane:wJ:p1=idle",          // 缺 runtime 的 `/`
+            "100:pane:/wJ:p1=idle",         // runtime 空白
+            "100:pane:win/=idle",           // pane 空白
+            "100:pane:win/wJ:p1=finished",  // 非法 agent_status
+            "100:task:cockpit/be-1=done",   // done 不是 StageStatus
+            "100:task:cockpit=failed",      // 缺 task 的 `/`
+            "100:pane:win/wJ:p1=idle;oops", // 第二條壞
+        ] {
+            let error = parse_transitions(Some(bad)).expect_err(&format!("{bad:?} 應該解析失敗"));
+            let message = format!("{error:#}");
+            assert!(
+                message.contains("COCKPIT_PREVIEW_TRANSITIONS"),
+                "訊息應該點名環境變數（{bad:?}）：{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_transitions_rejects_unknown_pane_runtime_or_task() {
+        let state = fixture_state();
+        for bad in [
+            "0:pane:win/wJ:p99=idle",    // pane 不存在
+            "0:pane:nope/wJ:p1=idle",    // runtime 不存在
+            "0:pane:wsl/wJ:p1=idle",     // pane 不在這個 runtime 底下
+            "0:task:cockpit/zzz=failed", // task 不存在
+            "0:task:nope/be-1=failed",   // project 不存在
+        ] {
+            let rules = parse_transitions(Some(bad)).unwrap();
+            let error =
+                validate_transitions(&rules, &state).expect_err(&format!("{bad:?} 應該驗證失敗"));
+            assert!(
+                format!("{error:#}").contains("COCKPIT_PREVIEW_TRANSITIONS"),
+                "{error:#}"
+            );
+        }
+        let ok =
+            parse_transitions(Some("0:pane:win/wJ:p1=idle;0:task:cockpit/be-1=failed")).unwrap();
+        validate_transitions(&ok, &state).expect("存在的目標應該通過");
+    }
+
+    #[test]
+    fn apply_pane_transition_updates_pane_and_bound_bindings_only() {
+        let mut state = fixture_state();
+        let other_before = find_pane(&state, "wJ:p3").clone();
+        let transition = parse_transitions(Some("0:pane:win/wJ:p1=blocked"))
+            .unwrap()
+            .remove(0);
+        apply_transition(&mut state, &transition);
+
+        assert_eq!(
+            find_pane(&state, "wJ:p1").agent_status,
+            AgentStatus::Blocked
+        );
+        // 指向 wJ:p1 的 bound binding（兩個 project 各一條）同步。
+        for (project, workstream) in [("cockpit", "be"), ("p", "backend")] {
+            match find_binding(&state, project, workstream) {
+                ProjectedBinding::Bound {
+                    pane_id,
+                    agent_status,
+                    ..
+                } => {
+                    assert_eq!(pane_id.as_str(), "wJ:p1");
+                    assert_eq!(
+                        *agent_status,
+                        AgentStatus::Blocked,
+                        "{project}/{workstream}"
+                    );
+                }
+                other => panic!("應該仍是 bound：{other:?}"),
+            }
+        }
+        // 指向別的 pane 的 binding、別的 pane 都不動。
+        match find_binding(&state, "cockpit", "qa") {
+            ProjectedBinding::Bound { agent_status, .. } => {
+                assert_eq!(*agent_status, AgentStatus::Unknown);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(find_pane(&state, "wJ:p3"), &other_before);
+    }
+
+    #[test]
+    fn apply_pane_transition_requires_matching_runtime() {
+        let mut state = fixture_state();
+        // runtime 對不上（pane id 雖存在於 win）→ 不改任何東西。
+        let transition = parse_transitions(Some("0:pane:wsl/wJ:p1=blocked"))
+            .unwrap()
+            .remove(0);
+        let before = state.clone();
+        apply_transition(&mut state, &transition);
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn apply_task_transition_sets_status_and_mark() {
+        let mut state = fixture_state();
+        let sibling_before = find_task(&state, "cockpit", "be-2").clone();
+        for (status, mark) in [
+            ("failed", Mark::Failed),
+            ("completed", Mark::Completed),
+            ("blocked", Mark::None),
+            ("running", Mark::None),
+        ] {
+            let transition = parse_transitions(Some(&format!("0:task:cockpit/be-1={status}")))
+                .unwrap()
+                .remove(0);
+            apply_transition(&mut state, &transition);
+            let task = find_task(&state, "cockpit", "be-1");
+            assert_eq!(task.mark, mark, "{status}");
+            assert_eq!(
+                serde_json::to_value(task.status).unwrap(),
+                serde_json::Value::String(status.to_string())
+            );
+        }
+        assert_eq!(find_task(&state, "cockpit", "be-2"), &sibling_before);
+    }
+
+    #[test]
+    fn non_terminal_task_transition_resets_a_terminal_mark() {
+        let mut state = fixture_state();
+        // ops-2 起始是 failed／mark failed。
+        assert_eq!(find_task(&state, "cockpit", "ops-2").mark, Mark::Failed);
+        let transition = parse_transitions(Some("0:task:cockpit/ops-2=ready"))
+            .unwrap()
+            .remove(0);
+        apply_transition(&mut state, &transition);
+        let task = find_task(&state, "cockpit", "ops-2");
+        assert_eq!(task.status, StageStatus::Ready);
+        assert_eq!(task.mark, Mark::None);
+    }
+
+    /// 取推送迴圈送出的下一份（比 `after` 新的）投影。
+    async fn next_state(rx: &mut watch::Receiver<Arc<ProjectedState>>) -> Arc<ProjectedState> {
+        rx.changed().await.expect("推送迴圈應該還活著");
+        rx.borrow_and_update().clone()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn push_loop_without_transitions_still_cycles_first_pane() {
+        let (tx, mut rx) = watch::channel(Arc::new(fixture_state()));
+        let task = tokio::spawn(push_loop(
+            tx,
+            Duration::from_millis(100),
+            None,
+            None,
+            Vec::new(),
+            Instant::now(),
+        ));
+        let first = next_state(&mut rx).await;
+        // fixture 的 wJ:p1 起始 working，第一次輪替變 idle（與先前行為一致）。
+        assert_eq!(find_pane(&first, "wJ:p1").agent_status, AgentStatus::Idle);
+        let second = next_state(&mut rx).await;
+        assert_eq!(
+            find_pane(&second, "wJ:p1").agent_status,
+            AgentStatus::Blocked
+        );
+        task.abort();
+    }
+
+    /// 修正波 3.6 M10：`COCKPIT_PREVIEW_TRANSITIONS` 有設但是空白、或只有 `;` 時視同未設——解析出來
+    /// 沒有任何規則，推送迴圈照常輪替第一個 pane（「設了此變數就停止輪替」以至少一條規則為準）。
+    #[tokio::test(start_paused = true)]
+    async fn push_loop_with_blank_transitions_var_still_cycles() {
+        for raw in ["", "  ", ";", " ; ;"] {
+            let transitions = parse_transitions(Some(raw)).unwrap();
+            let (tx, mut rx) = watch::channel(Arc::new(fixture_state()));
+            let task = tokio::spawn(push_loop(
+                tx,
+                Duration::from_millis(100),
+                None,
+                None,
+                transitions,
+                Instant::now(),
+            ));
+            // 與未設變數時相同：wJ:p1 由 fixture 的 working 輪替成 idle、再到 blocked。
+            let first = next_state(&mut rx).await;
+            assert_eq!(
+                find_pane(&first, "wJ:p1").agent_status,
+                AgentStatus::Idle,
+                "{raw:?}"
+            );
+            let second = next_state(&mut rx).await;
+            assert_eq!(
+                find_pane(&second, "wJ:p1").agent_status,
+                AgentStatus::Blocked,
+                "{raw:?}"
+            );
+            task.abort();
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn push_loop_with_transitions_stops_cycling_and_applies_on_schedule() {
+        let transitions = parse_transitions(Some(
+            "250:pane:win/wJ:p3=blocked;450:task:cockpit/be-1=failed",
+        ))
+        .unwrap();
+        let (tx, mut rx) = watch::channel(Arc::new(fixture_state()));
+        let task = tokio::spawn(push_loop(
+            tx,
+            Duration::from_millis(100),
+            None,
+            None,
+            transitions,
+            Instant::now(),
+        ));
+        let mut last_version = 0;
+        let mut seen_pane = false;
+        let mut seen_task = false;
+        // 100 ms 一個推送、共 8 次（800 ms）：涵蓋兩條規則的時間點。
+        for tick in 1..=8u64 {
+            let state = next_state(&mut rx).await;
+            assert!(state.version > last_version, "每次推送 version 都遞增");
+            last_version = state.version;
+            // 停止既有輪替：wJ:p1 在任何推送都維持 fixture 的 working。
+            assert_eq!(
+                find_pane(&state, "wJ:p1").agent_status,
+                AgentStatus::Working,
+                "第 {tick} 次推送：設了轉換就不能輪替第一個 pane"
+            );
+            let pane_done = find_pane(&state, "wJ:p3").agent_status == AgentStatus::Blocked;
+            let task_done = find_task(&state, "cockpit", "be-1").status == StageStatus::Failed;
+            // 排程時間到才套用：250 ms 之前不能提早、300 ms 之後（第 3 次起）必已套用。
+            assert_eq!(pane_done, tick >= 3, "第 {tick} 次推送的 pane 規則");
+            assert_eq!(task_done, tick >= 5, "第 {tick} 次推送的 task 規則");
+            seen_pane |= pane_done;
+            seen_task |= task_done;
+        }
+        assert!(seen_pane && seen_task);
+        task.abort();
     }
 
     // -----------------------------------------------------------------------

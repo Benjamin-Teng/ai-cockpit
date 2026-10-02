@@ -79,7 +79,10 @@ wsl = { distro = "Ubuntu-24.04", socket = "/home/user/.config/herdr/herdr.sock" 
 #[test]
 fn zero_config_yields_local_runtime_with_default_socket() {
     let dir = TempDir::new("zero-config");
-    let args = Args { config: None };
+    let args = Args {
+        config: None,
+        exit_when_idle: false,
+    };
 
     let config = config::load(&args, dir.path(), &no_env).expect("零設定應該載入成功");
 
@@ -101,6 +104,7 @@ fn missing_config_path_fails_with_path() {
     let dir = TempDir::new("missing-path");
     let args = Args {
         config: Some(PathBuf::from("missing.toml")),
+        exit_when_idle: false,
     };
 
     let err = config::load(&args, dir.path(), &no_env).expect_err("不存在的路徑應該失敗");
@@ -255,6 +259,64 @@ fn parse_args_accepts_config_flag_forms() {
     assert!(matches!(err, ConfigError::Invalid(_)));
 }
 
+fn argv(items: &[&str]) -> Vec<String> {
+    items.iter().map(|item| (*item).to_string()).collect()
+}
+
+/// desktop-launch-notify task 2.1（spec `desktop-launch`「閒置自動結束」；design D6）：
+/// `--exit-when-idle` 是布林旗標，可與 `--config` 併用、順序不拘。
+#[test]
+fn parse_args_accepts_exit_when_idle_in_any_order() {
+    let args = config::parse_args(&[]).expect("沒有參數應該可以解析");
+    assert!(!args.exit_when_idle, "沒給旗標時應該是 false");
+
+    let args = config::parse_args(&argv(&["--exit-when-idle"])).expect("單獨給旗標應該可以解析");
+    assert!(args.exit_when_idle);
+    assert_eq!(args.config, None);
+
+    for forms in [
+        argv(&["--exit-when-idle", "--config", "x.toml"]),
+        argv(&["--config", "x.toml", "--exit-when-idle"]),
+        argv(&["--exit-when-idle", "--config=x.toml"]),
+        argv(&["--config=x.toml", "--exit-when-idle"]),
+    ] {
+        let args = config::parse_args(&forms)
+            .unwrap_or_else(|err| panic!("{forms:?} 應該可以解析，實際：{err}"));
+        assert!(args.exit_when_idle, "{forms:?} 應該帶旗標");
+        assert_eq!(args.config, Some(PathBuf::from("x.toml")), "{forms:?}");
+    }
+}
+
+/// 重複給 `--exit-when-idle` 視為錯誤；`--config` 重複時維持既有「最後一個為準」。
+#[test]
+fn parse_args_rejects_duplicate_exit_when_idle_but_keeps_config_last_wins() {
+    let err = config::parse_args(&argv(&["--exit-when-idle", "--exit-when-idle"]))
+        .expect_err("重複給 --exit-when-idle 應該失敗");
+    assert!(
+        matches!(&err, ConfigError::Invalid(message) if message.contains("--exit-when-idle")),
+        "錯誤應指出重複的旗標，實際：{err}"
+    );
+
+    let err = config::parse_args(&argv(&[
+        "--exit-when-idle",
+        "--config",
+        "x.toml",
+        "--exit-when-idle",
+    ]))
+    .expect_err("中間隔著 --config 的重複旗標也應該失敗");
+    assert!(matches!(err, ConfigError::Invalid(_)));
+
+    let args = config::parse_args(&argv(&["--config", "a.toml", "--config=b.toml"]))
+        .expect("--config 重複維持既有行為：可以解析");
+    assert_eq!(args.config, Some(PathBuf::from("b.toml")), "最後一個為準");
+    assert!(!args.exit_when_idle);
+
+    // 旗標不吃值：`--exit-when-idle=true` 不是認得的寫法。
+    let err =
+        config::parse_args(&argv(&["--exit-when-idle=true"])).expect_err("帶值的寫法應該失敗");
+    assert!(matches!(err, ConfigError::Invalid(_)));
+}
+
 // -- 補充：`load()` 三種來源順序中，另外兩種（Explicit／Cwd）的讀檔行為 -----------------
 // brief 指定的九個測試 + `parse_args_accepts_config_flag_forms` 都沒有實際打到 `load()`
 // 讀真實檔案的 `Explicit`／`Cwd` 分支（`zero_config_...` 只測 `ZeroConfig`、
@@ -273,6 +335,7 @@ kind = "herdr"
     );
     let args = Args {
         config: Some(file.clone()),
+        exit_when_idle: false,
     };
 
     let config = config::load(&args, dir.path(), &no_env).expect("指定檔案應該載入成功");
@@ -293,7 +356,10 @@ id = "cwd-runtime"
 kind = "herdr"
 "#,
     );
-    let args = Args { config: None };
+    let args = Args {
+        config: None,
+        exit_when_idle: false,
+    };
 
     let config = config::load(&args, dir.path(), &no_env).expect("cwd 的設定檔應該載入成功");
 
@@ -332,6 +398,7 @@ kind = "herdr"
 
     let args = Args {
         config: Some(PathBuf::from("sub/x.toml")),
+        exit_when_idle: false,
     };
 
     let config = config::load(&args, dir.path(), &no_env).expect("相對路徑應該依注入的 cwd 解析");
@@ -350,7 +417,10 @@ fn cwd_config_read_error_is_not_zero_config() {
     // 把 cockpit.toml 建成目錄：read_to_string 會回傳非 NotFound 的 I/O 錯誤（Windows 上
     // 通常是「拒絕存取」之類的錯誤，重點是它不是 NotFound）。
     fs::create_dir_all(dir.path().join("cockpit.toml")).expect("把 cockpit.toml 建成目錄");
-    let args = Args { config: None };
+    let args = Args {
+        config: None,
+        exit_when_idle: false,
+    };
 
     let err = config::load(&args, dir.path(), &no_env)
         .expect_err("cockpit.toml 讀取失敗不應該被當成零設定");
@@ -916,7 +986,10 @@ id = "p"
 stages = ["Spec"]
 "#,
     );
-    let args = Args { config: Some(file) };
+    let args = Args {
+        config: Some(file),
+        exit_when_idle: false,
+    };
 
     let config = config::load(&args, dir.path(), &no_env).expect("含 project 的設定應該載入成功");
 
@@ -940,7 +1013,10 @@ id = "p"
 stages = ["Spec"]
 "#,
     );
-    let args = Args { config: Some(file) };
+    let args = Args {
+        config: Some(file),
+        exit_when_idle: false,
+    };
 
     let config = config::load(&args, dir.path(), &no_env).expect("含 project 的設定應該載入成功");
 
@@ -961,7 +1037,10 @@ id = "win"
 kind = "herdr"
 "#,
     );
-    let args = Args { config: Some(file) };
+    let args = Args {
+        config: Some(file),
+        exit_when_idle: false,
+    };
 
     let config = config::load(&args, dir.path(), &no_env).expect("沒有 project 應該載入成功");
 
@@ -971,7 +1050,10 @@ kind = "herdr"
 #[test]
 fn zero_config_has_no_state_path() {
     let dir = TempDir::new("state-zero-config");
-    let args = Args { config: None };
+    let args = Args {
+        config: None,
+        exit_when_idle: false,
+    };
 
     let config = config::load(&args, dir.path(), &no_env).expect("零設定應該載入成功");
 

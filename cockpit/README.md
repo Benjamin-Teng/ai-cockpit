@@ -21,6 +21,10 @@ cargo run -p cockpit -- --config cockpit.toml
 RUST_LOG=debug cargo run -p cockpit
 ```
 
+`cockpit/Cargo.toml` 設了 `default-run = "cockpit"`：套件除了 `cockpit` 還有第二個執行檔
+`cockpit-launch`（見下方「桌面啟動器」），沒有這個設定時 `cargo run -p cockpit` 會因為有多個執行檔
+而失敗。
+
 啟動成功會印出一行 `dashboard 已啟動：http://127.0.0.1:7770/（Ctrl-C 結束）`，用瀏覽器開那個網址
 即可。Ctrl-C 會優雅結束：先停掉 HTTP 伺服器，再讓每個驅動器釋放事件流與子程序。
 
@@ -31,6 +35,23 @@ RUST_LOG=debug cargo run -p cockpit
 $ cargo run -p cockpit -- --config missing.toml
 Error: 設定檔不存在：D:\projects\ai-cockpit\missing.toml
 ```
+
+### `--exit-when-idle`
+
+```bash
+cargo run -p cockpit -- --config cockpit.toml --exit-when-idle
+```
+
+帶此旗標時，後端記錄目前開著的 `/ws` 連線數，並在下列任一情況走與 Ctrl-C 相同的正常關閉流程、
+結束碼 0：
+
+- 開始監聽後 60 秒內從未有任何 `/ws` 連線。
+- 曾經有過連線，目前連線數為 0，且距離「最近一次連線數降為 0」與「之後最近一次 `GET /` 或
+  `GET /api/state`」兩者中較晚者已滿 10 秒。計時中有新連線就取消（重新整理頁面不會被誤殺）。
+
+不帶旗標時行為與過去完全相同，不因連線數結束。旗標可與 `--config` 併用、順序不拘；重複給旗標視為錯誤。
+這個模式是桌面啟動器（下方）「關掉視窗就結束」的基礎，規則細節見
+`openspec/specs/desktop-launch/spec.md`。
 
 ## 設定檔
 
@@ -162,6 +183,10 @@ JSON 物件 → 400；狀態檔寫入失敗 → 500，本體同樣是 `{"error":
 task 維持 `ready`。哪個 task 是目前 task 由 agent 自己宣告：agent 在自己所在的 HERDR pane 內呼叫下列
 端點（Cockpit 不猜）。寫入只改 Cockpit 自己的狀態，對 HERDR 完全唯讀。沒宣告時，若 agent 正在 working，
 workstream 列首會顯示「工作中・未宣告 task」。
+
+**注意（桌面啟動器）**：用桌面捷徑啟動時後端帶 `--exit-when-idle`，最後一個 Cockpit 視窗關閉約 10 秒後後端就結束。
+之後 agent 送的進度回報（以及其他寫入請求）連不上後端，連線失敗、不會被保留或重送，`curl -s` 也不會顯示任何錯誤，
+進度就此遺失。agent 回報期間請保持 Cockpit 視窗開著（可以最小化），或改手動執行不帶 `--exit-when-idle` 的 `cockpit`。
 
 | 端點 | 說明 |
 |---|---|
@@ -416,6 +441,69 @@ cargo run -p cockpit --example ui_preview
 dashboard 提供 `manifest.webmanifest` 與 192／512 圖示，沒有 service worker。在 Chrome 開
 `http://127.0.0.1:7770/` 之後，從網址列右側的安裝圖示或右上角選單的「安裝」把它裝成獨立視窗的
 應用程式。
+
+## 桌面啟動器（Windows）
+
+一個桌面捷徑就開好：捷徑指向 `cockpit-launch.exe`，它是 Windows 圖形子系統執行檔，啟動時不會出現
+主控台視窗。決策背景見 `docs/adr/0005-browser-pwa-before-tauri.md` 的「2026-10-02 補充」。
+
+### `cockpit-launch` 做什麼
+
+只接受 `--config <path>`（或 `--config=<path>`），設定的決定規則與 `cockpit` 相同，由此取得監聽位址。依序：
+
+1. 選瀏覽器：環境變數 `COCKPIT_BROWSER`（指向的檔案存在才用）→ Google Chrome → Microsoft Edge，
+   各自在標準安裝位置尋找；都找不到時以訊息框說明（此時尚未啟動任何後端）。
+2. 對 `http://<監聽位址>/api/state` 偵測：已有 Cockpit 在跑就只開視窗；連得上但不是 Cockpit
+   （埠被其他程式占用）以訊息框說明。
+3. 沒在跑就在背景啟動同目錄的 `cockpit.exe`（帶絕對路徑的 `--config` 與 `--exit-when-idle`，
+   不建立主控台視窗），並每 200 毫秒檢查一次是否就緒，最多 15 秒。
+4. 以 `--app=http://<監聽位址>/` 開瀏覽器的獨立視窗後結束。不指定 `--user-data-dir`，沿用你的瀏覽器
+   設定檔，通知權限因此能跨次保留。
+
+最後一個視窗關閉滿 10 秒後，後端開始正常結束（`--exit-when-idle`；真機實測約 11 秒後行程消失）。
+
+**後果：用捷徑啟動時，視窗關著就沒有後端。** 後端結束後，agent 回報進度的端點與寫入類請求都連不上，在此期間送出的
+請求連線失敗、不會被保留或重送（`curl -s` 不會顯示任何錯誤）。agent 還在工作時請保持 Cockpit 視窗開著（可以最小化），
+或改手動執行不帶 `--exit-when-idle` 的 `cockpit`。
+
+後端的標準輸出與標準錯誤寫到設定檔所在目錄的 `cockpit.log`（零設定模式時寫到工作目錄），
+每次啟動覆寫，內容不含 ANSI 色碼；該檔已列入 `.gitignore`。任何失敗（找不到瀏覽器、埠被占用、
+後端啟動失敗或 15 秒內未就緒）都以 Windows 訊息框說明，後端啟動失敗時訊息含 `cockpit.log` 的路徑
+與最後 20 行。非 Windows 平台編譯時，啟動器只印出「僅支援 Windows」並以非 0 結束。
+
+環境變數：
+
+- `COCKPIT_BROWSER`：瀏覽器執行檔的完整路徑，覆寫上述尋找順序。
+- `COCKPIT_LAUNCH_DIALOG_FILE`：**測試用入口**。有值時不顯示訊息框（訊息框會阻塞），改把訊息以 UTF-8
+  附加寫入該檔，供自動驗收讀取。一般使用不要設。
+
+### 安裝腳本 `scripts/install-desktop.ps1`
+
+```powershell
+# PowerShell 7
+pwsh scripts/install-desktop.ps1
+
+# Windows PowerShell 5.1
+powershell -ExecutionPolicy Bypass -File scripts\install-desktop.ps1 -Config D:\work\cockpit.toml
+```
+
+腳本以正式版建置 `cockpit` 套件的兩個執行檔，複製到安裝目錄，並在桌面建立「AI Agent Cockpit」捷徑
+（目標為安裝目錄的 `cockpit-launch.exe`）。重複執行即為更新。參數：
+
+| 參數 | 預設 | 說明 |
+|---|---|---|
+| `-Config` | repo 根目錄的 `cockpit.toml` | 設定檔。存在時捷徑帶 `--config "<絕對路徑>"`、工作目錄為設定檔所在目錄；不存在時警告並以零設定模式執行（捷徑不帶引數，工作目錄為 `%LOCALAPPDATA%\ai-cockpit\`） |
+| `-InstallDir` | `%LOCALAPPDATA%\ai-cockpit\bin` | 執行檔安裝目錄 |
+| `-ShortcutDir` | 使用者桌面 | 捷徑所在目錄；測試時可指到暫存目錄，以免動到真實捷徑 |
+
+安裝目錄的 `cockpit.exe` 或 `cockpit-launch.exe` 正在執行時，腳本會在複製前停止、提示先關閉 Cockpit
+並以非 0 結束，不會覆寫執行中的檔案（關掉視窗約 10 秒後後端自動結束）。
+
+### 桌面通知
+
+通知是純前端功能：瀏覽器比對前後兩份推送狀態，在 pane 的 agent 狀態變成 `blocked`／`done`、
+task 狀態變成 `failed`／`completed` 時發通知；視窗在前景時不發。頂列的鈴鐺按鈕開啟設定面板，
+四種事件各自開關（預設只開 blocked 與 failed）並顯示通知權限狀態。
 
 ## 真機測試
 

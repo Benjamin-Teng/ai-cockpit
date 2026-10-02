@@ -126,7 +126,8 @@ body {
 .file-viewer-host,
 .md-body table,
 .md-body pre,
-.pdf-pages {
+.pdf-pages,
+.notify-panel {
   scrollbar-width: thin;
 }
 
@@ -393,6 +394,131 @@ body {
   color: var(--text-dim);
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+}
+
+/* 通知鈴鐺與通知設定面板（spec desktop-notifications「通知設定」；design D8；desktop-launch-notify
+   task 3.3）。鈴鐺沿用 .action-button 的第三層級中性語彙（透明底、1px --text-dim 框與圖示、hover
+   轉 --text），只是只放圖示：14px 圖示＋1px 內距＋1px 框＝18px，不超過頂列行高（1.4 × 14px），
+   不改變 --shell-topbar-h。焦點外框用全域 :focus-visible（2px --accent）。 */
+.notify-bell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  /* 寬 ≥1200 時頂列 align-items: stretch（見檔尾「固定一屏」的 [data-region="topbar"]），不自己置中會被
+     拉成貼滿頂列高度的直條（修正波 3.6 M2）；同段的 .app-name 也是這樣處理。 */
+  align-self: center;
+  padding: 1px;
+  border: 1px solid var(--text-dim);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.notify-bell:hover {
+  color: var(--text);
+  border-color: var(--text);
+}
+
+/* 面板開著時的按下狀態（修正波，3.5 採納項；狀態由 aria-expanded 表達）：沿用 `.action-button[aria-pressed="true"]`
+   的既有語彙——框線與圖示用品牌強調色，另以 --surface 實底讓它與未按下時的透明底分開。寫在 :hover 之後，
+   滑鼠停在鈴鐺上時仍呈現按下狀態。 */
+.notify-bell[aria-expanded="true"] {
+  border-color: var(--accent);
+  background: var(--surface);
+  color: var(--accent);
+}
+
+/* 面板是 body 底下、#app 之外的節點（不受整頁重畫影響），以 position: fixed 貼在鈴鐺下方；
+   top／right 由 notify.js 依鈴鐺位置寫入，這裡的值只是找不到鈴鐺時的預設。外觀比照 Git Graph
+   分支篩選 popover（--bg-base 實底、--line 框、6px 圓角），但**不加陰影**：direction-01 design D4
+   「冰青的形狀分工」規定全畫面只有 running 節點有 box-shadow 柔光（visual-check.js [G1/glow]），
+   面板與頁面靠 --line 框線和 --bg-base／--bg-deep 的底色差分開。沒有任何 animation／transition
+   （design D5；減少動態設定下自然也沒有）。 */
+.notify-panel {
+  position: fixed;
+  top: 52px;
+  right: 16px;
+  z-index: 20;
+  width: 320px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-base);
+  color: var(--text);
+  font-size: var(--fs-panel);
+  line-height: 1.5;
+}
+
+.notify-panel-title {
+  margin: 0;
+  font-size: var(--fs-panel);
+  font-weight: 600;
+}
+
+.notify-panel-note {
+  margin: 2px 0 10px;
+  color: var(--text-dim);
+  font-size: var(--fs-meta);
+}
+
+.notify-kinds {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.notify-kind {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+
+/* 核取方塊是原生控制項，只用 accent-color 讓「已勾選」用畫面既有的強調色（同 .graph-filter-item）。 */
+.notify-kind input[type="checkbox"] {
+  flex-shrink: 0;
+  margin: 3px 0 0;
+  accent-color: var(--accent);
+}
+
+.notify-kind-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.3;
+}
+
+.notify-kind-name {
+  font-size: var(--fs-dense);
+}
+
+.notify-kind-desc {
+  color: var(--text-dim);
+  font-size: var(--fs-meta);
+}
+
+.notify-permission {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.notify-permission-text {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-meta);
 }
 
 /* Factory Floor（spec「Factory Floor」；direction-01-visual task 3.2）：外框

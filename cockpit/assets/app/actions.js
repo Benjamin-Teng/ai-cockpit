@@ -109,10 +109,69 @@
     ui.selectedProject = id;
   }
 
+  // 最新一份投影中是否有這個 pane、且它的列可以點選（runtime id ＋ pane id；render.js 的
+  // window.cockpitLatestState）。exited 的 pane 不算：render.js 不給 exited 的 pane 列 data-action
+  // （spec live-output「選定一個 pane」：exited 的 pane 不可選），點通知要等同點選 pane 列，規則一致
+  // （修正波 3.6 M3）。
+  function selectablePaneInLatestState(runtime, paneId) {
+    var state =
+      typeof window.cockpitLatestState === "function" ? window.cockpitLatestState() : null;
+    if (!state || !Array.isArray(state.runtimes)) {
+      return false;
+    }
+    for (var r = 0; r < state.runtimes.length; r += 1) {
+      var rt = state.runtimes[r];
+      if (!rt || rt.id !== runtime || !Array.isArray(rt.workspaces)) {
+        continue;
+      }
+      for (var w = 0; w < rt.workspaces.length; w += 1) {
+        var tabs = rt.workspaces[w] && Array.isArray(rt.workspaces[w].tabs) ? rt.workspaces[w].tabs : [];
+        for (var t = 0; t < tabs.length; t += 1) {
+          var panes = tabs[t] && Array.isArray(tabs[t].panes) ? tabs[t].panes : [];
+          for (var p = 0; p < panes.length; p += 1) {
+            if (panes[p] && panes[p].id === paneId) {
+              return !panes[p].exited;
+            }
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  // 點 pane 通知時選定該 pane（spec desktop-notifications「通知呈現」：效果等同點選該 pane 列；
+  // design D7；desktop-launch-notify task 3.3）：走跟 perform() 的 select-pane 相同的路徑——設定
+  // ui.selected、呼叫 liveOutput.select、重畫（右欄選定標示由 ui.selected 決定，只呼叫
+  // liveOutput.select 不夠）。改綁模式期間（pane 列本來就不可點選）、pane 已不在最新投影中、或 pane
+  // 已 exited（列不可點）時不做事、回 false。同 select-pane：不遞增 latestOp、不清 ui.error。
+  //
+  // 重畫後把新的選定列捲進視野（block／inline 都 nearest；修正波 3.6 M8）：用滑鼠點 pane 列時那一列
+  // 本來就在眼前，點通知時它可能在右欄捲動容器外或窄版頁面的別處，不捲的話使用者帶到前景後看不到選定
+  // 標示。只捲 pane 列、不另外去捲 Live Output——點 pane 列本身也不會捲動 Live Output。不移動焦點。
+  function selectPane(runtime, paneId) {
+    if (ui.rebind !== null || !selectablePaneInLatestState(runtime, paneId)) {
+      return false;
+    }
+    ui.selected = { runtime: runtime, paneId: paneId };
+    if (window.liveOutput && typeof window.liveOutput.select === "function") {
+      window.liveOutput.select(runtime, paneId);
+    }
+    repaint();
+    var rows = root.querySelectorAll(".pane-row.selected");
+    for (var i = 0; i < rows.length; i += 1) {
+      if (rows[i].getAttribute("data-runtime") === runtime && rows[i].getAttribute("data-pane") === paneId) {
+        rows[i].scrollIntoView({ block: "nearest", inline: "nearest" });
+        break;
+      }
+    }
+    return true;
+  }
+
   window.cockpitActions = {
     uiSnapshot: uiSnapshot,
     clearSelected: clearSelected,
     setSelectedProject: setSelectedProject,
+    selectPane: selectPane,
   };
 
   function seg(value) {
@@ -183,6 +242,17 @@
   function perform(el) {
     var data = el.dataset;
     var action = data.action;
+
+    if (action === "notify-settings") {
+      // 通知鈴鐺（spec desktop-notifications「通知設定」；cockpit-dashboard「畫面整頁重畫」：鈴鐺不屬於
+      // 「畫面操作」，按下不改變其錯誤訊息與進行中的操作狀態；design D8；desktop-launch-notify
+      // task 3.3）：比照 select-project 提早處理——不遞增 latestOp、不清 ui.error、不碰 ui.rebind，
+      // 也不重畫（面板是 notify.js 在 #app 之外管理的節點）。
+      if (window.cockpitNotify && typeof window.cockpitNotify.togglePanel === "function") {
+        window.cockpitNotify.togglePanel();
+      }
+      return;
+    }
 
     if (action === "select-project") {
       // Project 選取不是「畫面操作」（design D6，比照 select-pane／select-bound-pane 的

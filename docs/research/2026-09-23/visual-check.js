@@ -163,7 +163,7 @@
 //       tasks.md「以 visual-check.js 走訪 DOM 列出實際用到的 class 對照」）。依序走訪預設投影、截斷、
 //       過期＋原因、pane 已不存在、空狀態、點選 pane 列、兩則提示＋改綁、通道三種非 connected 字串、
 //       防禦狀態（五種 agent 狀態＋未知、兩個 tab、connecting／未知連線、protocol 警告、未知 task
-//       status）、沒有 Project、四種視窗；用 CSSOM 逐條選擇器（去掉 :hover／:focus-visible 等互動偽類
+//       status）、沒有 Project、通知設定面板開啟（desktop-launch-notify 修正波）、四種視窗；用 CSSOM 逐條選擇器（去掉 :hover／:focus-visible 等互動偽類
 //       與偽元素）querySelector，斷言沒有任何一條從頭到尾對不到元素，並印出 DOM 出現過的全部 class；
 //       否定對照：注入的 <style> 只抓出沒人用的兩條。fix round 1（Codex medium）：外層 @media／@supports
 //       條件跟著遞迴，當下不成立就不算命中；每個狀態都在四種視窗取樣，另加 prefers-reduced-motion 取樣；
@@ -8590,6 +8590,13 @@ async function partCssInventory() {
     await cdp.waitFor("!!document.querySelector('.pane-row.selected[data-pane=\"wJ:p3\"]')", 3000, '[CL1] 點 wJ:p3 列：列標為 selected');
     await collect('點選 pane 列');
     await cdp.eval('window.liveOutput.clear(); true');
+
+    // desktop-launch-notify 修正波（3.5 採納項）：`.notify-bell[aria-expanded="true"]`（通知設定面板開著時
+    // 鈴鐺的按下狀態）只在面板開著時有元素——以滑鼠按鈴鐺開啟、取樣後關閉。
+    await cdp.click('#app [data-action="notify-settings"]');
+    await cdp.waitFor("(() => { var p = document.getElementById('notify-panel'); var b = document.querySelector('#app [data-action=\"notify-settings\"]'); return !!p && !p.hidden && !!b && b.getAttribute('aria-expanded') === 'true'; })()", 3000, '[CL1] 按鈴鐺：通知設定面板開啟、鈴鐺 aria-expanded=true');
+    await collect('通知設定面板開啟');
+    await cdp.eval('window.cockpitNotify.togglePanel(); true');
 
     // file-review task 4.2：左欄「檔案」分頁的檔案樹（spec file-review「左欄檔案樹」新增的畫面狀態）——
     // 樹列、展開的資料夾、資料夾讀取失敗（暫存副本裡先建 cl1-gone/，樹列出後刪掉再展開 → not_found）、

@@ -113,7 +113,10 @@ workstream = "be"
 /// 把 `toml_text` 寫成 `dir` 底下的 `cockpit.toml` 並載入；回傳解析後的 `Config`。
 fn load_config(dir: &TempDir, toml_text: &str) -> Config {
     dir.write("cockpit.toml", toml_text);
-    let args = Args { config: None };
+    let args = Args {
+        config: None,
+        exit_when_idle: false,
+    };
     config::load(&args, dir.path(), &no_env).expect("測試設定檔應可載入")
 }
 

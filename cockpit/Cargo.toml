@@ -3,6 +3,9 @@ name = "cockpit"
 version = "0.1.0"
 edition.workspace = true
 publish = false
+# 第二個 bin（cockpit-launch）加入後，沒有 --bin 的 `cargo run -p cockpit` 仍選 cockpit
+# （desktop-launch-notify task 2.3；design D1）。
+default-run = "cockpit"
 
 [dependencies]
 anyhow = "1.0.104"

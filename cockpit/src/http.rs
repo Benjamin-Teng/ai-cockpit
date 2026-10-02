@@ -100,7 +100,7 @@ use axum::Router;
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
-use axum::http::{HeaderName, HeaderValue, StatusCode, header};
+use axum::http::{HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use cockpit_core::{
@@ -155,6 +155,83 @@ pub struct AppState {
     /// git 子程序」的並行上限對所有請求生效，而不是每個請求各自一個。`GitRunner` 本身不是
     /// `Clone`，用 `Arc` 讓 `AppState`（`derive(Clone)`）可以便宜複製。
     pub git_runner: Arc<cockpit_git::GitRunner>,
+    /// 客戶端活動（desktop-launch-notify task 2.1；design D6）：目前開著的 `/ws` 連線數與最近一次
+    /// `GET /`／`GET /api/state` 的時間，供 `--exit-when-idle` 的閒置監看
+    /// （`cockpit::app::shutdown_signal`）使用。不帶旗標時照樣記錄，只是沒有人監看。
+    pub activity: ClientActivity,
+}
+
+/// `/ws` 連線數與最近一次 `GET /`／`GET /api/state` 的時間（desktop-launch-notify task 2.1；
+/// spec `desktop-launch`「閒置自動結束」；design D6）。
+///
+/// 兩者都用 `watch` 發布：監看端每次收到 `changed()` 就重新評估，能精確地在「降為 0」那一刻
+/// 開始計時，也能在計時中被新連線打斷（design D6 選 `watch<usize>` 而非 `AtomicUsize`＋輪詢的
+/// 理由）。`Clone` 共用同一組頻道——路由表內的 `AppState` 與 `cockpit::app::Components` 各持
+/// 一份 clone，看到的是同一個計數。
+#[derive(Clone, Debug)]
+pub struct ClientActivity {
+    /// 目前開著的 `/ws` 連線數；升級成功時遞增，[`ConnectionGuard`] drop 時遞減。
+    connections: watch::Sender<usize>,
+    /// 最近一次 `GET /`／`GET /api/state` 的時間；從沒有過就是 `None`。用 tokio 的
+    /// `Instant`，測試暫停時鐘時也一致。
+    last_request: watch::Sender<Option<tokio::time::Instant>>,
+}
+
+impl ClientActivity {
+    /// 連線數 0、沒有任何請求紀錄。
+    pub fn new() -> Self {
+        Self {
+            connections: watch::Sender::new(0),
+            last_request: watch::Sender::new(None),
+        }
+    }
+
+    /// 記一條新的 `/ws` 連線：連線數加一，回傳的 guard drop 時減一。遞減放在 `Drop`，連線
+    /// 不論從哪一條路徑結束（正常 close、送出失敗、客戶端直接斷線、task 被取消）都會執行。
+    ///
+    /// `send_modify` 每次都通知監看端（即使中間沒有人看到 1，0→1→0 也會留下變更通知）。
+    pub fn connect(&self) -> ConnectionGuard {
+        self.connections.send_modify(|count| *count += 1);
+        ConnectionGuard {
+            connections: self.connections.clone(),
+        }
+    }
+
+    /// 記一次 `GET /` 或 `GET /api/state`（時間取當下）。
+    pub fn record_request(&self) {
+        self.last_request
+            .send_replace(Some(tokio::time::Instant::now()));
+    }
+
+    /// 訂閱目前的 `/ws` 連線數。
+    pub fn connections(&self) -> watch::Receiver<usize> {
+        self.connections.subscribe()
+    }
+
+    /// 訂閱最近一次 `GET /`／`GET /api/state` 的時間。
+    pub fn last_request(&self) -> watch::Receiver<Option<tokio::time::Instant>> {
+        self.last_request.subscribe()
+    }
+}
+
+impl Default for ClientActivity {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// [`ClientActivity::connect`] 回傳的 drop guard：drop 時把連線數減一。
+#[derive(Debug)]
+#[must_use = "guard 一 drop 連線數就會減一，要持有到連線結束"]
+pub struct ConnectionGuard {
+    connections: watch::Sender<usize>,
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.connections
+            .send_modify(|count| *count = count.saturating_sub(1));
+    }
 }
 
 impl AppState {
@@ -175,6 +252,7 @@ impl AppState {
             path_mappings: Arc::new(HashMap::new()),
             files: Arc::new(crate::files::FileSettings::embedded()),
             git_runner: Arc::new(cockpit_git::GitRunner::new()),
+            activity: ClientActivity::new(),
         }
     }
 }
@@ -322,7 +400,13 @@ pub fn router(app: AppState) -> Router {
         .with_state(app)
 }
 
-async fn index() -> impl IntoResponse {
+/// `GET /`：內嵌的 `index.html`。`GET` 時記一次活動（desktop-launch-notify task 2.1；spec
+/// 「閒置自動結束」：啟動器開窗前後的請求延長閒置期限）；axum 把 `HEAD` 也導到這裡，`HEAD`
+/// 不算（spec：其他 HTTP 請求不影響計時）。
+async fn index(method: Method, State(app): State<AppState>) -> impl IntoResponse {
+    if method == Method::GET {
+        app.activity.record_request();
+    }
     (
         [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
         include_str!("../assets/index.html"),
@@ -377,6 +461,13 @@ async fn app_asset(Path(file): Path<String>) -> Response {
             include_str!("../assets/app/git.js"),
         )
             .into_response(),
+        // desktop-launch-notify task 3.3（design D7、D8）：桌面通知模組與通知設定面板；
+        // index.html 在 render.js 之前載入。
+        "notify.js" => (
+            [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+            include_str!("../assets/app/notify.js"),
+        )
+            .into_response(),
         _ => StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -412,7 +503,13 @@ async fn icon(Path(file): Path<String>) -> Response {
 /// deref（`Ref<Arc<ProjectedState>>` → `Arc<ProjectedState>` → `ProjectedState`）拿到
 /// `&ProjectedState` 再交給 [`state_json`]——與 `/ws` 共用同一個序列化函數（design D9
 /// 節錄）。
-async fn api_state(State(app): State<AppState>) -> impl IntoResponse {
+///
+/// `GET` 時記一次活動（desktop-launch-notify task 2.1；同 [`index`]，`HEAD` 不算）：啟動器
+/// 偵測「Cockpit 是否在執行」打的就是這條，偵測到之後才開窗，期間後端不該剛好閒置結束。
+async fn api_state(method: Method, State(app): State<AppState>) -> impl IntoResponse {
+    if method == Method::GET {
+        app.activity.record_request();
+    }
     let body = state_json(&app.state.borrow());
     ([(header::CONTENT_TYPE, "application/json")], body)
 }
@@ -425,8 +522,15 @@ fn state_json(state: &ProjectedState) -> String {
 }
 
 /// `/ws`：升級成 WebSocket，把訂閱端交給 [`handle_socket`]（design D9）。
+///
+/// 升級成功（進到 `on_upgrade` 的 callback）時才把連線數加一，guard 跟著連線 task 活到
+/// [`handle_socket`] 結束——任何結束路徑（含 task 被取消）都會在 drop 時減一
+/// （desktop-launch-notify task 2.1；design D6）。
 async fn ws_handler(ws: WebSocketUpgrade, State(app): State<AppState>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, app.state.clone()))
+    ws.on_upgrade(move |socket| async move {
+        let _connection = app.activity.connect();
+        handle_socket(socket, app.state.clone()).await;
+    })
 }
 
 /// 連線期間的完整生命週期：先送現況一份，之後每次投影 `version` 遞增就再送整份；忽略

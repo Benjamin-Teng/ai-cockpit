@@ -98,6 +98,7 @@ async fn missing_config_path_exits_with_error_naming_path() {
     let cwd = std::env::temp_dir();
     let args = Args {
         config: Some(PathBuf::from("missing.toml")),
+        exit_when_idle: false,
     };
 
     let error = app::run(&args, &cwd, &|_| None)
@@ -415,6 +416,49 @@ async fn run_with_shutdown_backfills_port_zero_with_actual_port() {
         .expect("真的收到 signal 時應該回 Ok");
 }
 
+/// desktop-launch-notify task 2.1（spec「閒置自動結束」：走與 Ctrl-C 相同的正常關閉流程、
+/// 結束碼 0）：`build_components` 的路由表與 `Components::activity` 是同一份計數，閒置監看
+/// 接在 `run_with_shutdown` 上，最後一個 `/ws` 關閉後經過閒置期限就回 `Ok`。期限注入短值，
+/// 真的連線、真的計時（不暫停時鐘）。
+#[tokio::test]
+async fn exit_when_idle_shuts_down_normally_after_last_ws_closes() {
+    use futures_util::SinkExt;
+
+    let components = app::build_components(&unreachable_config()).expect("組裝應該成功");
+    let (listener, addr) = bind_ephemeral().await;
+    let policy = app::IdlePolicy {
+        startup_grace: Duration::from_secs(30),
+        idle_grace: Duration::from_millis(300),
+    };
+    let signal = app::shutdown_signal(
+        true,
+        components.activity.clone(),
+        policy,
+        std::future::pending::<anyhow::Result<()>>(),
+    );
+    let run = tokio::spawn(app::run_with_shutdown(components, listener, signal));
+
+    let (mut ws, _response) = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio_tungstenite::connect_async(format!("ws://{addr}/ws")),
+    )
+    .await
+    .expect("WebSocket 連線逾時")
+    .expect("WebSocket 連線不應該失敗");
+    // 連著的期間（遠超過閒置期限）不結束。
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(!run.is_finished(), "還有 /ws 連線時不該結束");
+
+    ws.send(tokio_tungstenite::tungstenite::Message::Close(None))
+        .await
+        .expect("送出 close 不應該失敗");
+    tokio::time::timeout(Duration::from_secs(15), run)
+        .await
+        .expect("最後一個連線關閉後應該在閒置期限＋收尾時間內結束")
+        .expect("run task 不應該 panic")
+        .expect("閒置結束是正常關閉，應該回 Ok");
+}
+
 // ---------------------------------------------------------------------------
 // Codex 最終 review finding 2：`run_with_shutdown` 回傳時沒等驅動器與投影任務收乾淨。
 //
@@ -464,6 +508,7 @@ fn components_with_slow_driver() -> (Components, StoreHandle, Arc<AtomicBool>) {
             stale_remover: None,
             port: Arc::new(AtomicU16::new(0)),
             runtimes: Arc::new(HashMap::new()),
+            activity: cockpit::http::ClientActivity::new(),
         },
         handle,
         finished,
@@ -1053,7 +1098,10 @@ workstream = "be"
         ),
     );
 
-    let args = Args { config: None };
+    let args = Args {
+        config: None,
+        exit_when_idle: false,
+    };
     let error = app::run(&args, dir.path(), &|_| None)
         .await
         .expect_err("位址已被佔用時 app::run 應該回 Err");

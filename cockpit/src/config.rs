@@ -76,11 +76,15 @@ pub struct RuntimeConfig {
     pub endpoint: HerdrEndpoint,
 }
 
-/// 命令列參數（目前只有 `--config`）。
+/// 命令列參數：`--config` 與 `--exit-when-idle`。
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Args {
     /// `--config <path>` 指定的路徑；沒給就是 `None`。
     pub config: Option<PathBuf>,
+    /// 有沒有給 `--exit-when-idle`（desktop-launch-notify task 2.1；spec `desktop-launch`
+    /// 「閒置自動結束」；design D6）：給了就在沒有任何畫面連線時自行結束，見
+    /// `cockpit::app::shutdown_signal`。
+    pub exit_when_idle: bool,
 }
 
 /// [`Config::source`] 實際採用了哪個設定來源。
@@ -129,17 +133,29 @@ pub enum ConfigError {
     Invalid(String),
 }
 
-/// 解析命令列參數；目前只認得 `--config <path>` 與 `--config=<path>` 兩種寫法。
+/// 解析命令列參數：`--config <path>`、`--config=<path>` 與布林旗標 `--exit-when-idle`
+/// （desktop-launch-notify task 2.1；design D6），順序不拘。`--config` 重複時以最後一個為準
+/// （既有行為）；`--exit-when-idle` 重複視為錯誤。
 ///
 /// # Errors
 ///
-/// 出現任何其他參數（包含 `--config` 後面沒接路徑）都回傳 [`ConfigError::Invalid`]。
+/// 出現任何其他參數（包含 `--config` 後面沒接路徑、`--exit-when-idle=<值>`）或
+/// `--exit-when-idle` 重複時都回傳 [`ConfigError::Invalid`]。
 pub fn parse_args(argv: &[String]) -> Result<Args, ConfigError> {
     let mut config = None;
+    let mut exit_when_idle = false;
     let mut i = 0;
     while i < argv.len() {
         let arg = argv[i].as_str();
-        if let Some(value) = arg.strip_prefix("--config=") {
+        if arg == "--exit-when-idle" {
+            if exit_when_idle {
+                return Err(ConfigError::Invalid(
+                    "--exit-when-idle 重複指定".to_string(),
+                ));
+            }
+            exit_when_idle = true;
+            i += 1;
+        } else if let Some(value) = arg.strip_prefix("--config=") {
             config = Some(PathBuf::from(value));
             i += 1;
         } else if arg == "--config" {
@@ -152,7 +168,10 @@ pub fn parse_args(argv: &[String]) -> Result<Args, ConfigError> {
             return Err(ConfigError::Invalid(format!("不明參數：{arg}")));
         }
     }
-    Ok(Args { config })
+    Ok(Args {
+        config,
+        exit_when_idle,
+    })
 }
 
 /// 依 D16 的來源順序載入設定：`args.config` 有給就讀那個檔案（不存在即失敗）；否則讀

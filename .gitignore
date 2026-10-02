@@ -5,3 +5,4 @@ cockpit.state.json
 __pycache__/
 .superpowers/
 .deid-terms
+cockpit.log

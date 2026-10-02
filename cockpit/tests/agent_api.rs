@@ -237,6 +237,7 @@ fn build_with(
         path_mappings: Arc::new(path_mappings),
         files: Arc::new(cockpit::files::FileSettings::embedded()),
         git_runner: Arc::new(cockpit_git::GitRunner::new()),
+        activity: cockpit::http::ClientActivity::new(),
     };
     (handle, state)
 }

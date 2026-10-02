@@ -205,6 +205,7 @@ impl Fixture {
             path_mappings: Arc::new(path_mappings),
             files: Arc::new(FileSettings::embedded()),
             git_runner: Arc::clone(&git_runner),
+            activity: cockpit::http::ClientActivity::new(),
         };
         let root_id = cockpit::files::encode_root_id(repo).expect("repo 路徑應可編碼");
         Self {
@@ -390,25 +391,42 @@ fn no_code_adds_safe_directory_to_bypass_ownership_check() {
 
 /// Ruling P2：`cockpit` crate 內不得出現任何 `Command::new`——執行 git 只能經
 /// `cockpit_git::GitRunner::run`。
+///
+/// 唯一例外是桌面啟動器 `src/bin/cockpit-launch.rs`（desktop-launch-notify task 2.3；design D1、D3）：
+/// 它是另一支執行檔，職責就是啟動 `cockpit` 後端與瀏覽器，不執行 git；只豁免這一個檔案，
+/// 服務本體與其他 bin 照舊受此規則約束。
 #[test]
 fn cockpit_crate_never_spawns_a_command_directly() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let launcher = root.join("bin").join("cockpit-launch.rs");
     assert!(
-        !scan_dir_for(&root, "Command::new"),
+        launcher.is_file(),
+        "豁免的檔案不存在：{}",
+        launcher.display()
+    );
+    assert!(
+        !scan_dir_for_except(&root, "Command::new", &[launcher.as_path()]),
         "cockpit/src 不得出現 Command::new（P2：執行 git 只能經 GitRunner::run）"
     );
 }
 
 fn scan_dir_for(dir: &Path, needle: &str) -> bool {
+    scan_dir_for_except(dir, needle, &[])
+}
+
+/// 同 [`scan_dir_for`]，但略過 `skip` 中列出的檔案。
+fn scan_dir_for_except(dir: &Path, needle: &str, skip: &[&Path]) -> bool {
     let Ok(entries) = fs::read_dir(dir) else {
         return false;
     };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            if scan_dir_for(&path, needle) {
+            if scan_dir_for_except(&path, needle, skip) {
                 return true;
             }
+        } else if skip.contains(&path.as_path()) {
+            continue;
         } else if path.extension().is_some_and(|ext| ext == "rs") {
             let content = fs::read_to_string(&path).unwrap_or_default();
             if content.contains(needle) {

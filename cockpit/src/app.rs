@@ -8,6 +8,8 @@
 //!
 //! shutdown signal 本身也是注入的（[`run_with_shutdown`]），`run` 注入的才是真的 Ctrl-C；
 //! 測試靠它打得到 serve／shutdown 這段，也才驗得到「Ctrl-C 監聽註冊失敗要非零結束」。
+//! 帶 `--exit-when-idle` 時，`run` 注入的是 Ctrl-C 與閒置監看的合併（[`shutdown_signal`]；
+//! desktop-launch-notify task 2.1，design D6），閒置結束與 Ctrl-C 走同一條正常關閉流程。
 //!
 //! 「停止」的實作就是把 [`Components::stops`] 裡的 `oneshot::Sender` 全部 drop：
 //! `cockpit_core::driver::run` 的每個 `select!` 都 `biased` 地先看 `stop`，收到訊號**或
@@ -53,7 +55,7 @@ use tokio::task::JoinHandle;
 
 use crate::config::{Args, Config, ConfigSource, load};
 use crate::files::PathMapping;
-use crate::http::{AppState, router};
+use crate::http::{AppState, ClientActivity, router};
 use crate::progress;
 use crate::progress_service::ProgressService;
 use crate::runtimes;
@@ -102,6 +104,10 @@ pub struct Components {
     /// （見 [`shutdown_all`] 文件——停止靠的是 [`Components::stops`] 與 `await`
     /// [`Components::drivers`]，跟這張表的 `Arc` 引用計數無關）。
     pub runtimes: Arc<HashMap<RuntimeId, Arc<dyn AgentRuntime>>>,
+    /// 與 [`Components::router`] 內 `AppState::activity` 共用同一組頻道（desktop-launch-notify
+    /// task 2.1；design D6），同 [`Components::port`] 的模式：[`run`] 帶 `--exit-when-idle` 時把它
+    /// 交給 [`shutdown_signal`] 監看 `/ws` 連線數與 `GET` 活動。
+    pub activity: ClientActivity,
 }
 
 /// 依設定組出狀態庫、投影任務、每筆 runtime 的驅動器與路由表。
@@ -179,6 +185,7 @@ pub fn build_components(config: &Config) -> anyhow::Result<Components> {
     // 拿到哪個埠（design D6）。`router` 在這裡就已經組好，所以兩邊共用同一個 `Arc`——`run`
     // 綁定成功後改的是這個 `Arc` 指到的內容，不是重新組一次路由表。
     let port = Arc::new(AtomicU16::new(config.server.listen.port()));
+    let activity = ClientActivity::new();
     let router = router(AppState {
         state: handle.subscribe(),
         progress: progress_service.clone(),
@@ -187,6 +194,7 @@ pub fn build_components(config: &Config) -> anyhow::Result<Components> {
         path_mappings: Arc::new(path_mappings(config)),
         files: Arc::new(crate::files::FileSettings::embedded()),
         git_runner: Arc::new(cockpit_git::GitRunner::new()),
+        activity: activity.clone(),
     });
 
     Ok(Components {
@@ -199,6 +207,7 @@ pub fn build_components(config: &Config) -> anyhow::Result<Components> {
         stale_remover,
         port,
         runtimes,
+        activity,
     })
 }
 
@@ -300,8 +309,18 @@ pub async fn run(
     // 到「直接呼叫 `run_with_shutdown`（不經 `run`）」呼叫端的地方。
     let local_addr = listener.local_addr().unwrap_or(listen);
     tracing::info!("dashboard 已啟動：http://{local_addr}/（Ctrl-C 結束）");
+    if args.exit_when_idle {
+        tracing::info!("已啟用 --exit-when-idle：沒有任何畫面連線時自動結束");
+    }
 
-    run_with_shutdown(components, listener, ctrl_c()).await
+    // 閒置監看的「開始監聽」從這裡起算（bind 已成功），見 `shutdown_signal`。
+    let shutdown = shutdown_signal(
+        args.exit_when_idle,
+        components.activity.clone(),
+        IdlePolicy::default(),
+        ctrl_c(),
+    );
+    run_with_shutdown(components, listener, shutdown).await
 }
 
 /// 收尾時**所有驅動器共用**的「自己結束」總期限（design D11）：從送出停止訊號起算，期限
@@ -356,6 +375,7 @@ pub async fn run_with_shutdown(
         stale_remover,
         port,
         runtimes: _runtimes,
+        activity: _activity,
     } = components;
 
     let local_addr = match listener.local_addr().context("無法取得監聽位址") {
@@ -536,6 +556,130 @@ pub async fn shutdown_all(
                 await_bounded(stale_remover, "寫入服務的失效覆蓋接收任務").await;
             }
         }
+    }
+}
+
+/// `--exit-when-idle` 的兩個期限（desktop-launch-notify task 2.1；spec `desktop-launch`「閒置
+/// 自動結束」；design D6）。正式值見 [`IdlePolicy::default`]；測試注入短值。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IdlePolicy {
+    /// 從開始監聽起，這段時間內從未有任何 `/ws` 連線就結束（期間其他 HTTP 請求不延長）。
+    pub startup_grace: Duration,
+    /// 曾經有過連線、目前連線數為 0 時，距離「最近一次降為 0」與「之後最近一次 `GET /`／
+    /// `GET /api/state`」兩者中較晚者滿這段時間就結束。
+    pub idle_grace: Duration,
+}
+
+impl Default for IdlePolicy {
+    /// 正式值：60 秒、10 秒（spec「閒置自動結束」）。
+    fn default() -> Self {
+        Self {
+            startup_grace: Duration::from_secs(60),
+            idle_grace: Duration::from_secs(10),
+        }
+    }
+}
+
+/// 組出交給 [`run_with_shutdown`] 的關閉訊號（desktop-launch-notify task 2.1；design D6）。
+///
+/// - `exit_when_idle` 為 `false`：就是 `ctrl_c` 本身，不建立監看，行為與過去完全相同。
+/// - 為 `true`：`ctrl_c` 與閒置監看（`wait_until_idle`）以 `select` 合併，先完成者為準。
+///   閒置觸發時回 `Ok(())`，與收到 Ctrl-C 走同一條正常關閉流程（`run` 回 `Ok`，結束碼 0）；
+///   `ctrl_c` 回 `Err`（監聽註冊失敗）照樣往外帶。
+///
+/// 「開始監聽」的時間點就是呼叫這個函式的當下（同步取得，不等 future 第一次被 poll）：呼叫端
+/// 在 `bind` 成功之後立刻呼叫（見 [`run`]）。
+pub fn shutdown_signal(
+    exit_when_idle: bool,
+    activity: ClientActivity,
+    policy: IdlePolicy,
+    ctrl_c: impl Future<Output = anyhow::Result<()>> + Send + 'static,
+) -> impl Future<Output = anyhow::Result<()>> + Send + 'static {
+    let listening_since = tokio::time::Instant::now();
+    async move {
+        if !exit_when_idle {
+            return ctrl_c.await;
+        }
+        tokio::select! {
+            result = ctrl_c => result,
+            () = wait_until_idle(activity, policy, listening_since) => {
+                tracing::info!("沒有任何畫面連線（--exit-when-idle），開始正常關閉");
+                Ok(())
+            }
+        }
+    }
+}
+
+/// 閒置監看：依 spec「閒置自動結束」的規則等到該結束的那一刻才完成（design D6）。
+///
+/// 每次收到連線數或請求時間的 `changed()` 通知就重新評估一次，不以「等到值大於 0」判斷：
+/// - 連線數有變更、且最新值為 0 → 視為「曾經有過連線、剛降為 0」，從**現在**重新計時。
+///   即使監看端來不及看到中間的 1（同一個時間點內 0→1→0），變更通知本身就代表有過連線，
+///   這樣才不會漏掉短暫連線、也不會讓計時中的短暫連線被忽略（design D6）。
+/// - 連線數大於 0 → 沒有期限。
+/// - 從未有過連線 → 期限是 `listening_since + startup_grace`，請求不延長。
+/// - 曾經有過連線、目前為 0 → 期限是「降為 0 的時間」與「之後最近一次 `GET`」較晚者加上
+///   `idle_grace`；早於降為 0 的請求以 `max` 自然被忽略。
+///
+/// 自己持有 `activity`（兩個 `watch::Sender` 的 clone），所以 `changed()` 不會因為傳送端全部
+/// 消失而回 `Err`；萬一回了，就停止監看該頻道（只剩其他條件），不忙迴圈。
+async fn wait_until_idle(
+    activity: ClientActivity,
+    policy: IdlePolicy,
+    listening_since: tokio::time::Instant,
+) {
+    let mut connections = activity.connections();
+    let mut requests = activity.last_request();
+    let mut connections_open = true;
+    let mut requests_open = true;
+
+    // `subscribe()` 出來的接收端把訂閱前的值視為已讀：只有之後的變更會觸發 `changed()`。
+    // 監看開始前就已經連上的連線也算數（`borrow()` 拿的是目前值）；開始監看前的請求不影響
+    // 任何期限（從未連線時本來就不延長，曾經連線時只算降為 0 之後的）。
+    let mut count = *connections.borrow();
+    let mut ever_connected = count > 0;
+    // 「最近一次降為 0」與「之後最近一次 GET」較晚者；連線數大於 0 或從未連線時是 `None`。
+    let mut idle_since: Option<tokio::time::Instant> = None;
+
+    loop {
+        let deadline = if count > 0 {
+            None
+        } else if !ever_connected {
+            Some(listening_since + policy.startup_grace)
+        } else {
+            idle_since.map(|since| since + policy.idle_grace)
+        };
+
+        tokio::select! {
+            () = sleep_until_or_forever(deadline) => return,
+            changed = connections.changed(), if connections_open => {
+                if changed.is_err() {
+                    connections_open = false;
+                    continue;
+                }
+                count = *connections.borrow_and_update();
+                ever_connected = true;
+                idle_since = (count == 0).then(tokio::time::Instant::now);
+            }
+            changed = requests.changed(), if requests_open => {
+                if changed.is_err() {
+                    requests_open = false;
+                    continue;
+                }
+                let requested_at = *requests.borrow_and_update();
+                if let (Some(since), Some(at)) = (idle_since, requested_at) {
+                    idle_since = Some(since.max(at));
+                }
+            }
+        }
+    }
+}
+
+/// 有期限就睡到期限，沒有期限就永遠不完成（給 `select!` 用）。
+async fn sleep_until_or_forever(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
     }
 }
 

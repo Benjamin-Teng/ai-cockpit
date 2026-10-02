@@ -60,6 +60,8 @@ async fn routes_return_200_with_expected_content_types() {
         // git-review task 3.3：git.js 先以空殼檔案內嵌（cockpit-dashboard delta「路由與
         // content-type」）。
         ("/app/git.js", "text/javascript"),
+        // desktop-launch-notify task 3.3（design D7）：桌面通知模組與設定面板（notify.js）。
+        ("/app/notify.js", "text/javascript"),
         ("/manifest.webmanifest", "application/manifest+json"),
         ("/icons/icon-192.png", "image/png"),
         ("/icons/icon-512.png", "image/png"),
@@ -223,7 +225,11 @@ async fn index_loads_actions_js_between_render_and_channel() {
             .find(needle)
             .unwrap_or_else(|| panic!("index.html 應該引用 {needle}"))
     };
+    // desktop-launch-notify task 3.3（design D7）：render.js 的 onState 會呼叫
+    // window.cockpitNotify.observe，notify.js 要在 render.js 之前載入。
+    let notify = position(r#"<script src="/app/notify.js"></script>"#);
     let render = position(r#"<script src="/app/render.js"></script>"#);
+    assert!(notify < render, "notify.js 應該在 render.js 之前載入");
     let actions = position(r#"<script src="/app/actions.js"></script>"#);
     let channel = position(r#"<script src="/app/channel.js"></script>"#);
     assert!(

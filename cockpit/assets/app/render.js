@@ -4,7 +4,12 @@
 // DocumentFragment（各區塊平鋪、根節點帶 data-region；design D2）、不讀寫任何全域變數或既有
 // DOM。會碰全域（document、window）的只有檔尾的 paint／window.onState／window.repaint／
 // window.onChannel、#app 上唯一一個 focusin listener（鍵盤焦點進 Factory Floor 時補捲，見檔尾），以及 el() 內建立節點用的 document.createElement()／
-// document.createDocumentFragment()（節點工廠呼叫，不是讀寫既有 DOM）。
+// document.createDocumentFragment()、鈴鐺圖示用的 document.createElementNS()（節點工廠呼叫，不是讀寫既有 DOM）。
+//
+// 桌面通知（desktop-launch-notify task 3.3；design D7、D8）：頂列多一顆通知鈴鐺
+// （`data-action="notify-settings"`，事件由 actions.js 委派、交給 notify.js 開關設定面板）；
+// `window.onState` 重畫後呼叫 `window.cockpitNotify.observe(state)`（notify.js 沒載入時略過）。
+// 設定面板是 notify.js 建在 body 底下、#app 之外的節點，不在這裡的整頁重畫範圍內。
 //
 // ui 是選填的第二參數，缺省＝無改綁模式、無錯誤訊息、無選取（形狀見 actions.js 的
 // uiSnapshot：`{ rebind: null | { project, workstream }, error: null | string,
@@ -184,8 +189,58 @@
       lamps.appendChild(renderRuntimeLamp(state.runtimes[i]));
     }
     topbar.appendChild(lamps);
+    topbar.appendChild(renderNotifyBell());
 
     return topbar;
+  }
+
+  // 通知鈴鐺（spec desktop-notifications「通知設定」；design D8；desktop-launch-notify task 3.3）：
+  // 每次重畫都重建、開關狀態不存在 DOM 上（面板開著與否是 notify.js 的模組狀態）。帶
+  // `data-action="notify-settings"`：焦點還原只認 `data-action` 元素，鍵盤停在鈴鐺上時重畫後焦點
+  // 回到新的鈴鐺；actions.js 的 `perform()` 比照 select-project 提早處理，不算「畫面操作」。
+  // 圖示是 currentColor 描邊的 SVG（顏色跟著按鈕文字色走，不引入 token 以外的顏色），可及名稱
+  // 由 aria-label 提供。尺寸 14px＋1px 內距＋1px 框＝18px，不超過頂列行高（--topbar-line-height
+  // × --fs-panel），不改變 --shell-topbar-h。
+  var SVG_NS = "http://www.w3.org/2000/svg";
+
+  function renderNotifyBell() {
+    var bell = el("button", "notify-bell");
+    bell.type = "button";
+    bell.setAttribute("data-action", "notify-settings");
+    bell.setAttribute("aria-label", "通知設定");
+    bell.setAttribute("aria-controls", "notify-panel");
+    // aria-expanded 依面板目前是否開著（修正波，3.5 採納項）：面板狀態在 notify.js，這裡每次重畫照實
+    // 讀回，所以面板開著時重畫出來的新鈴鐺仍是 true；開關面板（不觸發重畫）時由 notify.js 直接改
+    // 當下這顆鈴鐺的屬性。按下狀態的外觀由 style.css 依這個屬性呈現。
+    var open =
+      !!window.cockpitNotify &&
+      typeof window.cockpitNotify.isOpen === "function" &&
+      window.cockpitNotify.isOpen();
+    bell.setAttribute("aria-expanded", open ? "true" : "false");
+    bell.title = "通知設定";
+
+    var svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 16 16");
+    svg.setAttribute("width", "14");
+    svg.setAttribute("height", "14");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    var paths = [
+      "M8 2.2c-2.2 0-3.8 1.7-3.8 3.9v2.6L2.8 11h10.4l-1.4-2.3V6.1C11.8 3.9 10.2 2.2 8 2.2z",
+      "M6.4 12.6c.3.8.9 1.2 1.6 1.2s1.3-.4 1.6-1.2",
+    ];
+    for (var i = 0; i < paths.length; i += 1) {
+      var path = document.createElementNS(SVG_NS, "path");
+      path.setAttribute("d", paths[i]);
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", "currentColor");
+      path.setAttribute("stroke-width", "1.4");
+      path.setAttribute("stroke-linejoin", "round");
+      path.setAttribute("stroke-linecap", "round");
+      svg.appendChild(path);
+    }
+    bell.appendChild(svg);
+    return bell;
   }
 
   // runtime 卡標題列右側的連線狀態：符號（跟頂列燈號、底列通道共用 .conn-symbol 的三種形狀，
@@ -1220,7 +1275,8 @@
   // `data-project`／`data-task`）、workstream 列首「改綁」（`rebind`，
   // `data-project`／`data-workstream`）、「取消改綁」（`override-clear`，同兩個）、改綁提示的
   // 「取消」（`rebind-cancel`，只有 `data-action`）、錯誤訊息的「關閉」
-  // （`error-dismiss`，只有 `data-action`）。沒有找到不帶 `data-action` 的可聚焦元素——若之後
+  // （`error-dismiss`，只有 `data-action`）、頂列的通知鈴鐺（`notify-settings`，只有 `data-action`；
+  // desktop-launch-notify task 3.3）。沒有找到不帶 `data-action` 的可聚焦元素——若之後
   // 新增這種元素，下面的身分規則需要重新檢討。Live Output 面板（`#output`）不在 `#app`
   // 底下、完全不受這裡影響，本來就不需要焦點還原（design D8）。
   //
@@ -1516,13 +1572,25 @@
     });
   }
 
+  // 桌面通知（design D7；desktop-launch-notify task 3.3）：重畫之後才把同一份狀態交給
+  // notify.js 比對——通知判斷不影響畫面，且畫面先反映新狀態。`window.cockpitNotify` 不存在時
+  // （只載入 render.js 的精簡 harness）略過。比對基準由 notify.js 自己保留，通道重連不重設。
   window.onState = function (state) {
     latestState = state;
     paint();
+    if (window.cockpitNotify && typeof window.cockpitNotify.observe === "function") {
+      window.cockpitNotify.observe(state);
+    }
   };
 
   // 給 actions.js：UI 狀態改變後以最新投影重畫（沒有收過投影時什麼都不做）。
   window.repaint = paint;
+
+  // 給 actions.js 的 selectPane（design D7；desktop-launch-notify task 3.3）：點 pane 通知時要確認
+  // 該 pane 還在最新一份投影中；只讀、不複製（呼叫端不得修改）。還沒收過投影時回 null。
+  window.cockpitLatestState = function () {
+    return latestState;
+  };
 
   // 通道狀態更新（spec cockpit-dashboard「畫面整頁重畫」；design D4「連線配色也適用底列通道
   // 狀態」；direction-01-visual task 2.3；task 2.3 fix round 1／Codex C1／使用者決定 I2；

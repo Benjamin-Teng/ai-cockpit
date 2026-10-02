@@ -69,7 +69,7 @@ Chrome，單獨挑 `TK1` 跑時最快。
 | TK1 | 唯一色彩／字級 token 契約：純靜態解析 `style.css`，不啟動 preview／Chrome | task 2.2 fix round 1 |
 | CT1 | 文字對比（banner／stale／all／diff／graph；含左緣條家族與 banner 折行時按鈕形狀） | task 3.4／4.2／5.2；diff／graph 子斷言為 git-review task 4.3／4.4 新增（驗 diff 分頁 change 列與 add／blank 列、Git Graph 分頁 ref 標籤與 commit 列文字，皆 ≥4.5:1） |
 | LO1 | Live Output 常駐面板：空狀態／點列／取消選取／下方內容可操作／鍵盤選定 | task 4.1 |
-| CL1 | 清理：`style.css` 每一條選擇器至少在一種畫面狀態下對得到元素（direction-01-visual 起走訪的畫面狀態清單，git-review task 4.2–4.4 起追加走訪左欄「變更」分頁、diff 分頁（change／add／blank／deleted 列）、Git Graph 分頁（ref 標籤、選取列、commit 詳情、搜尋、分支篩選 popover）） | task 5.1；git-review 追加狀態見 task 4.2／4.3／4.4 |
+| CL1 | 清理：`style.css` 每一條選擇器至少在一種畫面狀態下對得到元素（direction-01-visual 起走訪的畫面狀態清單，git-review task 4.2–4.4 起追加走訪左欄「變更」分頁、diff 分頁（change／add／blank／deleted 列）、Git Graph 分頁（ref 標籤、選取列、commit 詳情、搜尋、分支篩選 popover）；desktop-launch-notify 修正波追加通知設定面板開啟（鈴鐺 `aria-expanded="true"`）） | task 5.1；git-review 追加狀態見 task 4.2／4.3／4.4 |
 | DF1 | task 5.1 帶到後面的延後項目（topbar／statusbar／conn／scrollbar／pretty／cwd／focus／pin） | task 5.1 |
 | FR1 | final review 修正：切換 Project 捲動位置歸零、Floor 邊界焦點框完整可見（真實 Tab 路徑）、文字放大 200% 按鈕不出節點 | task 5.4 final review／Codex F1–F3／Ruling R43 |
 | FT1 | 分頁很多不撐破頁面：1280 寬、20 個 60 字元檔名的檔案分頁，重畫後分頁列內部橫向捲動、頁面沒有橫向捲軸、中欄寬度不變 | file-review task 3.5；`file-review` change 的 cockpit-dashboard delta |
