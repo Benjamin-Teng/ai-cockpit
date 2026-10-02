@@ -1,6 +1,7 @@
 # desktop-notifications Specification
 
 ## Purpose
+
 定義 Cockpit 畫面開著時的桌面通知：哪些狀態變化會通知、如何避免重複與洗版、何時不打擾，以及使用者如何開關各類通知與授權。
 通知只在 Cockpit 頁面開著時發生（含視窗最小化），不使用 service worker（ADR-0005）。
 

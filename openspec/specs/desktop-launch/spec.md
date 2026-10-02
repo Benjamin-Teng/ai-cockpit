@@ -1,6 +1,7 @@
 # desktop-launch Specification
 
 ## Purpose
+
 定義「一個捷徑就開好 Cockpit」：Windows 上無主控台視窗的啟動器與建立捷徑的安裝腳本，以及隨畫面關閉而結束的後端模式（`--exit-when-idle`，不限平台）。
 決策背景見 ADR-0005 與 change `desktop-launch-notify` 的 proposal。
 
