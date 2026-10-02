@@ -70,8 +70,11 @@ async fn routes_return_200_with_expected_content_types() {
 
     for (path, expected_prefix) in cases {
         let router = http::router(state.clone());
+        // `/api/state` 套來源檢查（ws-source-check），`AppState::new` 的 port 是 0，所以帶
+        // `Host: 127.0.0.1:0`；其他路由不檢查，多帶無妨。
         let request = Request::builder()
             .uri(path)
+            .header("host", "127.0.0.1:0")
             .body(Body::empty())
             .expect("request 建構不應該失敗");
         let response = router
@@ -127,6 +130,7 @@ async fn api_state_equals_current_projection_version() {
 
     let request = Request::builder()
         .uri("/api/state")
+        .header("host", "127.0.0.1:0")
         .body(Body::empty())
         .expect("request 建構不應該失敗");
     let response = router
@@ -431,4 +435,176 @@ async fn vendor_rejects_non_get_methods() {
         .await
         .expect("oneshot 呼叫不應該失敗");
     assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
+// ---------------------------------------------------------------------------
+// ws-source-check：`GET /api/state` 只接受本機同源請求（spec `cockpit-dashboard`「狀態端點只接受
+// 本機同源請求」）。`AppState::new` 的 `port` 是 0，所以合法的 `Host` 是 `127.0.0.1:0` 等。
+// ---------------------------------------------------------------------------
+
+/// 以指定標頭（可重複同名）打 `/api/state`，回傳狀態碼與本體位元組。
+async fn state_with_headers(headers: &[(&str, &str)]) -> (StatusCode, Vec<u8>) {
+    let (_handle, state) = new_app_state();
+    let mut builder = Request::builder().uri("/api/state");
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    let request = builder.body(Body::empty()).expect("request 建構不應該失敗");
+    let response = http::router(state)
+        .oneshot(request)
+        .await
+        .expect("oneshot 呼叫不應該失敗");
+    let status = response.status();
+    (status, body_bytes(response).await)
+}
+
+/// 被拒絕的回應：403、`code` 為 `forbidden_source`，本體不含投影內容（`version`、`runtimes`）。
+fn assert_forbidden_source(case: &str, status: StatusCode, body: &[u8]) {
+    assert_eq!(status, StatusCode::FORBIDDEN, "{case} 應該回 403");
+    let parsed: serde_json::Value = serde_json::from_slice(body)
+        .unwrap_or_else(|e| panic!("{case} 的 403 本體應該是 JSON：{e}"));
+    assert_eq!(
+        parsed["code"], "forbidden_source",
+        "{case} 的 code 應該是 forbidden_source"
+    );
+    assert!(
+        parsed.get("version").is_none() && parsed.get("runtimes").is_none(),
+        "{case} 的本體不該含投影內容：{parsed}"
+    );
+}
+
+/// Scenario「DNS rebinding 讀不到狀態」：`Host` 不是本機位址、缺 `Host`、重複 `Host` 都 403。
+#[tokio::test]
+async fn api_state_rejects_bad_host() {
+    let cases: Vec<(&str, Vec<(&str, &str)>)> = vec![
+        ("外站 Host", vec![("host", "evil.example:0")]),
+        ("本機位址但埠不符", vec![("host", "127.0.0.1:7770")]),
+        ("缺少 Host", vec![]),
+        (
+            "重複 Host（皆為合法值）",
+            vec![("host", "127.0.0.1:0"), ("host", "127.0.0.1:0")],
+        ),
+        (
+            "重複 Host（第二個是外站）",
+            vec![("host", "127.0.0.1:0"), ("host", "evil.example:0")],
+        ),
+    ];
+    for (case, headers) in cases {
+        let (status, body) = state_with_headers(&headers).await;
+        assert_forbidden_source(case, status, &body);
+    }
+}
+
+/// 外站 `Origin`（即使 `Host` 合法）與重複 `Origin` 都 403。
+#[tokio::test]
+async fn api_state_rejects_bad_origin() {
+    let cases: Vec<(&str, Vec<(&str, &str)>)> = vec![
+        (
+            "外站 Origin",
+            vec![("host", "127.0.0.1:0"), ("origin", "https://evil.example")],
+        ),
+        (
+            "Origin 與 Host 不同源",
+            vec![("host", "127.0.0.1:0"), ("origin", "http://localhost:0")],
+        ),
+        (
+            "重複 Origin",
+            vec![
+                ("host", "127.0.0.1:0"),
+                ("origin", "http://127.0.0.1:0"),
+                ("origin", "http://127.0.0.1:0"),
+            ],
+        ),
+    ];
+    for (case, headers) in cases {
+        let (status, body) = state_with_headers(&headers).await;
+        assert_forbidden_source(case, status, &body);
+    }
+}
+
+/// Scenario「同源與命令列照常可用」：只帶 `Host: localhost:<port>`（命令列、桌面啟動器）與
+/// `Host`＋相符 `Origin`（自家頁面）都回 200 與合法的投影 JSON。
+#[tokio::test]
+async fn api_state_accepts_same_origin_and_cli() {
+    let cases: Vec<(&str, Vec<(&str, &str)>)> = vec![
+        ("只帶 localhost Host", vec![("host", "localhost:0")]),
+        ("只帶 127.0.0.1 Host", vec![("host", "127.0.0.1:0")]),
+        ("只帶 [::1] Host", vec![("host", "[::1]:0")]),
+        (
+            "Host＋相符 Origin",
+            vec![("host", "127.0.0.1:0"), ("origin", "http://127.0.0.1:0")],
+        ),
+    ];
+    for (case, headers) in cases {
+        let (status, body) = state_with_headers(&headers).await;
+        assert_eq!(status, StatusCode::OK, "{case} 應該回 200");
+        let _: ProjectedState = serde_json::from_slice(&body)
+            .unwrap_or_else(|e| panic!("{case} 的本體應該是投影 JSON：{e}"));
+    }
+}
+
+/// 以 `HEAD` 打 `/api/state`（axum 的 HEAD 借用 `get` 插槽，所以也要過來源檢查；日後若有人另外註冊
+/// `.head(...)` 繞過它，這個測試會失敗）。
+async fn head_state_status(headers: &[(&str, &str)]) -> StatusCode {
+    let (_handle, state) = new_app_state();
+    let mut builder = Request::builder().method("HEAD").uri("/api/state");
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    http::router(state)
+        .oneshot(builder.body(Body::empty()).expect("request 建構不應該失敗"))
+        .await
+        .expect("oneshot 呼叫不應該失敗")
+        .status()
+}
+
+/// `HEAD /api/state`：外站 `Host`、外站 `Origin`、重複 `Host` 都 403；合法 `Host` 回 200。
+#[tokio::test]
+async fn head_api_state_is_source_checked() {
+    assert_eq!(
+        head_state_status(&[("host", "evil.example:0")]).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        head_state_status(&[("host", "127.0.0.1:0"), ("origin", "https://evil.example")]).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        head_state_status(&[("host", "127.0.0.1:0"), ("host", "127.0.0.1:0")]).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        head_state_status(&[("host", "127.0.0.1:0")]).await,
+        StatusCode::OK
+    );
+}
+
+/// `GET /` 不得被外站網頁以 iframe 嵌入（防點擊劫持，也防外站 iframe 讓 `--exit-when-idle` 的後端
+/// 因 iframe 內的 `/ws` 連線永遠不結束）：回應帶 `X-Frame-Options: DENY` 與
+/// `Content-Security-Policy: frame-ancestors 'none'`。
+#[tokio::test]
+async fn index_forbids_framing() {
+    let (_handle, state) = new_app_state();
+    let response = http::router(state)
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .body(Body::empty())
+                .expect("request 建構不應該失敗"),
+        )
+        .await
+        .expect("oneshot 呼叫不應該失敗");
+    assert_eq!(response.status(), StatusCode::OK);
+    let header = |name: &str| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    };
+    assert_eq!(header("x-frame-options").as_deref(), Some("DENY"));
+    assert_eq!(
+        header("content-security-policy").as_deref(),
+        Some("frame-ancestors 'none'")
+    );
 }

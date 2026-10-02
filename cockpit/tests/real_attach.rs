@@ -18,6 +18,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use cockpit::app::{self, Components};
@@ -45,13 +46,21 @@ async fn real_zero_config_connects_and_pane_count_matches_herdr_snapshot() {
         "零設定的 runtime id 是 local"
     );
 
-    let Components { stops, router, .. } =
-        app::build_components(&config).expect("零設定應該組得起來");
+    let Components {
+        stops,
+        router,
+        port,
+        ..
+    } = app::build_components(&config).expect("零設定應該組得起來");
 
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind 127.0.0.1:0 不應該失敗");
     let addr = listener.local_addr().expect("local_addr 不應該失敗");
+    // `/api/state` 套來源檢查（ws-source-check）：路由表內的 `AppState::port` 與 `Components::port`
+    // 是同一個 `Arc`，初值是設定埠（零設定為 7770）。這裡自己 bind 隨機埠，要像
+    // `app::run_with_shutdown` 一樣回填實際埠，請求的 `Host: 127.0.0.1:<隨機埠>` 才會通過。
+    port.store(addr.port(), Ordering::Relaxed);
     let server = tokio::spawn(async move {
         axum::serve(listener, router).await.ok();
     });

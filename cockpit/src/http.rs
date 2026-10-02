@@ -197,7 +197,8 @@ impl ClientActivity {
         }
     }
 
-    /// 記一次 `GET /` 或 `GET /api/state`（時間取當下）。
+    /// 記一次 `GET /` 或通過來源檢查的 `GET /api/state`（時間取當下；被來源檢查拒絕的請求不會
+    /// 走到 handler，所以不會呼叫這裡）。
     pub fn record_request(&self) {
         self.last_request
             .send_replace(Some(tokio::time::Instant::now()));
@@ -208,7 +209,7 @@ impl ClientActivity {
         self.connections.subscribe()
     }
 
-    /// 訂閱最近一次 `GET /`／`GET /api/state` 的時間。
+    /// 訂閱最近一次 `GET /`／（通過來源檢查的）`GET /api/state` 的時間。
     pub fn last_request(&self) -> watch::Receiver<Option<tokio::time::Instant>> {
         self.last_request.subscribe()
     }
@@ -260,9 +261,12 @@ impl AppState {
 /// 組出完整的路由表：`/`、`/app/{file}`、`/manifest.webmanifest`、`/icons/{file}`、
 /// `/api/state`、`/ws`、寫入端點、輸出讀取端點；其他路徑落回 axum 預設的 404。
 ///
-/// 寫入端點與輸出讀取端點額外用 `route_layer` 掛 [`source_check`]（task 4.2；live-output
-/// task 4.3；design D6、D7）——只套在這三條，`/api/state`、`/ws` 等讀路由完全不受影響（見
-/// [`crate::source_check`] 模組文件對 `route_layer` 範圍的說明）。
+/// 寫入、輸出讀取、檔案、git、agent 端點，以及 `/api/state`、`/ws`，額外用 `route_layer` 掛
+/// [`source_check`]（task 4.2；live-output task 4.3；design D6、D7；ws-source-check design D1）；
+/// 只有靜態資源（`/`、`/app/…`、`/manifest.webmanifest`、`/icons/…`、`/vendor/…`）不檢查。
+/// 被拒絕的 `/api/state` 不會執行 handler（不記活動時間），被拒絕的 `/ws` 不會進到
+/// `WebSocketUpgrade` extractor（不升級、不計連線），所以 `--exit-when-idle` 的計時不受影響
+/// （見 [`crate::source_check`] 模組文件對 `route_layer` 範圍的說明）。
 pub fn router(app: AppState) -> Router {
     let source_check_layer = axum::middleware::from_fn_with_state(app.clone(), source_check);
     // 檔案端點的共同掛法（`get` → `.fallback(405)` → `.route_layer(source_check)` → `.head(405)`，
@@ -283,8 +287,16 @@ pub fn router(app: AppState) -> Router {
         // vendored 資源（file-review task 3.3；design D9）：公開靜態資源，不套用 source_check，
         // 掛法同 `/app/`、`/icons/`——只註冊 `get`，其餘 method 與 `HEAD` 交給 axum 內建行為。
         .route("/vendor/{*path}", get(crate::vendor::vendor_asset))
-        .route("/api/state", get(api_state))
-        .route("/ws", get(ws_handler))
+        // 狀態端點（ws-source-check；design D1）：與寫入端點同一條來源規則。`route_layer` 在 handler
+        // 之前執行，被拒絕的請求不呼叫 `record_request()`／`connect()`。
+        .route(
+            "/api/state",
+            get(api_state).route_layer(source_check_layer.clone()),
+        )
+        .route(
+            "/ws",
+            get(ws_handler).route_layer(source_check_layer.clone()),
+        )
         .route(
             "/api/projects/{project}/tasks/{task}/{op}",
             post(progress_op)
@@ -403,12 +415,21 @@ pub fn router(app: AppState) -> Router {
 /// `GET /`：內嵌的 `index.html`。`GET` 時記一次活動（desktop-launch-notify task 2.1；spec
 /// 「閒置自動結束」：啟動器開窗前後的請求延長閒置期限）；axum 把 `HEAD` 也導到這裡，`HEAD`
 /// 不算（spec：其他 HTTP 請求不影響計時）。
+///
+/// 回應帶 `X-Frame-Options: DENY` 與 `Content-Security-Policy: frame-ancestors 'none'`
+/// （ws-source-check fix round 1）：外站網頁不能把儀表板以 iframe 嵌進去——否則 iframe 內的
+/// `channel.js` 以 Cockpit 自己的 origin 連 `/ws`、來源檢查合格，會讓 `--exit-when-idle` 的後端
+/// 永遠不閒置結束，也讓寫入按鈕可被點擊劫持。`GET /` 本身不做來源檢查（見 [`router`]）。
 async fn index(method: Method, State(app): State<AppState>) -> impl IntoResponse {
     if method == Method::GET {
         app.activity.record_request();
     }
     (
-        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::X_FRAME_OPTIONS, "DENY"),
+            (header::CONTENT_SECURITY_POLICY, "frame-ancestors 'none'"),
+        ],
         include_str!("../assets/index.html"),
     )
 }

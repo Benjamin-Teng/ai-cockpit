@@ -10,6 +10,7 @@
 //! 它何時完成；注入的 Ctrl-C 是一個測試手上握著傳送端的 oneshot，不送就永遠不會完成。
 
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use axum::body::Body;
@@ -318,11 +319,13 @@ async fn serve() -> (SocketAddr, axum::Router, ClientActivity, StoreHandle) {
     let handle = StoreHandle::new(RuntimeStore::new());
     let state = AppState::new(handle.subscribe());
     let activity = state.activity.clone();
-    let router = http::router(state);
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind 127.0.0.1:0 不應該失敗");
     let addr = listener.local_addr().expect("local_addr 不應該失敗");
+    // `/ws`、`/api/state` 套來源檢查（ws-source-check）：回填實際監聽埠，同 `app::run_with_shutdown`。
+    state.port.store(addr.port(), Ordering::Relaxed);
+    let router = http::router(state);
     let served = router.clone();
     tokio::spawn(async move {
         axum::serve(listener, served)
@@ -330,6 +333,17 @@ async fn serve() -> (SocketAddr, axum::Router, ClientActivity, StoreHandle) {
             .expect("axum::serve 不應該失敗");
     });
     (addr, router, activity, handle)
+}
+
+/// 不開 port 的版本（供暫停時鐘的測試用）：`AppState::port` 直接設成假想的監聽位址，請求以
+/// `oneshot` 打進路由表；回傳值同 [`serve`]。
+fn serve_in_memory() -> (SocketAddr, axum::Router, ClientActivity, StoreHandle) {
+    let handle = StoreHandle::new(RuntimeStore::new());
+    let state = AppState::new(handle.subscribe());
+    let activity = state.activity.clone();
+    let addr: SocketAddr = "127.0.0.1:7770".parse().expect("位址應該合法");
+    state.port.store(addr.port(), Ordering::Relaxed);
+    (addr, http::router(state), activity, handle)
 }
 
 async fn wait_for_connections(activity: &ClientActivity, expected: usize) {
@@ -340,16 +354,26 @@ async fn wait_for_connections(activity: &ClientActivity, expected: usize) {
         .expect("連線數的傳送端不該消失");
 }
 
-async fn request(router: &axum::Router, method: Method, uri: &str) -> StatusCode {
+/// 打一個請求進 `router`，帶 `Host: <addr>`（`serve` 已把實際監聽埠回填進 `AppState::port`，
+/// 來源檢查才會放行）。
+async fn request(router: &axum::Router, addr: SocketAddr, method: Method, uri: &str) -> StatusCode {
+    request_with_headers(router, method, uri, &[("host", &addr.to_string())]).await
+}
+
+/// 同 [`request`]，但自己指定完整標頭清單（測試被拒絕的來源）。
+async fn request_with_headers(
+    router: &axum::Router,
+    method: Method,
+    uri: &str,
+    headers: &[(&str, &str)],
+) -> StatusCode {
+    let mut builder = Request::builder().method(method).uri(uri);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
     router
         .clone()
-        .oneshot(
-            Request::builder()
-                .method(method)
-                .uri(uri)
-                .body(Body::empty())
-                .expect("請求應該組得起來"),
-        )
+        .oneshot(builder.body(Body::empty()).expect("請求應該組得起來"))
         .await
         .expect("路由應該有回應")
         .status()
@@ -373,7 +397,7 @@ async fn ws_connection_is_counted_and_api_state_only_updates_activity() {
 
     let before = Instant::now();
     assert_eq!(
-        request(&router, Method::GET, "/api/state").await,
+        request(&router, addr, Method::GET, "/api/state").await,
         StatusCode::OK
     );
     assert_eq!(
@@ -420,19 +444,22 @@ async fn ws_counter_returns_to_zero_when_client_drops_without_close() {
 /// `GET /` 也更新活動時間；其他請求（靜態資源、`HEAD /`）不影響。
 #[tokio::test]
 async fn only_get_index_and_get_api_state_update_activity() {
-    let (_addr, router, activity, _handle) = serve().await;
+    let (addr, router, activity, _handle) = serve().await;
 
     assert_eq!(
-        request(&router, Method::GET, "/app/style.css").await,
+        request(&router, addr, Method::GET, "/app/style.css").await,
         StatusCode::OK
     );
     assert_eq!(
-        request(&router, Method::GET, "/manifest.webmanifest").await,
+        request(&router, addr, Method::GET, "/manifest.webmanifest").await,
         StatusCode::OK
     );
-    assert_eq!(request(&router, Method::HEAD, "/").await, StatusCode::OK);
     assert_eq!(
-        request(&router, Method::HEAD, "/api/state").await,
+        request(&router, addr, Method::HEAD, "/").await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&router, addr, Method::HEAD, "/api/state").await,
         StatusCode::OK
     );
     assert_eq!(
@@ -442,11 +469,127 @@ async fn only_get_index_and_get_api_state_update_activity() {
     );
 
     let before = Instant::now();
-    assert_eq!(request(&router, Method::GET, "/").await, StatusCode::OK);
+    assert_eq!(
+        request(&router, addr, Method::GET, "/").await,
+        StatusCode::OK
+    );
     let recorded = activity
         .last_request()
         .borrow()
         .expect("GET / 應該更新活動時間");
     assert!(recorded >= before);
     assert_eq!(*activity.connections().borrow(), 0, "GET / 不計入連線數");
+}
+
+// ---------------------------------------------------------------------------
+// ws-source-check：被來源檢查拒絕的 `/ws`、`/api/state` 請求不算活動
+// ---------------------------------------------------------------------------
+
+/// Scenario「被拒的 /ws 不讓後端保持執行」（時間軸部分，暫停時鐘）：唯一連線在 5 秒關閉後，
+/// 8 秒時被拒的 `GET /api/state`（外站 `Host`）不得延長期限（否則會拖到 18 秒）；`/ws` 升級請求
+/// （外站 `Origin`）也不得計為連線。後端照常在 15 秒結束。
+#[tokio::test(start_paused = true)]
+async fn rejected_requests_do_not_extend_idle_deadline() {
+    let (addr, router, activity, _handle) = serve_in_memory();
+    let start = Instant::now();
+    let (signal, _ctrl_c) = spawn_signal(true, &activity);
+
+    at(start, 1.0).await;
+    let first = activity.connect();
+    at(start, 5.0).await;
+    drop(first);
+
+    at(start, 8.0).await;
+    let port = addr.port();
+    let evil_host = format!("evil.example:{port}");
+    let own_host = format!("127.0.0.1:{port}");
+    assert_eq!(
+        request_with_headers(&router, Method::GET, "/api/state", &[("host", &evil_host)]).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request_with_headers(
+            &router,
+            Method::GET,
+            "/api/state",
+            &[("host", &own_host), ("origin", "https://evil.example")]
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request_with_headers(
+            &router,
+            Method::GET,
+            "/ws",
+            &[
+                ("host", &own_host),
+                ("origin", "https://evil.example"),
+                ("connection", "upgrade"),
+                ("upgrade", "websocket"),
+                ("sec-websocket-version", "13"),
+                ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="),
+            ]
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        *activity.last_request().borrow(),
+        None,
+        "被拒的 /api/state 不該記錄活動時間"
+    );
+    assert_eq!(*activity.connections().borrow(), 0, "被拒的 /ws 不算連線");
+
+    at(start, 14.9).await;
+    assert!(!signal.is_finished());
+    at(start, 15.1).await;
+    assert!(
+        signal.is_finished(),
+        "被拒的請求不延長期限，關閉後滿 10 秒應該結束"
+    );
+}
+
+/// 同上的真實連線版本（真的開 port）：外站 `Origin` 的 `/ws` 升級被拒，連線數始終為 0（也沒有
+/// 0→1→0 的變更通知）；之後同源連線照常計數。
+#[tokio::test]
+async fn rejected_ws_upgrade_never_counts_as_connection() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let (addr, _router, activity, _handle) = serve().await;
+    let mut connections = activity.connections();
+    connections.mark_unchanged();
+
+    let mut evil = format!("ws://{addr}/ws")
+        .into_client_request()
+        .expect("升級請求應該組得起來");
+    evil.headers_mut().insert(
+        "origin",
+        "https://evil.example".parse().expect("合法標頭值"),
+    );
+    let result = timeout(IO_TIMEOUT, tokio_tungstenite::connect_async(evil))
+        .await
+        .expect("WebSocket 連線逾時");
+    match result {
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
+        other => panic!("外站 Origin 的升級應該得到 403，實際：{other:?}"),
+    }
+    // 給伺服器一點時間（若錯誤地升級了，計數會在這段時間內動起來）。
+    sleep(Duration::from_millis(200)).await;
+    assert!(
+        !connections.has_changed().expect("連線數的傳送端不該消失"),
+        "被拒的 /ws 不該讓連線數有任何變動"
+    );
+    assert_eq!(*activity.connections().borrow(), 0);
+
+    let (_ws, _response) = timeout(
+        IO_TIMEOUT,
+        tokio_tungstenite::connect_async(format!("ws://{addr}/ws")),
+    )
+    .await
+    .expect("WebSocket 連線逾時")
+    .expect("同源（不帶 Origin）連線應該成功");
+    wait_for_connections(&activity, 1).await;
 }

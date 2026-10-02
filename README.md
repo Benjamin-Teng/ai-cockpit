@@ -41,10 +41,9 @@ Cockpit is an observer. It cannot type into a pane, prompt an agent or stop HERD
 
 - The only HERDR calls it can make are `session.snapshot`, `pane.read` and
   `events.subscribe`. A sealed trait in `herdr-client` enforces this list at compile time.
-- The dashboard listens on loopback only (`127.0.0.1:7770` by default). Endpoints that change
-  progress, read pane output, browse files or query git check the `Host` and `Origin` headers.
-  The live state feed (`/api/state` and `/ws`) does not check them yet, so a web page open in
-  your browser could read the dashboard state while Cockpit runs.
+- The dashboard listens on loopback only (`127.0.0.1:7770` by default). Every endpoint that returns
+  or changes your data, including the live state feed (`/api/state` and `/ws`), checks the `Host`
+  and `Origin` headers, so other web pages open in your browser cannot read the dashboard.
 - Progress changes only when you click or when an agent reports it. Cockpit writes nothing to
   your repos or to HERDR. Its own files are `cockpit.state.json` and, with the desktop launcher,
   `cockpit.log`.

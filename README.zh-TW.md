@@ -36,9 +36,8 @@ Cockpit 是旁觀者：不能在 pane 裡打字、不能對 agent 下指令，�
 
 - 能對 HERDR 呼叫的只有 `session.snapshot`、`pane.read`、`events.subscribe` 三個，由
   `herdr-client` 的 sealed trait 在編譯期限定。
-- 儀表板只聽 loopback（預設 `127.0.0.1:7770`）。改變進度、讀 pane 輸出、瀏覽檔案、查 git 的端點會
-  檢查 `Host` 與 `Origin` 標頭；即時狀態（`/api/state` 與 `/ws`）目前還沒檢查，所以 Cockpit
-  執行時，你瀏覽器裡開著的網頁讀得到儀表板狀態。
+- 儀表板只聽 loopback（預設 `127.0.0.1:7770`）。所有會回傳或改動你資料的端點，包括即時狀態
+  （`/api/state` 與 `/ws`），都會檢查 `Host` 與 `Origin` 標頭，你瀏覽器裡開著的其他網頁讀不到儀表板。
 - 進度只在你按下按鈕、或 agent 自己回報時才會改變。Cockpit 不寫你的 repo，也不寫 HERDR；它自己的
   檔案是 `cockpit.state.json`，用桌面啟動器時另有 `cockpit.log`。
 

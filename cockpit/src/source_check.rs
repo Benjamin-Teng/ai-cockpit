@@ -1,14 +1,22 @@
 //! 來源檢查 middleware（spec `pipeline-progress`「寫入端點只接受本機同源請求」、`live-output`
-//! 「輸出端點只接受本機同源請求」；design D6、D7；task 4.2；live-output task 4.3）。
+//! 「輸出端點只接受本機同源請求」、`cockpit-dashboard`「狀態端點只接受本機同源請求」；design
+//! D6、D7；task 4.2；live-output task 4.3；ws-source-check）。
 //!
 //! 套在 [`crate::http::router`] 內的兩個寫入路由（`POST .../{op}`、`PUT`／`DELETE
-//! .../override`）與輸出讀取端點（`GET .../output`，live-output task 4.3；design D7：重用
-//! 這裡的判定，不為 `GET` 另開一套規則），用 `MethodRouter::route_layer` 而不是套在整個
-//! `Router` 上——`route_layer` 只包住已註冊的方法插槽（`post`／`put`／`delete`／`get`），沒
-//! 註冊的方法（例如對寫入路由送 `GET`、對輸出端點送 `POST`）落到 axum 內建的 fallback，
-//! 直接照舊回 405，不會先經過這裡（axum `method_routing.rs::route_layer` 的實作只 map
-//! `get`／`head`／`delete`／…／`connect` 這幾個插槽，不動 `fallback`）。`/api/state`、`/ws`
-//! 等讀路由完全沒有掛這層，同樣不受影響。
+//! .../override`）、輸出讀取端點（`GET .../output`，live-output task 4.3；design D7：重用
+//! 這裡的判定，不為 `GET` 另開一套規則）、檔案／git／agent 端點，以及狀態端點（`GET
+//! /api/state`、`GET /ws`；ws-source-check design D1：同一個 middleware、同一條規則）。掛法是
+//! `MethodRouter::route_layer` 而不是套在整個 `Router` 上——`route_layer` 只包住已註冊的方法
+//! 插槽（`post`／`put`／`delete`／`get`），沒註冊的方法（例如對寫入路由送 `GET`、對輸出端點
+//! 送 `POST`）落到 axum 內建的 fallback，直接照舊回 405，不會先經過這裡（axum
+//! `method_routing.rs::route_layer` 的實作只 map `get`／`head`／`delete`／…／`connect` 這幾個
+//! 插槽，不動 `fallback`）。`HEAD` 借用 `get` 插槽，所以 `HEAD /api/state` 也會被檢查。
+//!
+//! 靜態資源路由（`/`、`/app/…`、`/manifest.webmanifest`、`/icons/…`、`/vendor/…`）不掛這層：
+//! 內容公開、不含使用者資料。`/ws` 被拒絕時 middleware 在 `WebSocketUpgrade` extractor 之前就
+//! 回 403，不升級；`/api/state` 被拒絕時不執行 handler。兩者因此都不會寫入
+//! `--exit-when-idle` 的活動紀錄。沒有 `Origin` 但 `Host` 合格的請求放行（命令列、桌面啟動器的
+//! 偵測、驗收腳本）。
 //!
 //! 規則（spec 原文；design D6）：`Host` 標頭必須是 `127.0.0.1:<port>`／`localhost:<port>`／
 //! `[::1]:<port>` 三者之一，`<port>` 是 [`crate::http::AppState::port`] 當下的值（每個請求都

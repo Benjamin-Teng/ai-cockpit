@@ -10,7 +10,7 @@
 //! 實際路徑解析留給 2.7 的工廠（呼叫 `herdr-client` 的 `default_socket_path_from_env()`）。
 
 use std::collections::{HashMap, HashSet};
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use cockpit_core::{
@@ -52,7 +52,10 @@ pub struct Config {
 /// `[server]` 區塊。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServerConfig {
-    /// 伺服器監聽位址；必須是 loopback（`IpAddr::is_loopback()` 為真）。
+    /// 伺服器監聽位址：IP 只能是 `127.0.0.1` 或 `::1`、埠不得為 80（埠 0 允許，測試用）。理由：
+    /// 來源檢查（`crate::source_check`）只認 `127.0.0.1`／`localhost`／`[::1]` 加明確埠的 `Host`，
+    /// 其他 loopback 位址（例如 `127.0.0.2`）或埠 80（瀏覽器會省略預設埠）會讓整個儀表板與
+    /// 啟動器 403。
     pub listen: SocketAddr,
 }
 
@@ -127,7 +130,7 @@ pub enum ConfigError {
         /// 底層解析器的錯誤訊息。
         message: String,
     },
-    /// TOML 語法正確，但驗證規則不過（未知 kind、端點三選一、id 重複／空白、非 loopback、
+    /// TOML 語法正確，但驗證規則不過（未知 kind、端點三選一、id 重複／空白、`listen` 不合規則、
     /// 秒數為 0……）；訊息裡含 runtime id（或序號）與原因。
     #[error("{0}")]
     Invalid(String),
@@ -433,7 +436,8 @@ struct RawState {
 
 /// 把 [`RawConfig`] 套上預設值、驗證規則，變成 [`ConfigCore`]；驗證依 spec
 /// 「驗證錯誤指出是哪一筆」的順序逐一檢查：kind、端點三選一、`command` 非空、id 非空白、
-/// id 不重複，再來是 `server.listen`（loopback）與兩個間隔秒數（非 0）。
+/// id 不重複，再來是 `server.listen`（IP 只能是 `127.0.0.1`／`::1`、埠不得為 80）與兩個間隔秒數
+/// （非 0）。
 fn validate(raw: RawConfig) -> Result<ConfigCore, ConfigError> {
     let listen_str = raw
         .server
@@ -537,11 +541,20 @@ fn validate(raw: RawConfig) -> Result<ConfigCore, ConfigError> {
     }
 
     let listen: SocketAddr = listen_str.parse().map_err(|_| {
-        ConfigError::Invalid(format!("server.listen 必須是 loopback 位址：{listen_str}"))
+        ConfigError::Invalid(format!(
+            "server.listen 必須是 127.0.0.1 或 ::1 加埠：{listen_str}"
+        ))
     })?;
-    if !listen.ip().is_loopback() {
+    if listen.ip() != IpAddr::V4(Ipv4Addr::LOCALHOST)
+        && listen.ip() != IpAddr::V6(Ipv6Addr::LOCALHOST)
+    {
         return Err(ConfigError::Invalid(format!(
-            "server.listen 必須是 loopback 位址：{listen_str}"
+            "server.listen 的位址只能是 127.0.0.1 或 ::1（來源檢查只認這兩種 loopback 寫法）：{listen_str}"
+        )));
+    }
+    if listen.port() == 80 {
+        return Err(ConfigError::Invalid(format!(
+            "server.listen 的埠不得為 80（瀏覽器會省略預設埠，來源檢查會把 Host 擋成 403）：{listen_str}"
         )));
     }
 

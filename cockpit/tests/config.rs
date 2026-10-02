@@ -1069,3 +1069,29 @@ path = ""
     let err = config::parse_toml(toml).expect_err("state.path 空字串應該失敗");
     assert!(err.to_string().contains("state.path"));
 }
+
+/// ws-source-check fix round 1（I2）：`listen` 的 IP 只能是 `127.0.0.1` 或 `::1`、埠不得為 80
+/// （來源檢查只認 `127.0.0.1`／`localhost`／`[::1]` 加明確埠；其他 loopback 位址或省略的預設埠
+/// 會讓整個儀表板與啟動器 403）。埠 0（測試用，由作業系統指派）照常允許。
+#[test]
+fn listen_must_match_source_check_hosts() {
+    let parse = |listen: &str| config::parse_toml(&format!("[server]\nlisten = \"{listen}\"\n"));
+
+    for rejected in [
+        "127.0.0.2:7770",
+        "127.1.2.3:7770",
+        "127.0.0.1:80",
+        "[::1]:80",
+    ] {
+        let err = parse(rejected).expect_err("應該被拒絕");
+        let message = err.to_string();
+        assert!(
+            message.contains("server.listen"),
+            "訊息要指出欄位：{message}"
+        );
+        assert!(message.contains(rejected), "訊息要含原值：{message}");
+    }
+    for accepted in ["127.0.0.1:7770", "[::1]:7770", "127.0.0.1:0", "[::1]:0"] {
+        parse(accepted).unwrap_or_else(|e| panic!("{accepted} 應該通過：{e}"));
+    }
+}

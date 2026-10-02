@@ -129,6 +129,8 @@ path = "cockpit.state.json"   # 選填；相對路徑相對於設定檔目錄解
 **寫入端點只接受本機同源請求**：`Host` 標頭必須是 `127.0.0.1:<port>`、`localhost:<port>`、
 `[::1]:<port>` 三者之一（`<port>` 是服務實際監聽的埠，即 `listen` 或它綁定後真正拿到的埠），有
 `Origin` 標頭時其值必須逐字等於 `http://` 加上同一個 `Host`；不符合一律 403、不改任何狀態。
+同一套檢查也套在 `GET /api/state` 與 `GET /ws`（change `ws-source-check`）：外站網頁的 WebSocket 連線與 DNS rebinding
+的讀取都會被 403 擋下，`/ws` 不升級；被拒的請求不算連線，也不延長 `--exit-when-idle` 的閒置期限。
 下面範例對本機打 `127.0.0.1:7770`，`curl` 依網址自動送出對應的 `Host` 標頭，仍明寫出來方便對照：
 
 ```bash
@@ -157,11 +159,12 @@ JSON 物件 → 400；狀態檔寫入失敗 → 500，本體同樣是 `{"error":
 
 - **`Host` 比對是逐字比對，不是「任何 loopback 位址」都算**：只接受 `127.0.0.1:<port>`、
   `localhost:<port>`、`[::1]:<port>` 這三種寫法加上服務實際監聽的埠（見
-  `cockpit/src/source_check.rs`）。如果把 `[server] listen` 設成其他 loopback 位址（例如
-  `127.0.0.2`），瀏覽器送出的 `Host: 127.0.0.2:<port>` 不在這三種寫法裡，畫面上的按鈕一律回
-  403。同理，**不要把 `listen` 設成 80 埠**：瀏覽器與 curl 都會把預設埠從 `Host` 省略（即使網址
-  明寫 `:80`，送出的仍是 `Host: 127.0.0.1`），對不上 `127.0.0.1:80`，寫入一律回 403，沒有網址
-  寫法能繞過。
+  `cockpit/src/source_check.rs`）。所以 `[server] listen` 的位址只能是 `127.0.0.1` 或 `::1`、
+  埠不得為 80，設成其他 loopback 位址（例如 `127.0.0.2`）或 80 埠會在啟動時就以明確訊息失敗
+  （埠 0 供測試用，允許）：否則瀏覽器送出的 `Host: 127.0.0.2:<port>` 不在三種寫法裡，80 埠時瀏覽器與
+  curl 又會把預設埠從 `Host` 省略，整個儀表板（`/ws`、`/api/state`）與桌面啟動器的偵測都會 403。
+  用自訂 hosts 別名開啟頁面同理：頁面載得到，但 `/ws` 被拒、畫面停在連線中，請改用 `127.0.0.1`、
+  `localhost` 或 `[::1]`。
 - **`[state] path` 的父目錄必須事先存在**：cockpit 只會建立狀態檔本身（`.tmp` 再 `rename`），
   不會幫你建立目錄（寫檔見 `cockpit/src/progress_service.rs` 的 `write_atomically`）。如果 `path` 指到一個
   父目錄不存在的位置，每一次寫入（包含畫面按鈕）都會在寫 `.tmp` 這一步失敗，回 500，且永遠不會

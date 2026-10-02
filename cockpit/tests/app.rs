@@ -61,6 +61,9 @@ async fn fetch_state(router: &axum::Router) -> serde_json::Value {
         .oneshot(
             Request::builder()
                 .uri("/api/state")
+                // `/api/state` 套來源檢查（ws-source-check）；`Components::port` 在這裡仍是 0，
+                // 同 `pipeline_api.rs::send` 的做法帶 `Host: 127.0.0.1:0`。
+                .header("host", "127.0.0.1:0")
                 .body(Body::empty())
                 .expect("請求應該組得起來"),
         )

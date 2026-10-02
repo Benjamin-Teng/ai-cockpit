@@ -8,6 +8,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use cockpit::http::{self, AppState};
@@ -22,6 +23,7 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_tungstenite::MaybeTlsStream;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 /// 每個 await 的逾時上限；卡住就當測試失敗，不要無限期掛著。
 const TIMEOUT: Duration = Duration::from_secs(2);
@@ -35,6 +37,8 @@ async fn serve(handle: &StoreHandle) -> (SocketAddr, JoinHandle<()>) {
         .await
         .expect("bind 127.0.0.1:0 不應該失敗");
     let addr = listener.local_addr().expect("local_addr 不應該失敗");
+    // `/ws` 套來源檢查（ws-source-check）：回填實際監聽埠，同 `app::run_with_shutdown` 的做法。
+    state.port.store(addr.port(), Ordering::Relaxed);
     let router = http::router(state);
     let join = tokio::spawn(async move {
         axum::serve(listener, router)
@@ -233,4 +237,139 @@ async fn client_messages_are_ignored() {
         second["version"].as_u64().is_some(),
         "連線應該仍然開著，能收到下一則推送（server 沒有因為客戶端訊息而斷線或 panic）"
     );
+}
+
+/// 以指定的 `Origin`（`None` 表示不帶）請求升級 `/ws`；`Host` 由 tokio-tungstenite 依 URL 自動帶上
+/// （`127.0.0.1:<port>`）。
+async fn try_connect_with_origin(
+    addr: SocketAddr,
+    origin: Option<&str>,
+) -> Result<WsStream, tokio_tungstenite::tungstenite::Error> {
+    let mut request = format!("ws://{addr}/ws")
+        .into_client_request()
+        .expect("升級請求應該組得起來");
+    if let Some(origin) = origin {
+        request
+            .headers_mut()
+            .insert("origin", origin.parse().expect("Origin 應該是合法標頭值"));
+    }
+    timeout(TIMEOUT, tokio_tungstenite::connect_async(request))
+        .await
+        .expect("WebSocket 連線逾時")
+        .map(|(ws, _response)| ws)
+}
+
+/// ws-source-check Scenario「外站網頁連 /ws 被拒」：外站 `Origin` 升級 `/ws` 得到 403（`code` 為
+/// `forbidden_source`），沒有升級成 WebSocket、沒有收到任何狀態。
+#[tokio::test]
+async fn foreign_origin_upgrade_is_rejected_with_403() {
+    let handle = StoreHandle::new(RuntimeStore::new());
+    let (addr, _server) = serve(&handle).await;
+
+    for origin in ["https://evil.example", "http://evil.example"] {
+        match try_connect_with_origin(addr, Some(origin)).await {
+            Ok(_) => panic!("Origin {origin} 不該升級成功"),
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                assert_eq!(
+                    response.status(),
+                    axum::http::StatusCode::FORBIDDEN,
+                    "Origin {origin} 應該回 403"
+                );
+                let body = response.body().as_deref().unwrap_or_default();
+                let parsed: Value = serde_json::from_slice(body).expect("403 本體應該是 JSON");
+                assert_eq!(parsed["code"], "forbidden_source");
+            }
+            Err(other) => panic!("Origin {origin} 應該得到 HTTP 403 回應，實際：{other:?}"),
+        }
+    }
+}
+
+/// Scenario「同源與命令列照常可用」：`Origin` 與 `Host` 同源升級成功並收到現況；不帶 `Origin`
+/// （命令列、驗收腳本）同樣可用。
+#[tokio::test]
+async fn same_origin_and_originless_upgrade_receive_current_state() {
+    let handle = StoreHandle::new(RuntimeStore::new());
+    let (addr, _server) = serve(&handle).await;
+    let expected = serde_json::to_value(&*handle.current()).expect("ProjectedState 應該可序列化");
+
+    let same_origin = format!("http://{addr}");
+    for origin in [Some(same_origin.as_str()), None] {
+        let mut ws = try_connect_with_origin(addr, origin)
+            .await
+            .unwrap_or_else(|e| panic!("Origin {origin:?} 應該升級成功：{e:?}"));
+        assert_eq!(
+            next_json(&mut ws).await,
+            expected,
+            "Origin {origin:?} 應該收到目前整張圖"
+        );
+    }
+}
+
+/// 送一個手寫的 `/ws` 升級請求（`host_headers` 為要送的全部 `Host` 行值，可重複、可為空），回傳回應的
+/// 第一行（狀態列）。手寫是為了能控制 `Host`：tokio-tungstenite 一律依 URL 自己帶 `Host`。
+async fn raw_upgrade_status_line(addr: SocketAddr, host_headers: &[&str]) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut request = String::from("GET /ws HTTP/1.1\r\n");
+    for host in host_headers {
+        request.push_str(&format!("Host: {host}\r\n"));
+    }
+    request.push_str(
+        "Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+    );
+    let mut stream = timeout(TIMEOUT, tokio::net::TcpStream::connect(addr))
+        .await
+        .expect("連線逾時")
+        .expect("連得上自己剛開的 server");
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("送出請求不應該失敗");
+    // 101 之後連線不會自己關（讀不到 EOF），所以只讀到第一批資料；403 回應很小，一次讀得完。
+    let mut buf = vec![0u8; 4096];
+    let n = timeout(TIMEOUT, stream.read(&mut buf))
+        .await
+        .expect("讀取回應逾時")
+        .expect("讀取回應不應該失敗");
+    let text = String::from_utf8_lossy(&buf[..n]).into_owned();
+    text.lines().next().unwrap_or_default().to_string()
+}
+
+/// DNS rebinding 形狀：`Host` 不是本機位址（或埠不符）的 `/ws` 升級回 403、不升級成 WebSocket。
+#[tokio::test]
+async fn bad_host_upgrade_is_rejected_with_403() {
+    let handle = StoreHandle::new(RuntimeStore::new());
+    let (addr, _server) = serve(&handle).await;
+
+    for host in [
+        format!("evil.example:{}", addr.port()),
+        format!("127.0.0.1:{}", addr.port().wrapping_add(1)),
+    ] {
+        let status = raw_upgrade_status_line(addr, &[&host]).await;
+        assert!(
+            status.starts_with("HTTP/1.1 403"),
+            "Host {host} 的升級應該回 403，實際：{status}"
+        );
+    }
+}
+
+/// 重複 `Host`（即使其中一個合法）的 `/ws` 升級回 403、不升級。
+#[tokio::test]
+async fn duplicated_host_upgrade_is_rejected_with_403() {
+    let handle = StoreHandle::new(RuntimeStore::new());
+    let (addr, _server) = serve(&handle).await;
+    let own = format!("127.0.0.1:{}", addr.port());
+
+    for hosts in [
+        vec![own.as_str(), own.as_str()],
+        vec![own.as_str(), "evil.example:80"],
+        vec!["evil.example:80", own.as_str()],
+    ] {
+        let status = raw_upgrade_status_line(addr, &hosts).await;
+        assert!(
+            status.starts_with("HTTP/1.1 403"),
+            "重複 Host {hosts:?} 的升級應該回 403，實際：{status}"
+        );
+    }
 }

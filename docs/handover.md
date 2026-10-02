@@ -17,7 +17,7 @@
 2. repo **已公開** `https://github.com/Benjamin-Teng/ai-cockpit`；**每次推送前**跑 `node docs/research/2026-10-02/deid-check.js --history`（0 命中才推）；
    **歷史不再改寫**。
 3. 審查：本專案 Opus 5.5 subagent 審查**視同 Codex**（memory 有）。
-4. **建議下一個 change：`/ws`、`/api/state` 加來源檢查**（延後項 m1）。README 已公開揭露「瀏覽器裡開著的網頁讀得到儀表板狀態」，修好後要同步改 `README.md`、`README.zh-TW.md` 的「Read-only by design」段與 `site/` 的對應文字。
+4. **使用者 2026-10-03 排定的三件事**：① m1 來源檢查——已完成（change `ws-source-check`，archive `2026-10-03-ws-source-check`）；② 介面語言可選中英（change `ui-language`，設計已提給使用者，待確認後 propose）；③ 發布 v0.1.0（Inno Setup 安裝精靈＋zip、GitHub Actions 建置、MIT 授權、tag `v0.1.0`），排在 ② 之後。
 
 ## 1. 現在的狀態
 
@@ -76,7 +76,9 @@ change 10 與更早仍有效的坑：本檔前一版第 3 節（`git log -2 --fo
 | 通知的真機確認（change 11 task 4.2） | **待使用者操作** |
 | change 11 其他細節（archive ledger 全部 `Ruling:`） | **Claude 依授權裁決**，使用者可推翻 |
 | 是否加 LICENSE | 未決；使用者沒提，維持現狀。README 與宣傳頁刻意不提授權 |
-| 延後：change 11 的 m1（任何網頁可連 `/ws` 使後端不閒置結束——建議另開 change 為 `/ws` 加來源檢查）、m5（`cockpit.log` 每次覆寫）、m6（啟動器與安裝腳本缺 repo 內回歸驗收）、3.6 M6（HTML 預覽 iframe 內點擊不關面板）、2.6 其餘小項；change 8 與更早的延後項（見前一版本檔第 4 節） | **延後** |
+| 延後：change 11 的 m5（`cockpit.log` 每次覆寫）、m6（啟動器與安裝腳本缺 repo 內回歸驗收）、3.6 M6（HTML 預覽 iframe 內點擊不關面板）、2.6 其餘小項；change 8 與更早的延後項（見前一版本檔第 4 節） | **延後** |
+| m1 殘留：外站網頁以 no-cors 定期請求 `GET /` 仍可延長 `--exit-when-idle` 期限（讀不到資料） | **已接受**（archive `2026-10-03-ws-source-check` design Risks） |
+| `real_attach` 測試（`#[ignore]`）已補回填埠，但尚未在有 HERDR 的機器上實跑 | 下次真機測試時跑一次 |
 | v2 狀態檔未知 project 缺 `active` 啟動失敗 | **決定不修**（change 6 裁決） |
 | Claude 在 feature 分支 commit，收尾 squash 併回 main 並推送 | **已授權** |
 
@@ -102,3 +104,4 @@ change 10 與更早仍有效的坑：本檔前一版第 3 節（`git log -2 --fo
 | 35 | 2026-10-02 | repo 公開；change 10 `output-color-tuning` |
 | 36 | 2026-10-02 | change 11 `desktop-launch-notify`（啟動器、關窗即結束、桌面通知）併回並 archive；兩份備份已刪除 |
 | 37 | 2026-10-02 | 宣傳頁（GitHub Pages）、README 中英雙語與生成藝術橫幅；Opus 審查兩輪 |
+| 38 | 2026-10-03 | change `ws-source-check`（m1）：`/api/state`、`/ws` 來源檢查，`listen` 收緊為 `127.0.0.1`／`::1`、埠不得為 80，`GET /` 防嵌入；Opus 審查兩輪 |
