@@ -11,7 +11,7 @@ Direction 01 視覺語彙與三欄版面（含 Project 切換）。證據：設�
 ### Requirement: 路由與內嵌資源
 
 系統必須提供 `GET /`（`index.html`）、`GET /app/<檔名>`（`channel.js`、`render.js`、`actions.js`、`output.js`、
-`files.js`、`viewers.js`、`git.js`、`style.css`）、`GET /manifest.webmanifest`、`GET /icons/<檔名>`（192 與 512 px PNG）、
+`files.js`、`viewers.js`、`git.js`、`notify.js`、`style.css`）、`GET /manifest.webmanifest`、`GET /icons/<檔名>`（192 與 512 px PNG）、
 `GET /vendor/<路徑>`（隨附的第三方前端資源：`pdfjs/` 下的 PDF 函式庫、worker、`cmaps/`、`standard_fonts/` 與該版本
 函式庫執行時需要的其他資源檔，`material-icons/` 下的檔案 icon 與主題對照表）、`GET /api/state`（目前整張圖 JSON）、`GET /ws`、`live-output` 定義的
 輸出讀取端點（`GET /api/runtimes/<runtime>/panes/<pane>/output`）、`file-review` 定義的檔案端點（根目錄查詢、列目錄、
@@ -24,8 +24,8 @@ Direction 01 視覺語彙與三欄版面（含 Project 切換）。證據：設�
 #### Scenario: 路由與 content-type
 
 - **WHEN** 逐一請求 `/`、`/app/render.js`、`/app/actions.js`、`/app/output.js`、`/app/files.js`、`/app/viewers.js`、
-  `/app/git.js`、`/app/style.css`、`/manifest.webmanifest`、`/icons/icon-192.png`、`/api/state`
-- **THEN** 皆為 200，content-type 分別為 HTML、JavaScript、JavaScript、JavaScript、JavaScript、JavaScript、JavaScript、CSS、
+  `/app/git.js`、`/app/notify.js`、`/app/style.css`、`/manifest.webmanifest`、`/icons/icon-192.png`、`/api/state`
+- **THEN** 皆為 200，content-type 分別為 HTML、JavaScript、JavaScript、JavaScript、JavaScript、JavaScript、JavaScript、JavaScript、CSS、
   `application/manifest+json`、`image/png`、`application/json`
 
 #### Scenario: vendored 資源
@@ -78,7 +78,7 @@ Direction 01 視覺語彙與三欄版面（含 Project 切換）。證據：設�
 系統必須讓 `channel.js` 只負責連 `/ws`、收到訊息就呼叫 `onState(state)`、斷線後以 1、2、4、8 秒
 退避（上限 8 秒）重連，且只在重連後收到第一則訊息時才把退避歸零（連上後立刻被關閉不歸零）；收到無法
 解析為 JSON 的訊息時略過該則並在 console 記警告，通道不中斷。`render.js` 每次收到整張圖就整頁重畫，版面依
-「版面與窄視窗」：頂列（產品名稱、每個 runtime 一個連線燈號：runtime `id` 與連線狀態）；左欄 Project 分頁的內容（見
+「版面與窄視窗」：頂列（產品名稱、每個 runtime 一個連線燈號：runtime `id` 與連線狀態、`desktop-notifications`「通知設定」的鈴鐺按鈕）；左欄 Project 分頁的內容（見
 「Project 切換」）；中上 Factory Floor（見「Factory Floor」）；右欄每個 runtime 一張卡（`id`、`endpoint`、連線
 狀態與原因或 protocol 警告、server 版本、最後 snapshot 時間），卡內依 workspace 分組（標籤、number、彙總狀態），
 每個 pane 一列（id、agent 名稱或 `shell`、agent 狀態、標題、cwd），卡片之下是最近事件；底列（通道狀態、
@@ -87,10 +87,10 @@ Direction 01 視覺語彙與三欄版面（含 Project 切換）。證據：設�
 task 完成）、`unknown` 與任何未知字串用次要文字色並顯示原字串、`exited` 加刪除線。連線狀態：`connected` 用
 成功色、`connecting` 用警示色、`disconnected` 用失敗色。可點的互動只有「畫面操作」所列的按鈕、「Project 切換」
 的 Project 選取、`live-output`「選定一個 pane」所列的選取操作，與 `file-review` 所列的左欄分頁、檔案樹、檔案分頁與
-檢視器內的操作；pane 的 `done` 顯示為 `done`，不出現「完成」字樣。整頁重畫不得清除進行中的畫面操作狀態（改綁模式、
+檢視器內的操作，以及 `desktop-notifications`「通知設定」的鈴鐺按鈕與設定面板（鈴鐺不屬於「畫面操作」，按下不改變其錯誤訊息與進行中的操作狀態）；pane 的 `done` 顯示為 `done`，不出現「完成」字樣。整頁重畫不得清除進行中的畫面操作狀態（改綁模式、
 最近一次操作的錯誤訊息）與 Project 選取，也不得清除 Live Output 的選取、面板內容與捲動位置——Live Output 面板、左欄的
-分頁列與檔案樹、中欄下半部的分頁區都不屬於整頁重畫的範圍。整頁重畫也不得讓鍵盤焦點消失：
-重畫前焦點若在 `#app` 內某個可互動的元素上（pane 列、「畫面操作」的按鈕、「看輸出」、Project 項目等），重畫後
+分頁列與檔案樹、中欄下半部的分頁區、通知設定面板都不屬於整頁重畫的範圍。整頁重畫也不得讓鍵盤焦點消失：
+重畫前焦點若在 `#app` 內某個可互動的元素上（pane 列、「畫面操作」的按鈕、「看輸出」、Project 項目、通知鈴鐺等），重畫後
 焦點必須落在代表同一個對象、同一個操作的新元素上；該元素在新畫面中已不存在或已不可互動時，焦點才可以離開。焦點還原後是否
 呈現焦點外框，依使用者最近一次的輸入方式決定：最近一次是滑鼠（pointer）操作（含該操作觸發的重畫與其後的背景重畫）時，
 焦點仍必須還原到新元素上，但該元素不得呈現焦點外框（不匹配 `:focus-visible`）；最近一次是鍵盤操作時，焦點還原且焦點外框
@@ -226,6 +226,18 @@ task 完成）、`unknown` 與任何未知字串用次要文字色並顯示原�
 - **GIVEN** 視窗寬 ≥1200 且高 ≥720（固定一屏），使用者已把 Factory Floor 與右欄的內部捲動容器都捲到非 0 的位置
 - **WHEN** 收到新投影並整頁重畫
 - **THEN** 兩個容器的捲動位置都不變，頁面本身也沒有捲動
+
+#### Scenario: 鈴鐺按鈕跨重畫保留焦點
+
+- **GIVEN** 以鍵盤 Tab 把焦點移到頂列的通知鈴鐺，投影每 100 ms 推送一份新的 version
+- **WHEN** 經過 1 秒
+- **THEN** 焦點仍在（新的）鈴鐺按鈕上且焦點外框可見；按 Enter 開啟通知設定面板
+
+#### Scenario: 鈴鐺不影響畫面操作的錯誤訊息
+
+- **GIVEN** 最近一次畫面操作失敗、錯誤訊息顯示中
+- **WHEN** 按通知鈴鐺開啟再關閉設定面板
+- **THEN** 錯誤訊息仍在
 
 ### Requirement: PWA 可安裝
 
