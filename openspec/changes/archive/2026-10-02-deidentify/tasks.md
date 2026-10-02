@@ -52,4 +52,4 @@
 
 ## 3. 收尾
 
-- [ ] 3.1 archive 本 change；重寫 `docs/handover.md`（含舊編號對照說明、備份位置與「備份保存或刪除由使用者決定」、推送前跑 `deid-check.js`）；markdownlint 0 issues
+- [x] 3.1 archive 本 change；重寫 `docs/handover.md`（含舊編號對照說明、備份位置與「備份保存或刪除由使用者決定」、推送前跑 `deid-check.js`）；markdownlint 0 issues
