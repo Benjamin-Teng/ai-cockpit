@@ -18,4 +18,4 @@
 
 - [x] 2.1 全 gate：Rust gate、`cargo test -p cockpit --example ui_preview`、markdownlint、`openspec validate --all`、12 支驗收腳本、`deid-check.js` 0 命中
 - [x] 2.2 Opus 審查 `main..HEAD`，findings 實測後才改
-- [ ] 2.3 squash 併回 `main`、archive、更新交接手冊、推送（推送前 `deid-check.js --history` 0 命中）
+- [x] 2.3 squash 併回 `main`、archive、更新交接手冊、推送（推送前 `deid-check.js --history` 0 命中）
