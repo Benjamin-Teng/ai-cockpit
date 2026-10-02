@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<script>
+// 語言在第一次繪製前決定：手動選過就照選擇；否則第一順位瀏覽器語言是台港澳中的中文、
+// 或時區在台港澳中，就用繁中。繁中時先藏起待換的字串，site.js 換好後再顯示。
+(function () {
+  var lang = 'en', saved = null;
+  try { saved = localStorage.getItem('cockpit.site.lang'); } catch (e) { /* 隱私模式 */ }
+  if (saved === 'en' || saved === 'zh') {
+    lang = saved;
+  } else {
+    var first = String((navigator.languages && navigator.languages[0]) || navigator.language || '').toLowerCase();
+    var tz = '';
+    try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) { /* 沒有 Intl */ }
+    var zones = ['Asia/Taipei', 'Asia/Hong_Kong', 'Asia/Macau', 'Asia/Macao', 'Asia/Shanghai', 'Asia/Chongqing', 'Asia/Chungking',
+      'Asia/Harbin', 'Asia/Urumqi', 'Asia/Kashgar', 'PRC', 'ROC', 'Hongkong'];
+    if (/^zh(-(hant|hans))?(-(tw|hk|mo|cn))?$/.test(first) || zones.indexOf(tz) >= 0) lang = 'zh';
+  }
+  var root = document.documentElement;
+  root.setAttribute('data-lang', lang);
+  if (lang === 'zh') {
+    root.lang = 'zh-Hant'; root.className += ' i18n-pending';
+    // site.js 沒載入或出錯時，1.5 秒後照原文顯示，不讓畫面一直空著
+    setTimeout(function () { root.classList.remove('i18n-pending'); }, 1500);
+  }
+})();
+</script>
+<title data-i18n="title">AI Agent Cockpit: one dashboard for every AI agent you run in HERDR</title>
+<meta name="description" data-i18n="desc" data-i18n-attr="content" content="A local, read-only dashboard for HERDR. See which stage each AI agent reached, which one is blocked, and get a desktop alert when one needs you.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://benjamin-teng.github.io/ai-cockpit/">
+<meta property="og:title" content="AI Agent Cockpit">
+<meta property="og:description" content="A local, read-only dashboard for AI agents running in HERDR.">
+<meta property="og:image" content="https://benjamin-teng.github.io/ai-cockpit/img/factory-floor.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#091320">
+<link rel="icon" href="img/icon-192.png">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="#top"><span class="brand-mark" aria-hidden="true"></span>AI Agent Cockpit</a>
+    <nav class="nav-links" aria-label="Page">
+      <a class="hide-sm" href="#features" data-i18n="nav.features">Features</a>
+      <a class="hide-sm" href="#start" data-i18n="nav.start">Get started</a>
+      <a href="https://github.com/Benjamin-Teng/ai-cockpit">GitHub</a>
+      <button type="button" class="lang-toggle" id="lang-toggle" lang="zh-Hant" aria-label="切換為繁體中文">中文</button>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+  <section class="hero">
+    <div class="wrap">
+      <div class="copy">
+        <h1 class="enter" data-i18n="hero.h1">See your whole agent pipeline, signal by signal.</h1>
+        <p class="lede enter d1" data-i18n="hero.lede">Cockpit turns HERDR panes into a live factory floor: which workstream each agent drives, which stage it reached, and which one is waiting on you.</p>
+        <div class="ctas enter d2">
+          <a class="btn primary" href="#start" data-i18n="cta.start">Get started</a>
+          <a class="btn" href="https://github.com/Benjamin-Teng/ai-cockpit" data-i18n="cta.github">View on GitHub</a>
+        </div>
+      </div>
+      <div class="panel enter d3" role="img" aria-label="Animated example: four agent workstreams moving through Plan, Build and Review" data-i18n="panel.aria" data-i18n-attr="aria-label">
+        <div class="panel-head" aria-hidden="true"><span>Factory Floor</span><span class="live">live</span></div>
+        <div class="board" aria-hidden="true">
+          <div></div><div class="stage-labels"><span>Plan</span><span>Build</span><span>Review</span></div>
+          <div class="lane-label"><b>backend <span class="st">running</span></b>win / wJ:p1<span class="agent"> claude</span></div>
+          <div class="dots-wrap"><canvas></canvas></div>
+          <div class="lane-label"><b>docs <span class="st">running</span></b>win / wJ:p3<span class="agent"> codex</span></div>
+          <div class="dots-wrap"><canvas></canvas></div>
+          <div class="lane-label"><b>qa <span class="st">running</span></b>wsl / wK:p2<span class="agent"> claude</span></div>
+          <div class="dots-wrap"><canvas></canvas></div>
+          <div class="lane-label"><b>release <span class="st">running</span></b>win / wL:p1<span class="agent"> claude</span></div>
+          <div class="dots-wrap"><canvas></canvas></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block alt" id="features">
+    <div class="wrap">
+      <h2 data-i18n="f.h2">One window for every agent you run</h2>
+      <p class="intro" data-i18n="f.intro">Cockpit connects to HERDR on Windows and inside WSL, merges both into one picture, and never sends a keystroke to your agents.</p>
+
+      <div class="feature wide">
+        <div>
+          <h3 data-i18n="f1.h3">A factory floor, not a wall of terminals</h3>
+          <p data-i18n="f1.p">Each project is a pipeline of stages, and its workstreams run side by side. A task card shows where the work is and whether it is running, blocked or failed. Advance it, send it back or mark it with one click.</p>
+        </div>
+        <figure class="shot">
+          <img src="img/factory-floor.png" width="1536" height="1300" loading="lazy" alt="Cockpit dashboard: project list on the left, Factory Floor grid of workstreams and stages in the middle, HERDR runtime cards on the right" data-i18n="f1.alt" data-i18n-attr="alt">
+          <figcaption data-i18n="shot.sample">Sample data from the built-in preview</figcaption>
+        </figure>
+      </div>
+
+      <div class="feature">
+        <div>
+          <h3 data-i18n="f2.h3">A desktop alert when an agent needs you</h3>
+          <p data-i18n="f2.p">Get a notification when an agent is blocked or a task fails, and switch on alerts for the rest. Alerts appear while the Cockpit window is open or minimized and not in front. Click one and Cockpit opens that pane.</p>
+        </div>
+        <figure class="shot">
+          <div class="crop"><img src="img/notifications.png" width="1536" height="1024" loading="lazy" alt="Notification settings panel with four checkboxes: agent blocked, agent done, task failed, task completed" data-i18n="f2.alt" data-i18n-attr="alt"></div>
+          <figcaption data-i18n="shot.sample">Sample data from the built-in preview</figcaption>
+        </figure>
+      </div>
+
+      <ul class="list">
+        <li><h3 data-i18n="l1.h3">Live output, in color</h3><p data-i18n="l1.p">Read any pane's recent output with its colors intact. It is a view, not a terminal, so nothing you do there reaches the agent.</p></li>
+        <li><h3 data-i18n="l2.h3">Files, diffs and git history</h3><p data-i18n="l2.p">Browse the repo a pane is working in: Markdown, PDF, HTML, side-by-side diffs and a commit graph, all read-only.</p></li>
+        <li><h3 data-i18n="l3.h3">Agents report their own progress</h3><p data-i18n="l3.p">An agent announces its task and moves it forward with one HTTP call from its own pane. Cockpit never guesses. For now this works from Windows-side panes only.</p></li>
+        <li><h3 data-i18n="l4.h3">Opens like a desktop app</h3><p data-i18n="l4.p">A desktop shortcut starts Cockpit in the background and opens it in its own window. Close the window and Cockpit shuts down.</p></li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="block" id="how">
+    <div class="wrap">
+      <h2 data-i18n="h.h2">It watches. You decide.</h2>
+      <p class="intro" data-i18n="h.intro">Cockpit is an observer. It cannot type into a pane, prompt an agent or stop HERDR.</p>
+      <div class="how">
+        <div class="how-text">
+          <div><h3 data-i18n="h1.h3">Your agents run in HERDR</h3><p data-i18n="h1.p">Claude, Codex or a plain shell, in Windows or WSL panes, exactly as you run them today.</p></div>
+          <div><h3 data-i18n="h2.h3">Cockpit listens</h3><p data-i18n="h2.p">It subscribes to HERDR events and reads pane output. These three calls are the only ones it can make, and the compiler enforces that list.</p></div>
+          <div><h3 data-i18n="h3.h3">You act on what it shows</h3><p data-i18n="h3.p">Progress changes only when you click or when an agent reports it. The dashboard listens on loopback only, and Cockpit itself sends nothing off your machine.</p></div>
+        </div>
+        <pre class="cmd"><code><span class="c">// herdr-client: every request Cockpit can send</span>
+session.snapshot
+pane.read
+events.subscribe</code></pre>
+      </div>
+    </div>
+  </section>
+
+  <section class="block alt" id="start">
+    <div class="wrap">
+      <h2 data-i18n="s.h2">Get started</h2>
+      <p class="intro" data-i18n="s.intro">Cockpit is built from source with Rust. Windows is the tested platform, and HERDR inside WSL is supported.</p>
+      <ol class="steps">
+        <li><div>
+          <h3 data-i18n="s1.h3">Build and run</h3>
+          <pre class="cmd"><code>git clone https://github.com/Benjamin-Teng/ai-cockpit.git
+cd ai-cockpit
+cargo run -p cockpit</code></pre>
+          <p data-i18n="s1.p">Open <code>http://127.0.0.1:7770/</code>. Without a config file, Cockpit finds your local HERDR on its own.</p>
+        </div></li>
+        <li><div>
+          <h3 data-i18n="s2.h3">Describe your projects</h3>
+          <pre class="cmd"><code>Copy-Item cockpit.example.toml cockpit.toml
+cargo run -p cockpit</code></pre>
+          <p data-i18n="s2.p">Before running, edit <code>cockpit.toml</code>: replace the <code>&lt;user&gt;</code> placeholders, then list your HERDR runtimes, each project's stages and the pane every workstream runs in. Cockpit reads <code>cockpit.toml</code> from the working directory.</p>
+        </div></li>
+        <li><div>
+          <h3 data-i18n="s3.h3">Add a desktop shortcut</h3>
+          <pre class="cmd"><code>pwsh scripts/install-desktop.ps1</code></pre>
+          <p data-i18n="s3.p">Optional. Builds a release, installs it under <code>%LOCALAPPDATA%\ai-cockpit\bin</code> and puts an AI Agent Cockpit shortcut on your desktop.</p>
+        </div></li>
+      </ol>
+      <p class="note" data-i18n="s.note">No HERDR yet? <code>cargo run -p cockpit --example ui_preview</code> opens the dashboard with sample data. The dashboard's labels are mostly in Traditional Chinese.</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span data-i18n="foot.built">Built for <a href="https://herdr.dev">HERDR</a>, the runtime that coding agents run on.</span>
+    <a href="https://github.com/Benjamin-Teng/ai-cockpit" data-i18n="foot.src">Source on GitHub</a>
+  </div>
+</footer>
+
+<script src="i18n.js"></script>
+<script src="site.js"></script>
+</body>
+</html>
