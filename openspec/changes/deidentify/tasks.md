@@ -42,12 +42,12 @@
 - [x] 2.2 前提與備份（design D5 前提、第 1 步）：`git status --porcelain` 無追蹤中改動、`git worktree list` 只有本 repo；整個 repo 目錄（排除 `target/`）
   複製到 repo 外；`git clone --mirror --no-local` 到 repo 外並 `git fsck --full`、ref 數相同；記下原 `main` 與 `main^{tree}` 編號
 - [x] 2.3 演練（D5 第 2 步）：`git clone --no-local` 的副本上執行刪 ref＋filter-repo，跑 2.5 的全部驗證；不過就修正替換表或 mailmap 重演練，不碰原 repo
-- [ ] 2.4 原 repo 執行（D5 第 3–4 步）：刪 `refs/codex/turn-diffs/checkpoints/*` → `git filter-repo --force`（替換表、mailmap、blob-callback；不用
+- [x] 2.4 原 repo 執行（D5 第 3–4 步）：刪 `refs/codex/turn-diffs/checkpoints/*` → `git filter-repo --force`（替換表、mailmap、blob-callback；不用
   `--dry-run`／`--debug`）
-- [ ] 2.5 驗證（D5 第 5 步）：`deid-check.js --history` 0 命中；`git for-each-ref` 只剩 `refs/heads/*`；新 `main^{tree}` 等於改寫前；commit 數不變；
+- [x] 2.5 驗證（D5 第 5 步）：`deid-check.js --history` 0 命中；`git for-each-ref` 只剩 `refs/heads/*`；新 `main^{tree}` 等於改寫前；commit 數不變；
   作者／committer 只剩新身分；全 gate 與 12 支既有腳本全綠。任一項失敗即依 D5 第 7 步從整份目錄備份還原
-- [ ] 2.6 Opus 獨立驗證：不給替換表，由它自行跑 `deid-check.js --history`、讀物件比對、檢查作者欄位與 ref；通過後才刪 repo 外的替換表與 mailmap
-- [ ] 2.7 收尾（D5 第 6 步）：刪 `.git/lost-found/`；loose／unreachable 物件 0；repo 層級 `git config user.name`／`user.email` 改為新身分；`commit-map`
+- [x] 2.6 Opus 獨立驗證：不給替換表，由它自行跑 `deid-check.js --history`、讀物件比對、檢查作者欄位與 ref；通過後才刪 repo 外的替換表與 mailmap
+- [x] 2.7 收尾（D5 第 6 步）：刪 `.git/lost-found/`；loose／unreachable 物件 0；repo 層級 `git config user.name`／`user.email` 改為新身分；`commit-map`
   存成 `docs/research/2026-10-02/commit-map.txt` 並 commit，再跑一次 `deid-check.js --history`
 
 ## 3. 收尾
