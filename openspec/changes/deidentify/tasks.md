@@ -38,7 +38,7 @@
 
 ## 2. B 段：改寫歷史（不可逆，design D5）
 
-- [ ] 2.1 **停止點**：向使用者報告 A 段結果、備份位置與 2.2–2.7 的確切步驟，取得明確同意後才繼續
+- [x] 2.1 **停止點**：向使用者報告 A 段結果、備份位置與 2.2–2.7 的確切步驟，取得明確同意後才繼續
 - [ ] 2.2 前提與備份（design D5 前提、第 1 步）：`git status --porcelain` 無追蹤中改動、`git worktree list` 只有本 repo；整個 repo 目錄（排除 `target/`）
   複製到 repo 外；`git clone --mirror --no-local` 到 repo 外並 `git fsck --full`、ref 數相同；記下原 `main` 與 `main^{tree}` 編號
 - [ ] 2.3 演練（D5 第 2 步）：`git clone --no-local` 的副本上執行刪 ref＋filter-repo，跑 2.5 的全部驗證；不過就修正替換表或 mailmap 重演練，不碰原 repo
