@@ -12,7 +12,8 @@
         "server_version": "0.9.0-preview.3",
         "protocol": 22,
         "last_snapshot_at": "2026-09-15T01:59:00Z",
-        "protocol_warning": null
+        "protocol_warning": null,
+        "protocol_warning_msg": null
       },
       "focused": {
         "workspace_id": "wJ",
@@ -79,6 +80,10 @@
       "connection": {
         "state": "disconnected",
         "reason": "WSL 發行版 Ubuntu-24.04 未啟動",
+        "reason_msg": {
+          "code": "wsl_distro_not_running",
+          "params": { "distro": "Ubuntu-24.04" }
+        },
         "retry_in_secs": 60
       },
       "focused": {
@@ -95,6 +100,12 @@
       "name": "AI Cockpit",
       "stages": ["Spec", "Implement", "Review"],
       "warnings": ["task docs-1 的 stage \"Draft\" 已不在 stages，退回起始 stage"],
+      "warning_msgs": [
+        {
+          "code": "task_stage_reset",
+          "params": { "task": "docs-1", "stage": "Draft", "start": "Spec" }
+        }
+      ],
       "workstreams": [
         {
           "id": "be",
@@ -316,7 +327,11 @@
       "at": "2026-09-15T01:50:00Z",
       "runtime": "wsl",
       "kind": "drift",
-      "detail": "WSL 發行版 Ubuntu-24.04 未啟動"
+      "detail": "WSL 發行版 Ubuntu-24.04 未啟動",
+      "detail_msg": {
+        "code": "wsl_distro_not_running",
+        "params": { "distro": "Ubuntu-24.04" }
+      }
     }
   ]
 }

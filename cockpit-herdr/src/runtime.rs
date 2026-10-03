@@ -33,8 +33,8 @@ use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use cockpit_core::{
-    AgentRuntime, PaneId, PaneOutput, RuntimeError, RuntimeEvent, RuntimeEvents, RuntimeId,
-    RuntimeSnapshot,
+    AgentRuntime, Message, PaneId, PaneOutput, READ_OUTPUT_FAILED_PREFIX, RuntimeError,
+    RuntimeEvent, RuntimeEvents, RuntimeId, RuntimeSnapshot,
 };
 use herdr_client::client::{
     Client, EventStream, IncomingEvent, PaneReadRequest, RequestError, SessionSnapshotRequest,
@@ -318,7 +318,14 @@ impl AgentRuntime for HerdrRuntime {
             .client
             .request(SessionSnapshotRequest {})
             .await
-            .map_err(|e| RuntimeError::Failed(format!("snapshot 失敗：{e}")))?;
+            .map_err(|e| {
+                RuntimeError::Failed(
+                    Message::SnapshotFailed {
+                        detail: e.to_string(),
+                    }
+                    .text(),
+                )
+            })?;
         let mut snapshot = translate::snapshot(&result.snapshot, SystemTime::now());
 
         if snapshot.protocol < TESTED_PROTOCOL_MIN || snapshot.protocol > TESTED_PROTOCOL_MAX {
@@ -327,10 +334,13 @@ impl AgentRuntime for HerdrRuntime {
                 protocol = snapshot.protocol,
                 "HERDR protocol 不在已測範圍 {TESTED_PROTOCOL_MIN}..={TESTED_PROTOCOL_MAX}"
             );
-            snapshot.protocol_warning = Some(format!(
-                "HERDR protocol {} 不在已測範圍 {TESTED_PROTOCOL_MIN}..={TESTED_PROTOCOL_MAX}",
-                snapshot.protocol
-            ));
+            snapshot.protocol_warning = Some(
+                Message::ProtocolUntested {
+                    protocol: snapshot.protocol.to_string(),
+                    tested: format!("{TESTED_PROTOCOL_MIN}..={TESTED_PROTOCOL_MAX}"),
+                }
+                .text(),
+            );
         }
 
         // 交給 S 管理器：集合與目前 S 的清單不同就排程重開（spec「snapshot 發現集合不同」）。
@@ -389,7 +399,14 @@ impl AgentRuntime for HerdrRuntime {
             .client
             .request(SessionSnapshotRequest {})
             .await
-            .map_err(|e| RuntimeError::Failed(format!("seed snapshot 失敗：{e}")))?;
+            .map_err(|e| {
+                RuntimeError::Failed(
+                    Message::SeedSnapshotFailed {
+                        detail: e.to_string(),
+                    }
+                    .text(),
+                )
+            })?;
         let pane_ids: BTreeSet<String> = seed
             .snapshot
             .panes
@@ -402,7 +419,14 @@ impl AgentRuntime for HerdrRuntime {
             .client
             .subscribe(&Subscription::all_lifecycle())
             .await
-            .map_err(|e| RuntimeError::Failed(format!("L 訂閱建立失敗：{e}")))?;
+            .map_err(|e| {
+                RuntimeError::Failed(
+                    Message::LifecycleSubscribeFailed {
+                        detail: e.to_string(),
+                    }
+                    .text(),
+                )
+            })?;
 
         // (e) S：seed 有 pane 才開；失敗時先關掉 L 再回傳（spec「任一步失敗……已開的連線
         // 關閉」）。
@@ -413,7 +437,12 @@ impl AgentRuntime for HerdrRuntime {
                 Ok(stream) => Some(stream),
                 Err(e) => {
                     drop(lifecycle);
-                    return Err(RuntimeError::Failed(format!("S 訂閱建立失敗：{e}")));
+                    return Err(RuntimeError::Failed(
+                        Message::StatusSubscribeFailed {
+                            detail: e.to_string(),
+                        }
+                        .text(),
+                    ));
                 }
             }
         };
@@ -546,7 +575,7 @@ fn map_read_output_error(pane: &PaneId, error: RequestError) -> RuntimeError {
             pane_id: pane.clone(),
         };
     }
-    RuntimeError::Failed(format!("讀取 pane 輸出失敗：{error}"))
+    RuntimeError::Failed(format!("{READ_OUTPUT_FAILED_PREFIX}{error}"))
 }
 
 /// 把 `subscribe()` 開好的**初始** S reader 的 `AbortHandle` 安裝進 S 管理器
@@ -648,7 +677,11 @@ async fn read_loop(
                     error = %e,
                     "事件連線發生 I/O 錯誤，事件流結束"
                 );
-                break format!("{label} 連線錯誤：{e}");
+                break Message::EventConnectionError {
+                    label: label.to_string(),
+                    detail: e.to_string(),
+                }
+                .text();
             }
             None => {
                 tracing::warn!(
@@ -656,7 +689,10 @@ async fn read_loop(
                     connection = label,
                     "事件連線結束，事件流結束"
                 );
-                break format!("{label} 連線結束");
+                break Message::EventConnectionEnded {
+                    label: label.to_string(),
+                }
+                .text();
             }
         }
     };
@@ -888,7 +924,12 @@ async fn reopen_after_debounce(status: Arc<Mutex<StatusSubscription>>, session: 
             if session.shutdown.claim() {
                 if let Some(tx) = session.tx.upgrade() {
                     let _ = tx
-                        .send(Err(RuntimeError::Failed(format!("S 重開失敗：{e}"))))
+                        .send(Err(RuntimeError::Failed(
+                            Message::StatusResubscribeFailed {
+                                detail: e.to_string(),
+                            }
+                            .text(),
+                        )))
                         .await;
                 }
                 session.shutdown.abort_all();

@@ -11,7 +11,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use cockpit_core::RuntimeError;
+use cockpit_core::{Message, RuntimeError};
 use tokio::process::Command;
 
 /// Windows `CREATE_NO_WINDOW`：啟動 `wsl.exe` 不彈出主控台視窗（同
@@ -75,14 +75,20 @@ pub fn evaluate(
     retry_after: Duration,
 ) -> Result<(), RuntimeError> {
     let outcome = outcome.map_err(|io| RuntimeError::Unavailable {
-        reason: format!("WSL 探測失敗：{io}"),
+        reason: Message::WslProbeFailed {
+            detail: io.to_string(),
+        }
+        .text(),
         retry_after,
     })?;
 
     if !outcome.status_ok {
         let stderr = String::from_utf8_lossy(&outcome.stderr);
         return Err(RuntimeError::Unavailable {
-            reason: format!("WSL 探測失敗：{}", stderr.trim()),
+            reason: Message::WslProbeFailed {
+                detail: stderr.trim().to_string(),
+            }
+            .text(),
             retry_after,
         });
     }
@@ -92,7 +98,10 @@ pub fn evaluate(
         Ok(())
     } else {
         Err(RuntimeError::Unavailable {
-            reason: format!("WSL 發行版 {distro} 未啟動"),
+            reason: Message::WslDistroNotRunning {
+                distro: distro.to_string(),
+            }
+            .text(),
             retry_after,
         })
     }

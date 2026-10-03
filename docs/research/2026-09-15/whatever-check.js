@@ -55,13 +55,14 @@ async function main() {
     const html = `<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="http://127.0.0.1:7770/app/style.css"></head>
 <body><header id="topbar"><span id="channel-status">connecting</span></header><div id="app"></div>
+<script src="http://127.0.0.1:7770/app/i18n.js"></script>
 <script src="http://127.0.0.1:7770/app/render.js"></script>
 <script>window.onState(${JSON.stringify(state)});</script></body></html>`;
     const harness = path.join(dir, 'harness.html');
     fs.writeFileSync(harness, html, 'utf8');
     const fileUrl = 'file:///' + harness.replace(/\\/g, '/');
     const r = spawnSync(CHROME, [
-      '--headless=new', '--disable-gpu', '--no-first-run', '--allow-file-access-from-files',
+      '--headless=new', '--lang=zh-TW', '--disable-gpu', '--no-first-run', '--allow-file-access-from-files',
       `--user-data-dir=${path.join(dir, 'profile')}`, '--virtual-time-budget=3000', '--dump-dom', fileUrl,
     ], { encoding: 'utf8', windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
     const dom = r.stdout || '';

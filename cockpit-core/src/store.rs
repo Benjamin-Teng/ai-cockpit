@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::time::SystemTime;
 
+use crate::message::Message;
 use crate::types::agent_status::AgentStatus;
 use crate::types::connection::ConnectionState;
 use crate::types::events::{FocusChange, RuntimeEvent};
@@ -64,7 +65,7 @@ fn agent_status_str(status: AgentStatus) -> &'static str {
 
 /// 套用失敗（回傳 `Err(Drift)`）時，`recent` 一律記這個 `kind`，不論觸發失敗的是哪個
 /// `RuntimeEvent` 變體。
-const DRIFT_KIND: &str = "drift";
+pub(crate) const DRIFT_KIND: &str = "drift";
 
 /// 把一個 `RuntimeEvent` 對應到 `recent_events` 要用的 `kind` 字串；集中定義在這一處
 /// （review finding 1：先前 `AgentStatusChanged` 與其他變體的字串各自散在
@@ -254,7 +255,9 @@ fn describe_event(event: &RuntimeEvent) -> EventDescription {
 /// 不是 panic：呼叫端（1.4 之後的驅動器）決定是否要重新拉一份 snapshot 校正。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Drift {
-    /// 觸發 drift 的原因，供除錯與記錄。
+    /// 觸發 drift 的原因，供除錯與記錄；最近事件會把它放進 `detail`，前端依 `detail_msg` 翻譯。
+    /// 必須由 [`Message`]（`Drift*NotFound`、`DriftRuntimeNotRegistered`、`EventPayloadUnparsable` 等）的
+    /// `text()` 產生：新增原因種類時先加 `Message` 變體並補 `msg.<code>` 字典鍵（http 對帳測試會擋缺鍵）。
     pub reason: String,
 }
 
@@ -427,7 +430,7 @@ impl RuntimeState {
             RuntimeEvent::WorkspaceRemoved(id) => {
                 if !self.workspaces.contains_key(&id) {
                     return Err(Drift {
-                        reason: format!("workspace {id} 不存在"),
+                        reason: Message::DriftWorkspaceNotFound { id: id.to_string() }.text(),
                     });
                 }
                 self.remove_workspace_cascade(&id);
@@ -435,7 +438,7 @@ impl RuntimeState {
             }
             RuntimeEvent::WorkspaceRelabeled { id, label } => {
                 let workspace = self.workspaces.get_mut(&id).ok_or_else(|| Drift {
-                    reason: format!("workspace {id} 不存在"),
+                    reason: Message::DriftWorkspaceNotFound { id: id.to_string() }.text(),
                 })?;
                 workspace.label = if label.is_empty() { None } else { Some(label) };
                 Ok(())
@@ -444,7 +447,10 @@ impl RuntimeState {
                 let workspace_id = &tab.workspace_id;
                 if !self.workspaces.contains_key(workspace_id) {
                     return Err(Drift {
-                        reason: format!("workspace {workspace_id} 不存在"),
+                        reason: Message::DriftWorkspaceNotFound {
+                            id: workspace_id.to_string(),
+                        }
+                        .text(),
                     });
                 }
                 self.tabs.insert(tab.id.clone(), tab);
@@ -453,7 +459,10 @@ impl RuntimeState {
             RuntimeEvent::TabsReplaced { workspace_id, tabs } => {
                 if !self.workspaces.contains_key(&workspace_id) {
                     return Err(Drift {
-                        reason: format!("workspace {workspace_id} 不存在"),
+                        reason: Message::DriftWorkspaceNotFound {
+                            id: workspace_id.to_string(),
+                        }
+                        .text(),
                     });
                 }
                 // 同 `WorkspacesReplaced`：keep set 來自「新的」tab 清單，不是舊 map
@@ -479,7 +488,7 @@ impl RuntimeState {
             RuntimeEvent::TabRemoved(id) => {
                 if !self.tabs.contains_key(&id) {
                     return Err(Drift {
-                        reason: format!("tab {id} 不存在"),
+                        reason: Message::DriftTabNotFound { id: id.to_string() }.text(),
                     });
                 }
                 self.remove_tab_cascade(&id);
@@ -489,7 +498,7 @@ impl RuntimeState {
                 // `Tab`（task 1.2 型別）目前沒有 label 欄位，只驗存在性、不改內容。
                 if !self.tabs.contains_key(&id) {
                     return Err(Drift {
-                        reason: format!("tab {id} 不存在"),
+                        reason: Message::DriftTabNotFound { id: id.to_string() }.text(),
                     });
                 }
                 Ok(())
@@ -498,13 +507,19 @@ impl RuntimeState {
                 let workspace_id = &pane.workspace_id;
                 if !self.workspaces.contains_key(workspace_id) {
                     return Err(Drift {
-                        reason: format!("workspace {workspace_id} 不存在"),
+                        reason: Message::DriftWorkspaceNotFound {
+                            id: workspace_id.to_string(),
+                        }
+                        .text(),
                     });
                 }
                 let tab_id = &pane.tab_id;
                 if !self.tabs.contains_key(tab_id) {
                     return Err(Drift {
-                        reason: format!("tab {tab_id} 不存在"),
+                        reason: Message::DriftTabNotFound {
+                            id: tab_id.to_string(),
+                        }
+                        .text(),
                     });
                 }
                 // pane 被這筆事件改動，updated_at 一律覆蓋成 apply 傳入的 now，
@@ -516,19 +531,28 @@ impl RuntimeState {
             RuntimeEvent::PaneMoved { previous, mut pane } => {
                 if !self.panes.contains_key(&previous) {
                     return Err(Drift {
-                        reason: format!("pane {previous} 不存在"),
+                        reason: Message::DriftPaneNotFound {
+                            id: previous.to_string(),
+                        }
+                        .text(),
                     });
                 }
                 let workspace_id = &pane.workspace_id;
                 if !self.workspaces.contains_key(workspace_id) {
                     return Err(Drift {
-                        reason: format!("workspace {workspace_id} 不存在"),
+                        reason: Message::DriftWorkspaceNotFound {
+                            id: workspace_id.to_string(),
+                        }
+                        .text(),
                     });
                 }
                 let tab_id = &pane.tab_id;
                 if !self.tabs.contains_key(tab_id) {
                     return Err(Drift {
-                        reason: format!("tab {tab_id} 不存在"),
+                        reason: Message::DriftTabNotFound {
+                            id: tab_id.to_string(),
+                        }
+                        .text(),
                     });
                 }
 
@@ -551,7 +575,7 @@ impl RuntimeState {
             RuntimeEvent::PaneRemoved(id) => {
                 if !self.panes.contains_key(&id) {
                     return Err(Drift {
-                        reason: format!("pane {id} 不存在"),
+                        reason: Message::DriftPaneNotFound { id: id.to_string() }.text(),
                     });
                 }
                 self.remove_pane_and_agent(&id);
@@ -559,7 +583,7 @@ impl RuntimeState {
             }
             RuntimeEvent::PaneExited(id) => {
                 let pane = self.panes.get_mut(&id).ok_or_else(|| Drift {
-                    reason: format!("pane {id} 不存在"),
+                    reason: Message::DriftPaneNotFound { id: id.to_string() }.text(),
                 })?;
                 pane.exited = true;
                 pane.updated_at = now;
@@ -568,7 +592,10 @@ impl RuntimeState {
             RuntimeEvent::AgentDetected { pane_id, agent } => {
                 let Some(pane) = self.panes.get_mut(&pane_id) else {
                     return Err(Drift {
-                        reason: format!("pane {pane_id} 不存在"),
+                        reason: Message::DriftPaneNotFound {
+                            id: pane_id.to_string(),
+                        }
+                        .text(),
                     });
                 };
                 match agent {
@@ -605,7 +632,10 @@ impl RuntimeState {
             } => {
                 let Some(pane) = self.panes.get_mut(&pane_id) else {
                     return Err(Drift {
-                        reason: format!("pane {pane_id} 不存在"),
+                        reason: Message::DriftPaneNotFound {
+                            id: pane_id.to_string(),
+                        }
+                        .text(),
                     });
                 };
                 pane.agent_status = status;
@@ -664,21 +694,21 @@ impl RuntimeState {
             && !self.workspaces.contains_key(id)
         {
             return Err(Drift {
-                reason: format!("workspace {id} 不存在"),
+                reason: Message::DriftWorkspaceNotFound { id: id.to_string() }.text(),
             });
         }
         if let Some(id) = &change.tab_id
             && !self.tabs.contains_key(id)
         {
             return Err(Drift {
-                reason: format!("tab {id} 不存在"),
+                reason: Message::DriftTabNotFound { id: id.to_string() }.text(),
             });
         }
         if let Some(id) = &change.pane_id
             && !self.panes.contains_key(id)
         {
             return Err(Drift {
-                reason: format!("pane {id} 不存在"),
+                reason: Message::DriftPaneNotFound { id: id.to_string() }.text(),
             });
         }
 
@@ -751,7 +781,7 @@ impl RuntimeStore {
     /// `Err(Drift)`，不 panic、不隱式登記。
     pub fn replace(&mut self, id: &RuntimeId, snapshot: RuntimeSnapshot) -> Result<(), Drift> {
         let state = self.states.get_mut(id).ok_or_else(|| Drift {
-            reason: format!("runtime {id} 未登記"),
+            reason: Message::DriftRuntimeNotRegistered { id: id.to_string() }.text(),
         })?;
         state.replace(snapshot);
         Ok(())
@@ -770,7 +800,7 @@ impl RuntimeStore {
         now: SystemTime,
     ) -> Result<(), Drift> {
         let state = self.states.get_mut(id).ok_or_else(|| Drift {
-            reason: format!("runtime {id} 未登記"),
+            reason: Message::DriftRuntimeNotRegistered { id: id.to_string() }.text(),
         })?;
         let description = describe_event(&event);
         let result = state.apply(event, now);
@@ -819,7 +849,7 @@ impl RuntimeStore {
     /// 登記，行為與 `replace`／`apply` 一致。
     pub fn set_connection(&mut self, id: &RuntimeId, state: ConnectionState) -> Result<(), Drift> {
         let runtime_state = self.states.get_mut(id).ok_or_else(|| Drift {
-            reason: format!("runtime {id} 未登記"),
+            reason: Message::DriftRuntimeNotRegistered { id: id.to_string() }.text(),
         })?;
         runtime_state.connection = state;
         Ok(())

@@ -85,7 +85,7 @@ async function main() {
     log(`preview up (pid ${preview.pid})`);
     udd = fs.mkdtempSync(path.join(os.tmpdir(), 'cockpit-chrome-'));
     chrome = spawnTracked(CHROME, [
-      '--headless=new', '--disable-gpu', '--no-first-run',
+      '--headless=new', '--lang=zh-TW', '--disable-gpu', '--no-first-run',
       `--remote-debugging-port=${PORT}`, '--remote-allow-origins=*',
       `--user-data-dir=${udd}`, '--window-size=1280,900', 'http://127.0.0.1:7770/',
     ], 'chrome');

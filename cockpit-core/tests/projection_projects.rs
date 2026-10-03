@@ -165,6 +165,7 @@ fn scenario_c_binding_json_fields() {
     assert_eq!(p["name"], json!("Project P"));
     assert_eq!(p["stages"], json!(["Design", "Implement", "Review"]));
     assert_eq!(p["warnings"], json!([]));
+    assert_eq!(p["warning_msgs"], json!([]));
 
     let be = p["workstreams"]
         .as_array()
@@ -356,9 +357,14 @@ fn binding_variants_and_domain_fields_serialize() {
             pane_id: pane_id("w1:p1"),
         },
     );
-    domain
-        .warnings
-        .insert(pid.clone(), vec!["task B 的 stage 已不存在".to_string()]);
+    domain.warnings.insert(
+        pid.clone(),
+        vec![
+            "task B 的 stage 已不存在".to_string(),
+            "task t1 的 stage「Old」已不在 pipeline 的 stages 中，已退回起始 stage「Spec」"
+                .to_string(),
+        ],
+    );
     domain.progress.get_mut(&pid).expect("有 p").insert(
         TaskId::new("A"),
         TaskProgress {
@@ -369,7 +375,21 @@ fn binding_variants_and_domain_fields_serialize() {
 
     let value = serde_json::to_value(project(&store, &domain, 1, epoch_secs(0))).expect("序列化");
     let p = &value["projects"][0];
-    assert_eq!(p["warnings"], json!(["task B 的 stage 已不存在"]));
+    assert_eq!(
+        p["warnings"],
+        json!([
+            "task B 的 stage 已不存在",
+            "task t1 的 stage「Old」已不在 pipeline 的 stages 中，已退回起始 stage「Spec」"
+        ])
+    );
+    // ui-language task 3.2：`warning_msgs` 與 `warnings` 等長、同順序；無法歸類者為 raw。
+    assert_eq!(
+        p["warning_msgs"],
+        json!([
+            {"code": "raw", "params": {"text": "task B 的 stage 已不存在"}},
+            {"code": "task_stage_reset", "params": {"task": "t1", "stage": "Old", "start": "Spec"}}
+        ])
+    );
     assert_eq!(
         p["workstreams"][0]["binding"],
         json!({

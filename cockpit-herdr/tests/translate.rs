@@ -521,6 +521,14 @@ fn missing_payload_field_is_drift_with_event_name() {
                 reason.contains("pane_created"),
                 "reason 應含事件名稱，得到：{reason}"
             );
+            // 由 Message 目錄組出：classify 還原成 event_payload_unparsable，event 原樣、detail 是 serde 原文。
+            match cockpit_core::Message::classify(&reason) {
+                cockpit_core::Message::EventPayloadUnparsable { event, detail } => {
+                    assert_eq!(event, "pane_created");
+                    assert!(detail.contains("missing field"), "detail：{detail}");
+                }
+                other => panic!("應歸類為 EventPayloadUnparsable，得到 {other:?}"),
+            }
         }
         other => panic!("expected Drift, got {other:?}"),
     }

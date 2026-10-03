@@ -124,7 +124,7 @@ async function startChrome(cdpPort, url, label) {
   const chrome = spawn(
     CHROME,
     [
-      '--headless=new',
+      '--headless=new', '--lang=zh-TW',
       '--disable-gpu',
       '--no-first-run',
       `--remote-debugging-port=${cdpPort}`,
@@ -398,6 +398,7 @@ const HARNESS_HTML = `<!doctype html>
 </head>
 <body>
 <div id="app"></div>
+<script src="/app/i18n.js"></script>
 <script src="/app/render.js"></script>
 <script src="/app/actions.js"></script>
 </body></html>`;
@@ -448,6 +449,7 @@ async function partHarness() {
     const files = {
       '/': ['text/html', HARNESS_HTML],
       '/app/style.css': ['text/css', null],
+      '/app/i18n.js': ['text/javascript', null],
       '/app/render.js': ['text/javascript', null],
       '/app/actions.js': ['text/javascript', null],
     };

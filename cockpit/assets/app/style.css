@@ -16,6 +16,13 @@
    `docs/research/2026-09-23/visual-check.js` 新增的靜態段。後續換皮 task（2.3、3.1–3.4、
    4.1、4.2）只改結構（符號、色條、外框、圓角、間距），不得再引入新的色值或字級。 */
 
+/* ui-language：英文介面在 i18n.js 套用翻譯之前，先藏起帶 data-i18n 的靜態節點（visibility 不改版面，不會跳動），
+   免得先閃出繁中後備文字；i18n.js 在 DOMContentLoaded 套用後移除 class，另有 1.5 秒計時器保險。繁中不加這個
+   class。 */
+html.i18n-pending [data-i18n] {
+  visibility: hidden;
+}
+
 :root {
   /* design D4：畫面唯一的 10 個色彩 token，值取自 docs/direction-01-visual-design.md 色彩表
      （2026-09-23 對比實算見 design.md D4）。畫面上其他顏色一律引用這 10 個、或用 color-mix
@@ -419,6 +426,40 @@ body {
 .notify-bell:hover {
   color: var(--text);
   border-color: var(--text);
+}
+
+/* 語言切換按鈕（spec ui-language「語言切換按鈕」；design D3）：與鈴鐺同一套外觀（透明底、1px --text-dim
+   框、4px 圓角、hover 轉 --text、焦點外框用全域 :focus-visible 的 2px --accent），只是放文字（EN／中文）。
+   高度與鈴鐺相同＝18px：--fs-meta 12px 的文字、行高固定 14px、上下內距 1px、框 1px；不超過頂列行高，
+   不改變 --shell-topbar-h。align-self: center 的理由同 .notify-bell。 */
+.lang-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  align-self: center;
+  padding: 1px 6px;
+  border: 1px solid var(--text-dim);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: var(--fs-meta);
+  line-height: 14px;
+  cursor: pointer;
+}
+
+.lang-toggle:hover {
+  color: var(--text);
+  border-color: var(--text);
+}
+
+/* 儲存空間不可用時停用（title 說明原因）：比照 .action-button:disabled，用 color-mix 推導更淡的版本，
+   停用時 hover 也維持淡色。 */
+.lang-toggle:disabled {
+  cursor: default;
+  color: color-mix(in srgb, var(--text-dim) 45%, transparent);
+  border-color: color-mix(in srgb, var(--text-dim) 45%, transparent);
 }
 
 /* 面板開著時的按下狀態（修正波，3.5 採納項；狀態由 aria-expanded 表達）：沿用 `.action-button[aria-pressed="true"]`

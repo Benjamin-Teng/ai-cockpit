@@ -5,8 +5,8 @@ mod common;
 use std::time::{Duration, SystemTime};
 
 use cockpit_core::{
-    AgentStatus, ConnectionState, DomainState, Focused, ProjectedConnection, RuntimeEvent,
-    RuntimeStore, project,
+    AgentStatus, ConnectionState, DomainState, Focused, MessageCode, ProjectedConnection,
+    RuntimeEvent, RuntimeStore, project,
 };
 use serde_json::json;
 
@@ -86,7 +86,8 @@ fn nested_projection_matches_design_json_shape() {
                     "server_version": "0.9.0-preview.1",
                     "protocol": 22,
                     "last_snapshot_at": "1970-01-01T00:33:20Z",
-                    "protocol_warning": null
+                    "protocol_warning": null,
+                    "protocol_warning_msg": null
                 },
                 "focused": {
                     "workspace_id": "wJ",
@@ -156,6 +157,10 @@ fn disconnected_connection_carries_reason_and_retry() {
         projected.runtimes[0].connection,
         ProjectedConnection::Disconnected {
             reason: "r".to_string(),
+            reason_msg: MessageCode {
+                code: "raw".to_string(),
+                params: [("text".to_string(), "r".to_string())].into(),
+            },
             retry_in_secs: 60,
         }
     );
@@ -164,9 +169,85 @@ fn disconnected_connection_carries_reason_and_retry() {
     let expected = json!({
         "state": "disconnected",
         "reason": "r",
+        "reason_msg": {"code": "raw", "params": {"text": "r"}},
         "retry_in_secs": 60
     });
     assert_eq!(actual, expected);
+}
+
+/// ui-language task 3.2：原文欄位照舊、旁邊多一個 `*_msg`；WSL 未啟動歸 `wsl_distro_not_running`。
+#[test]
+fn connection_carries_text_and_msg_side_by_side() {
+    let mut store = RuntimeStore::new();
+    let wsl = runtime_id("wsl");
+    store.register(wsl.clone(), "herdr".to_string(), "tcp://wsl".to_string());
+    store
+        .set_connection(
+            &wsl,
+            ConnectionState::Disconnected {
+                reason: "WSL 發行版 Ubuntu-24.04 未啟動".to_string(),
+                retry_in: Duration::from_secs(60),
+            },
+        )
+        .expect("set_connection 應成功");
+    let projected = project(&store, &DomainState::default(), 1, epoch_secs(0));
+    assert_eq!(
+        serde_json::to_value(&projected.runtimes[0].connection).unwrap(),
+        json!({
+            "state": "disconnected",
+            "reason": "WSL 發行版 Ubuntu-24.04 未啟動",
+            "reason_msg": {"code": "wsl_distro_not_running", "params": {"distro": "Ubuntu-24.04"}},
+            "retry_in_secs": 60
+        })
+    );
+
+    store
+        .set_connection(
+            &wsl,
+            ConnectionState::Connected {
+                since: epoch_secs(1),
+                server_version: "0.9.0".to_string(),
+                protocol: 23,
+                last_snapshot_at: epoch_secs(2),
+                protocol_warning: Some("HERDR protocol 23 不在已測範圍 20..=22".to_string()),
+            },
+        )
+        .expect("set_connection 應成功");
+    let projected = project(&store, &DomainState::default(), 2, epoch_secs(0));
+    let value = serde_json::to_value(&projected.runtimes[0].connection).unwrap();
+    assert_eq!(
+        value["protocol_warning"],
+        json!("HERDR protocol 23 不在已測範圍 20..=22")
+    );
+    assert_eq!(
+        value["protocol_warning_msg"],
+        json!({"code": "protocol_untested", "params": {"protocol": "23", "tested": "20..=22"}})
+    );
+}
+
+/// 舊 JSON（沒有 `*_msg` 欄位）仍能反序列化（缺的欄位取預設）。
+#[test]
+fn connection_without_msg_fields_still_deserializes() {
+    let old: ProjectedConnection = serde_json::from_value(json!({
+        "state": "disconnected", "reason": "r", "retry_in_secs": 3
+    }))
+    .expect("舊形狀應能反序列化");
+    match old {
+        ProjectedConnection::Disconnected { reason, .. } => assert_eq!(reason, "r"),
+        other => panic!("應為 Disconnected：{other:?}"),
+    }
+    let old: ProjectedConnection = serde_json::from_value(json!({
+        "state": "connected", "since": "a", "server_version": "v", "protocol": 22,
+        "last_snapshot_at": "b", "protocol_warning": "w"
+    }))
+    .expect("舊形狀應能反序列化");
+    match old {
+        ProjectedConnection::Connected {
+            protocol_warning_msg,
+            ..
+        } => assert_eq!(protocol_warning_msg, None),
+        other => panic!("應為 Connected：{other:?}"),
+    }
 }
 
 #[test]
@@ -444,6 +525,134 @@ fn noted_only_enters_recent_events() {
             && !json_text.contains("pane_id"),
         "沒有主體的事件（Noted）不該序列化出 id 欄位"
     );
+}
+
+/// ui-language（設計審核）：`drift` 事件的 `detail` 若是 Cockpit 自己的訊息（目錄內），投影加
+/// `detail_msg`（與 `reason_msg` 同一個 `Message::classify`）；HERDR 產生的 detail、目錄外的 drift 原因
+/// 與非 `drift` 種類的 detail（即使文字剛好等於目錄原文）都不帶這個欄位。
+#[test]
+fn drift_event_detail_msg_only_for_catalog_messages() {
+    let mut store = RuntimeStore::new();
+    let win = runtime_id("win");
+    store.register(win.clone(), "herdr".to_string(), "tcp://win".to_string());
+    store
+        .replace(
+            &win,
+            snapshot(
+                vec![workspace("wJ", 1)],
+                vec![],
+                vec![],
+                vec![],
+                Focused {
+                    workspace_id: None,
+                    tab_id: None,
+                    pane_id: None,
+                },
+            ),
+        )
+        .expect("replace 應成功");
+
+    // 非 drift 種類：detail 是使用者資料（workspace 名稱），剛好等於目錄原文也不能歸類。
+    store
+        .apply(
+            &win,
+            RuntimeEvent::WorkspaceRelabeled {
+                id: workspace_id("wJ"),
+                label: "事件流結束".to_string(),
+            },
+            epoch_secs(1),
+        )
+        .expect("WorkspaceRelabeled 應成功");
+    // drift、目錄外的原因：沒有 detail_msg。
+    store
+        .apply(
+            &win,
+            RuntimeEvent::Drift {
+                reason: "manual drift".to_string(),
+            },
+            epoch_secs(2),
+        )
+        .expect_err("Drift 一律 Err");
+    // drift、目錄內的原因：帶 detail_msg。
+    store
+        .apply(
+            &win,
+            RuntimeEvent::Drift {
+                reason: "WSL 發行版 Ubuntu-24.04 未啟動".to_string(),
+            },
+            epoch_secs(3),
+        )
+        .expect_err("Drift 一律 Err");
+
+    // 狀態庫自己產生的 drift（事件指到不存在的 workspace）：原因由 Message 目錄組出，帶 detail_msg。
+    store
+        .apply(
+            &win,
+            RuntimeEvent::WorkspaceRelabeled {
+                id: workspace_id("wX"),
+                label: "x".to_string(),
+            },
+            epoch_secs(4),
+        )
+        .expect_err("workspace 不存在應回 Drift");
+
+    let projected = project(&store, &DomainState::default(), 1, epoch_secs(10));
+    let actual: Vec<serde_json::Value> = projected
+        .recent_events
+        .iter()
+        .map(|event| serde_json::to_value(event).expect("序列化應成功"))
+        .collect();
+    assert_eq!(
+        actual,
+        vec![
+            json!({
+                "at": "1970-01-01T00:00:04Z",
+                "runtime": "win",
+                "kind": "drift",
+                "detail": "workspace wX 不存在",
+                "detail_msg": {
+                    "code": "drift_workspace_not_found",
+                    "params": { "id": "wX" }
+                }
+            }),
+            json!({
+                "at": "1970-01-01T00:00:03Z",
+                "runtime": "win",
+                "kind": "drift",
+                "detail": "WSL 發行版 Ubuntu-24.04 未啟動",
+                "detail_msg": {
+                    "code": "wsl_distro_not_running",
+                    "params": { "distro": "Ubuntu-24.04" }
+                }
+            }),
+            json!({
+                "at": "1970-01-01T00:00:02Z",
+                "runtime": "win",
+                "kind": "drift",
+                "detail": "manual drift"
+            }),
+            json!({
+                "at": "1970-01-01T00:00:01Z",
+                "runtime": "win",
+                "kind": "workspace_relabeled",
+                "workspace_id": "wJ",
+                "detail": "事件流結束"
+            }),
+        ]
+    );
+}
+
+/// 舊形狀（沒有 `detail_msg`）的事件 JSON 仍能反序列化（`#[serde(default)]`）。
+#[test]
+fn projected_event_without_detail_msg_still_deserializes() {
+    let event: cockpit_core::ProjectedEvent = serde_json::from_value(json!({
+        "at": "1970-01-01T00:00:03Z",
+        "runtime": "win",
+        "kind": "drift",
+        "detail": "WSL 發行版 Ubuntu-24.04 未啟動"
+    }))
+    .expect("缺 detail_msg 應取預設");
+    assert_eq!(event.detail_msg, None);
 }
 
 /// Fix round 1 finding 1／2：kind 集中定義、主體 id 每筆只填一個。對 workspace／tab／

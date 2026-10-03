@@ -3,6 +3,7 @@
 pub mod domain;
 pub mod driver;
 pub mod handle;
+pub mod message;
 pub mod projection;
 pub mod runtime;
 pub mod store;
@@ -15,14 +16,15 @@ pub use domain::{
 };
 pub use driver::{Policy, run};
 pub use handle::{StoreHandle, spawn_projector, spawn_projector_with_stale_sink};
+pub use message::{Message, MessageCode};
 pub use projection::{
     ProjectedBinding, ProjectedConnection, ProjectedEvent, ProjectedPane, ProjectedProject,
     ProjectedRuntime, ProjectedState, ProjectedTab, ProjectedTask, ProjectedWorkspace,
     ProjectedWorkstream, StaleOverride, project, project_with_stale,
 };
 pub use runtime::{
-    AgentRuntime, AnsiColor, OutputFormat, OutputSegment, PaneOutput, RuntimeError, RuntimeEvents,
-    SegmentStyle, UnstartedEvents,
+    AgentRuntime, AnsiColor, OutputFormat, OutputSegment, PaneOutput, READ_OUTPUT_FAILED_PREFIX,
+    RuntimeError, RuntimeEvents, SegmentStyle, UnstartedEvents,
 };
 pub use store::{Drift, RECENT_EVENTS_CAPACITY, RecentEvent, RuntimeState, RuntimeStore};
 pub use types::{

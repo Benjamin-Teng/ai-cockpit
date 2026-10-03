@@ -15,7 +15,8 @@ use crate::domain::ids::{ProjectId, TaskId, WorkstreamId};
 use crate::domain::progress::{Mark, TaskProgress};
 use crate::domain::state::DomainState;
 use crate::domain::status::{StageStatus, derive_status};
-use crate::store::{RECENT_EVENTS_CAPACITY, RuntimeState, RuntimeStore};
+use crate::message::{Message, MessageCode};
+use crate::store::{DRIFT_KIND, RECENT_EVENTS_CAPACITY, RuntimeState, RuntimeStore};
 use crate::types::agent_status::AgentStatus;
 use crate::types::connection::ConnectionState;
 use crate::types::ids::{PaneId, RuntimeId, TabId, WorkspaceId};
@@ -58,6 +59,9 @@ pub struct ProjectedProject {
     pub stages: Vec<String>,
     /// 載入狀態檔時產生的 warning；沒有就是空陣列。
     pub warnings: Vec<String>,
+    /// 與 `warnings` 等長、同順序的代碼與參數（ui-language design D4）；舊 JSON 缺這個欄位時為空陣列。
+    #[serde(default)]
+    pub warning_msgs: Vec<MessageCode>,
     /// 這個 Project 的 workstream，依設定順序。
     pub workstreams: Vec<ProjectedWorkstream>,
     /// 這個 Project 的 task，依設定順序。
@@ -195,11 +199,17 @@ pub enum ProjectedConnection {
         last_snapshot_at: String,
         /// 協定相容性警告；`None` 序列化為 `null`，不省略（design D12）。
         protocol_warning: Option<String>,
+        /// `protocol_warning` 的代碼與參數（ui-language design D4）；沒有警告為 `null`。
+        #[serde(default)]
+        protocol_warning_msg: Option<MessageCode>,
     },
     /// 已斷線。
     Disconnected {
         /// 斷線原因。
         reason: String,
+        /// `reason` 的代碼與參數（ui-language design D4）；無法歸類的原文為 `raw`。
+        #[serde(default)]
+        reason_msg: MessageCode,
         /// 距離下次重試還要等多久（秒）。
         retry_in_secs: u64,
     },
@@ -283,6 +293,12 @@ pub struct ProjectedEvent {
     pub pane_id: Option<PaneId>,
     /// 額外說明文字。
     pub detail: String,
+    /// `detail` 的代碼與參數（ui-language；與 `reason_msg` 同用 [`Message::classify`]）。只有 `drift`
+    /// 事件、且 `detail`（`Drift::reason`）是 [`Message`] 目錄內的 Cockpit 訊息時才有值；HERDR 產生的
+    /// detail（agent 狀態、exit code、label、`from <舊值>`）、目錄外的 drift 原因、以及其他種類的
+    /// detail（可能是使用者資料）一律不帶，序列化時省略，前端顯示 `detail` 原文。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub detail_msg: Option<MessageCode>,
 }
 
 /// 由狀態庫與 Domain 狀態純函數產生一份投影：不修改輸入；`version` 原樣填入；`now` 用來產生
@@ -432,11 +448,17 @@ fn project_project(
         })
         .collect();
 
+    let warnings: Vec<String> = domain.warnings.get(&def.id).cloned().unwrap_or_default();
+    let warning_msgs = warnings
+        .iter()
+        .map(|text| Message::classify(text).msg())
+        .collect();
     ProjectedProject {
         id: def.id.clone(),
         name: def.name.clone(),
         stages: def.stages.clone(),
-        warnings: domain.warnings.get(&def.id).cloned().unwrap_or_default(),
+        warnings,
+        warning_msgs,
         workstreams,
         tasks,
     }
@@ -505,6 +527,7 @@ fn project_recent_events(store: &RuntimeStore, runtime_ids: &[RuntimeId]) -> Vec
                     tab_id: recent.tab_id.clone(),
                     pane_id: recent.pane_id.clone(),
                     detail: recent.detail.clone(),
+                    detail_msg: event_detail_msg(&recent.kind, &recent.detail),
                 },
             ));
         }
@@ -513,6 +536,19 @@ fn project_recent_events(store: &RuntimeStore, runtime_ids: &[RuntimeId]) -> Vec
     merged.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     merged.truncate(RECENT_EVENTS_CAPACITY);
     merged.into_iter().map(|(_, _, event)| event).collect()
+}
+
+/// `drift` 事件的 `detail` 是 `Drift::reason`，可能是 Cockpit 自己的訊息（例如 WSL 未啟動）；只有目錄
+/// 內的才給代碼（歸 [`Message::Raw`] 的視同沒有）。其他種類的 `detail` 不碰：HERDR 的英文值、使用者
+/// 取的名稱剛好等於目錄原文時，不能被誤歸類。
+fn event_detail_msg(kind: &str, detail: &str) -> Option<MessageCode> {
+    if kind != DRIFT_KIND {
+        return None;
+    }
+    match Message::classify(detail) {
+        Message::Raw { .. } => None,
+        known => Some(known.msg()),
+    }
 }
 
 fn project_connection(connection: &ConnectionState) -> ProjectedConnection {
@@ -530,9 +566,13 @@ fn project_connection(connection: &ConnectionState) -> ProjectedConnection {
             protocol: *protocol,
             last_snapshot_at: to_rfc3339(*last_snapshot_at),
             protocol_warning: protocol_warning.clone(),
+            protocol_warning_msg: protocol_warning
+                .as_deref()
+                .map(|text| Message::classify(text).msg()),
         },
         ConnectionState::Disconnected { reason, retry_in } => ProjectedConnection::Disconnected {
             reason: reason.clone(),
+            reason_msg: Message::classify(reason).msg(),
             retry_in_secs: retry_in.as_secs(),
         },
     }

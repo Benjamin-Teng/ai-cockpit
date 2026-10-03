@@ -644,7 +644,7 @@ async function startChrome(cdpPort, url, label, windowSize = '1536,1024') {
   const chrome = spawn(
     CHROME,
     [
-      '--headless=new',
+      '--headless=new', '--lang=zh-TW',
       '--disable-gpu',
       '--no-first-run',
       `--remote-debugging-port=${cdpPort}`,
@@ -8597,6 +8597,21 @@ async function partCssInventory() {
     await cdp.waitFor("(() => { var p = document.getElementById('notify-panel'); var b = document.querySelector('#app [data-action=\"notify-settings\"]'); return !!p && !p.hidden && !!b && b.getAttribute('aria-expanded') === 'true'; })()", 3000, '[CL1] 按鈴鐺：通知設定面板開啟、鈴鐺 aria-expanded=true');
     await collect('通知設定面板開啟');
     await cdp.eval('window.cockpitNotify.togglePanel(); true');
+
+    // ui-language task 1.2：`.lang-toggle:disabled`（localStorage 不可寫時語言切換按鈕停用）只在儲存不可用時有元素。
+    // 真實的停用流程（setItem 丟例外→canPersist=false→按鈕停用、有 title、點了不動作）由
+    // docs/research/2026-10-03/i18n-check.js ④ 驗；這裡只需要「規則對得到元素」，直接把當下的按鈕設為 disabled 取樣
+    // （下一次整頁重畫會用真實狀態重建按鈕，不留痕跡）。
+    await cdp.eval("document.querySelector('#app .lang-toggle').disabled = true; true");
+    await collect('語言切換按鈕停用（localStorage 不可用）');
+    await cdp.eval("document.querySelector('#app .lang-toggle').disabled = false; true");
+
+    // ui-language（階段審查 1 M1）：`html.i18n-pending [data-i18n]`（英文介面在 i18n.js 套用翻譯前先藏起靜態節點）只在
+    // 載入到 DOMContentLoaded 之間有元素，載入完成後 class 已被移除。真實流程由 i18n-check.js ③ 驗；這裡只需要「規則對得到
+    // 元素」，暫時在 <html> 加上 class 取樣、取樣後立刻拿掉。
+    await cdp.eval("document.documentElement.classList.add('i18n-pending'); true");
+    await collect('英文介面載入中（html.i18n-pending）');
+    await cdp.eval("document.documentElement.classList.remove('i18n-pending'); true");
 
     // file-review task 4.2：左欄「檔案」分頁的檔案樹（spec file-review「左欄檔案樹」新增的畫面狀態）——
     // 樹列、展開的資料夾、資料夾讀取失敗（暫存副本裡先建 cl1-gone/，樹列出後刪掉再展開 → not_found）、

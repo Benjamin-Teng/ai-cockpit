@@ -17,7 +17,10 @@ use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use cockpit_core::{AgentRuntime, PaneId, RuntimeError, RuntimeEvent, RuntimeEvents, RuntimeId};
+use cockpit_core::{
+    AgentRuntime, Message, MessageCode, PaneId, RuntimeError, RuntimeEvent, RuntimeEvents,
+    RuntimeId,
+};
 use cockpit_herdr::runtime::HerdrRuntime;
 use herdr_client::connector::{ConnectError, Connector, NdjsonStream};
 use herdr_client::testing::{FakeHerdr, FakeHerdrConfig, MethodResponse, Step, SubscribeMatcher};
@@ -598,6 +601,49 @@ async fn protocol_23_sets_warning_and_still_succeeds() {
         warning.contains("23"),
         "警告字串應含實際的 protocol 版本 23，實際: {warning}"
     );
+    // ui-language task 3.2：同一則警告歸 `protocol_untested`，原文照舊。
+    assert_eq!(warning, "HERDR protocol 23 不在已測範圍 20..=22");
+    assert_eq!(
+        Message::classify(&warning).msg(),
+        MessageCode {
+            code: "protocol_untested".to_string(),
+            params: [
+                ("protocol".to_string(), "23".to_string()),
+                ("tested".to_string(), "20..=22".to_string()),
+            ]
+            .into(),
+        }
+    );
+}
+
+/// ui-language task 3.2：`snapshot()` 失敗的原因歸 `snapshot_failed`，`detail` 是 herdr-client 原文
+/// （英文 thiserror 文字），原文欄位仍帶繁中前綴。
+#[tokio::test]
+async fn snapshot_failure_reason_is_classified_snapshot_failed() {
+    let config = FakeHerdrConfig::new().with_method_response(
+        "session.snapshot",
+        MethodResponse::RemoteError {
+            code: "internal_error".to_string(),
+            message: "boom".to_string(),
+        },
+    );
+    let fake = FakeHerdr::start(config).await.expect("啟動假 HERDR 失敗");
+    let runtime = runtime(&fake);
+
+    let err = tokio::time::timeout(TIMEOUT, runtime.snapshot())
+        .await
+        .expect("取 snapshot 不應逾時")
+        .expect_err("session.snapshot 回錯誤時 snapshot() 應失敗");
+    let reason = err.to_string();
+    assert!(reason.starts_with("snapshot 失敗："), "原文前綴：{reason}");
+    let msg = Message::classify(&reason).msg();
+    assert_eq!(msg.code, "snapshot_failed");
+    assert_eq!(
+        format!("snapshot 失敗：{}", msg.params["detail"]),
+        reason,
+        "detail 加前綴應還原原文"
+    );
+    assert!(msg.params["detail"].contains("boom"), "{msg:?}");
 }
 
 /// spec「已測版本無警告」：`protocol` 為 22 → 沒有警告。

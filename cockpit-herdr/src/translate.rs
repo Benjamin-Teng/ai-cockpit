@@ -176,7 +176,11 @@ macro_rules! parse_or_drift {
         match serde_json::from_value::<$ty>($data.clone()) {
             Ok($p) => Some($body),
             Err(err) => Some(RuntimeEvent::Drift {
-                reason: format!("{} payload 無法解析：{}", $event_name, err),
+                reason: cockpit_core::Message::EventPayloadUnparsable {
+                    event: $event_name.to_string(),
+                    detail: err.to_string(),
+                }
+                .text(),
             }),
         }
     };

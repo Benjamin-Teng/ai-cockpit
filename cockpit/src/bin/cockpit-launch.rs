@@ -6,6 +6,9 @@
 //! 以 `--app=<網址>` 開瀏覽器後結束。任何失敗都以錯誤訊息框結束；環境變數
 //! `COCKPIT_LAUNCH_DIALOG_FILE` 有值時不顯示訊息框，改把訊息附加寫入該檔（自動驗收用，design D5）。
 //!
+//! 訊息語言依 Windows 使用者介面語言（ui-language design D6）；環境變數 `COCKPIT_LAUNCH_LANG=en|zh`
+//! 可強制指定，僅供自動驗收（無法在測試中切換系統語言）。
+//!
 //! 可測的邏輯都在 [`cockpit::launch`]，這裡只做 I/O 串接。
 
 #![windows_subsystem = "windows"]
@@ -21,7 +24,8 @@ fn main() -> ExitCode {
 
 #[cfg(windows)]
 fn main() -> ExitCode {
-    match windows_launch::run() {
+    let lang = windows_launch::ui_lang();
+    match windows_launch::run(lang) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             windows_launch::show_error(&message);
@@ -39,7 +43,7 @@ mod windows_launch {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
-    use cockpit::launch::{self, LaunchPlan, ProbeOutcome};
+    use cockpit::launch::{self, LaunchLang, LaunchPlan, LaunchText, ProbeOutcome, text};
 
     /// Windows `CREATE_NO_WINDOW`：後端不建立主控台視窗；不與 `DETACHED_PROCESS` 併用，孫程序
     /// （`wsl.exe`、git）因而繼承這個隱藏主控台、不閃窗（design D3；同 `cockpit-git/src/runner.rs`）。
@@ -50,41 +54,66 @@ mod windows_launch {
     const READY_TIMEOUT: Duration = Duration::from_secs(15);
     /// 測試入口：有值時訊息改寫入此檔（design D5）。
     const DIALOG_FILE_ENV: &str = "COCKPIT_LAUNCH_DIALOG_FILE";
-    /// 訊息框標題。
+    /// 訊息框標題（不隨語言變，spec「桌面啟動器訊息框語言」）。
     const DIALOG_TITLE: &str = "AI Agent Cockpit";
+    /// 測試入口：`en`／`zh` 強制指定訊息語言（僅供自動驗收；不設時依系統語言）。
+    const LANG_ENV: &str = "COCKPIT_LAUNCH_LANG";
 
-    /// 啟動器本體；`Err` 是要顯示在訊息框的完整訊息。
-    pub fn run() -> Result<(), String> {
+    /// 訊息語言：`COCKPIT_LAUNCH_LANG` 有合法值時用它，否則依 Windows 使用者介面語言。
+    pub fn ui_lang() -> LaunchLang {
+        std::env::var(LANG_ENV)
+            .ok()
+            .and_then(|value| launch::parse_lang_override(&value))
+            .unwrap_or_else(launch::system_launch_lang)
+    }
+
+    /// 啟動器本體；`Err` 是要顯示在訊息框的完整訊息（`lang` 語言）。
+    pub fn run(lang: LaunchLang) -> Result<(), String> {
         stop_inheriting_std_handles();
 
         // 第 1 步：引數與設定。
         let argv = std::env::args_os()
             .skip(1)
             .map(|arg| {
-                arg.into_string()
-                    .map_err(|arg| format!("命令列錯誤：參數含有無法解讀的字元：{arg:?}"))
+                arg.into_string().map_err(|arg| {
+                    text(
+                        lang,
+                        LaunchText::ArgNotUnicode {
+                            arg: &format!("{arg:?}"),
+                        },
+                    )
+                })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let args = launch::parse_launch_args(&argv)?;
-        let cwd = std::env::current_dir().map_err(|error| format!("取得工作目錄失敗：{error}"))?;
+        let args = launch::parse_launch_args(&argv, lang)?;
+        let cwd = std::env::current_dir().map_err(|error| {
+            text(
+                lang,
+                LaunchText::WorkingDirFailed {
+                    detail: &error.to_string(),
+                },
+            )
+        })?;
         let lookup_env = |key: &str| std::env::var(key).ok();
-        let plan = launch::plan(&args, &cwd, &lookup_env)?;
+        let plan = launch::plan(&args, &cwd, &lookup_env, lang)?;
 
         // 第 2 步：瀏覽器（找不到時尚未啟動任何後端）。
         let browser = launch::select_browser(&lookup_env, &|path: &Path| path.is_file())
-            .ok_or_else(|| no_browser_message(&lookup_env))?;
+            .ok_or_else(|| no_browser_message(&lookup_env, lang))?;
 
         // 第 3、4 步：偵測，必要時背景啟動並等待就緒。
-        match launch::probe(plan.listen) {
+        match launch::probe(plan.listen, lang) {
             ProbeOutcome::Cockpit => {}
             ProbeOutcome::NotCockpit(reason) => {
-                return Err(format!(
-                    "{} 已被其他程式占用（{reason}），無法啟動 Cockpit。\n\n\
-                     請關閉占用該埠的程式，或在設定檔的 server.listen 改用其他埠。",
-                    plan.listen
+                return Err(text(
+                    lang,
+                    LaunchText::PortOccupied {
+                        listen: &plan.listen.to_string(),
+                        reason: &reason,
+                    },
                 ));
             }
-            ProbeOutcome::Unreachable(_) => start_backend_and_wait(&plan)?,
+            ProbeOutcome::Unreachable(_) => start_backend_and_wait(&plan, lang)?,
         }
 
         // 第 5 步：開視窗，不等待瀏覽器結束。
@@ -94,7 +123,15 @@ mod windows_launch {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|error| format!("無法啟動瀏覽器 {}：{error}", browser.display()))?;
+            .map_err(|error| {
+                text(
+                    lang,
+                    LaunchText::BrowserSpawnFailed {
+                        browser: &browser.display().to_string(),
+                        detail: &error.to_string(),
+                    },
+                )
+            })?;
         Ok(())
     }
 
@@ -130,15 +167,27 @@ mod windows_launch {
     }
 
     /// 第 4 步：背景啟動同目錄的 `cockpit`，每 200 毫秒偵測一次、最多 15 秒。
-    fn start_backend_and_wait(plan: &LaunchPlan) -> Result<(), String> {
-        let launcher =
-            std::env::current_exe().map_err(|error| format!("取得啟動器路徑失敗：{error}"))?;
+    fn start_backend_and_wait(plan: &LaunchPlan, lang: LaunchLang) -> Result<(), String> {
+        let launcher = std::env::current_exe().map_err(|error| {
+            text(
+                lang,
+                LaunchText::LauncherPathFailed {
+                    detail: &error.to_string(),
+                },
+            )
+        })?;
         let exe = launch::backend_exe(&launcher);
-        let log = File::create(&plan.log_path)
-            .map_err(|error| format!("無法建立記錄檔 {}：{error}", plan.log_path.display()))?;
-        let log_err = log
-            .try_clone()
-            .map_err(|error| format!("無法建立記錄檔 {}：{error}", plan.log_path.display()))?;
+        let log_create_failed = |error: std::io::Error| {
+            text(
+                lang,
+                LaunchText::LogCreateFailed {
+                    path: &plan.log_path.display().to_string(),
+                    detail: &error.to_string(),
+                },
+            )
+        };
+        let log = File::create(&plan.log_path).map_err(log_create_failed)?;
+        let log_err = log.try_clone().map_err(log_create_failed)?;
         let mut child = Command::new(&exe)
             .args(&plan.backend_args)
             .stdin(Stdio::null())
@@ -146,7 +195,15 @@ mod windows_launch {
             .stderr(log_err)
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
-            .map_err(|error| format!("無法啟動 Cockpit 後端 {}：{error}", exe.display()))?;
+            .map_err(|error| {
+                text(
+                    lang,
+                    LaunchText::BackendSpawnFailed {
+                        exe: &exe.display().to_string(),
+                        detail: &error.to_string(),
+                    },
+                )
+            })?;
 
         let deadline = Instant::now() + READY_TIMEOUT;
         loop {
@@ -154,23 +211,29 @@ mod windows_launch {
                 Ok(Some(status)) => {
                     // 提早結束：先再偵測一次——同時點兩次捷徑時，另一個啟動器的後端可能已就緒，
                     // 這個後端只是綁定失敗（spec「同時點兩次捷徑」）。
-                    if launch::probe(plan.listen) == ProbeOutcome::Cockpit {
+                    if launch::probe(plan.listen, lang) == ProbeOutcome::Cockpit {
                         return Ok(());
                     }
-                    return Err(failure(
-                        plan,
-                        &format!("Cockpit 後端在就緒前結束（{status}）。"),
-                    ));
+                    let reason = text(
+                        lang,
+                        LaunchText::BackendExitedEarly {
+                            status: &status.to_string(),
+                        },
+                    );
+                    return Err(failure(plan, &reason, lang));
                 }
                 Ok(None) => {}
                 Err(error) => {
-                    return Err(failure(
-                        plan,
-                        &format!("無法取得 Cockpit 後端的狀態：{error}"),
-                    ));
+                    let reason = text(
+                        lang,
+                        LaunchText::BackendStatusFailed {
+                            detail: &error.to_string(),
+                        },
+                    );
+                    return Err(failure(plan, &reason, lang));
                 }
             }
-            if launch::probe(plan.listen) == ProbeOutcome::Cockpit {
+            if launch::probe(plan.listen, lang) == ProbeOutcome::Cockpit {
                 return Ok(());
             }
             if Instant::now() >= deadline {
@@ -178,38 +241,38 @@ mod windows_launch {
                 // （它若卡在開始監聽之前，閒置計時不會啟動，就不會自行結束）。
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(failure(
-                    plan,
-                    &format!(
-                        "Cockpit 後端在 {} 秒內沒有就緒（{}）。",
-                        READY_TIMEOUT.as_secs(),
-                        plan.url
-                    ),
-                ));
+                let reason = text(
+                    lang,
+                    LaunchText::BackendNotReady {
+                        secs: READY_TIMEOUT.as_secs(),
+                        url: &plan.url,
+                    },
+                );
+                return Err(failure(plan, &reason, lang));
             }
             std::thread::sleep(READY_POLL_INTERVAL);
         }
     }
 
     /// 後端失敗的訊息：原因、`cockpit.log` 完整路徑與最後 20 行。
-    fn failure(plan: &LaunchPlan, reason: &str) -> String {
+    fn failure(plan: &LaunchPlan, reason: &str, lang: LaunchLang) -> String {
         let text = std::fs::read(&plan.log_path)
             .ok()
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
-        launch::backend_failure_message(reason, &plan.log_path, text.as_deref())
+        launch::backend_failure_message(reason, &plan.log_path, text.as_deref(), lang)
     }
 
     /// 找不到瀏覽器的訊息，列出找過的位置。
-    fn no_browser_message(lookup_env: &dyn Fn(&str) -> Option<String>) -> String {
+    fn no_browser_message(lookup_env: &dyn Fn(&str) -> Option<String>, lang: LaunchLang) -> String {
         let searched: Vec<String> = launch::browser_candidates(lookup_env)
             .iter()
             .map(|path| format!("  {}", path.display()))
             .collect();
-        format!(
-            "找不到可用的瀏覽器（Google Chrome 或 Microsoft Edge）。\n\n\
-             請安裝其中之一，或以環境變數 COCKPIT_BROWSER 指定瀏覽器執行檔的完整路徑。\n\n\
-             找過的位置：\n{}",
-            searched.join("\n")
+        text(
+            lang,
+            LaunchText::NoBrowser {
+                searched: &searched.join("\n"),
+            },
         )
     }
 

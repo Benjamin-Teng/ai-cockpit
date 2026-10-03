@@ -112,6 +112,7 @@ pub struct RuntimeSnapshot {
     pub agents: Vec<Agent>,
     /// 快照當下的焦點位置。
     pub focused: Focused,
-    /// 協定相容性警告（例如 server 版本比預期新／舊）；`None` 表示沒有警告。
+    /// 協定相容性警告（例如 server 版本比預期新／舊）；`None` 表示沒有警告。字串必須由
+    /// [`crate::Message`] 的 `text()` 產生（見 `RuntimeError` 的說明）。
     pub protocol_warning: Option<String>,
 }

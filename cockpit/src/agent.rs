@@ -30,7 +30,8 @@ use serde_json::{Value, json};
 
 use crate::files::PathMapping;
 use crate::http::{
-    AppState, coded_error_response, error_response, with_no_store_headers, write_error_response,
+    AppState, coded_error_response, coded_error_response_with_params, invalid_op_response,
+    with_no_store_headers, write_error_response,
 };
 use crate::progress_service::{BindingBasis, WriteError};
 
@@ -218,10 +219,7 @@ pub(crate) async fn agent_op(
     Path((project, task, op)): Path<(String, String, String)>,
 ) -> Response {
     if op != "start" && op != "advance" {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            &format!("agent 端點只提供 start、advance：{op}"),
-        );
+        return invalid_op_response(&format!("agent 端點只提供 start、advance：{op}"), &op);
     }
     let Some(pane_id) = pane_id_header(&headers) else {
         return missing_pane_id();
@@ -245,13 +243,14 @@ pub(crate) async fn agent_op(
         projected_task.workstream.as_str().to_string(),
     );
     let Some(basis) = bound.get(&key) else {
-        return coded_error_response(
+        return coded_error_response_with_params(
             StatusCode::FORBIDDEN,
             "pane_not_bound",
             &format!(
                 "task {} 所屬的 workstream 沒有綁定到 pane {pane_id}",
                 task_id.as_str()
             ),
+            [("task", task_id.as_str()), ("pane", pane_id.as_str())],
         );
     };
 
@@ -329,6 +328,7 @@ mod tests {
             protocol: 1,
             last_snapshot_at: "1970-01-01T00:00:00Z".to_string(),
             protocol_warning: None,
+            protocol_warning_msg: None,
         }
     }
 
@@ -365,6 +365,7 @@ mod tests {
                 name: "p".to_string(),
                 stages: vec!["Plan".to_string()],
                 warnings: Vec::new(),
+                warning_msgs: Vec::new(),
                 workstreams,
                 tasks: Vec::new(),
             }],

@@ -66,6 +66,9 @@
 (function () {
   "use strict";
 
+  var t = window.cockpitI18n.t;
+  var tn = window.cockpitI18n.tn;
+
   var reviewRoot = document.getElementById("review");
   var reviewTablist = reviewRoot ? reviewRoot.querySelector('[role="tablist"]') : null;
   var tabSeq = 0;
@@ -176,45 +179,50 @@
 
   // 根目錄查詢失敗的文案（同 files.js 的 ERROR_TEXT：依錯誤本體的 `code` 查表，不顯示 HTTP 狀態碼或
   // API 路徑）。
+  // 表裡存字典鍵（ui-language：文字隨介面語言，見 i18n.js）；與 files.js 說法完全相同的代碼直接用 `files.error.*`，
+  // 說法不同的（根目錄、git 專屬）用 `git.error.*`。
   var ROOT_ERROR_TEXT = {
-    forbidden_source: "請求來源不被接受，請從本機的 Cockpit 頁面開啟",
-    method_not_allowed: "這個操作不被接受",
-    bad_request: "名稱含有無法處理的字元，無法讀取",
-    runtime_unknown: "設定中沒有這個 runtime",
-    pane_unknown: "這個 pane 已不在目前的畫面中",
-    no_root: "這個 pane 沒有可瀏覽的資料夾（沒有回報工作目錄，或該目錄不存在）",
-    root_unavailable: "這個根目錄目前無法瀏覽（不在允許的根目錄中）",
-    network: "無法連線到 Cockpit 服務",
-    timeout: "讀取逾時（超過 10 秒沒有回應）",
+    forbidden_source: "files.error.forbiddenSource",
+    method_not_allowed: "files.error.methodNotAllowed",
+    bad_request: "files.error.badRequest",
+    runtime_unknown: "files.error.runtimeUnknown",
+    pane_unknown: "files.error.paneUnknown",
+    no_root: "files.error.noRoot",
+    root_unavailable: "git.error.rootUnavailable",
+    network: "files.error.network",
+    timeout: "files.error.timeout",
   };
+  var UNKNOWN_ERROR_KEY = "files.error.unknown";
 
   function errorText(code) {
-    return Object.prototype.hasOwnProperty.call(ROOT_ERROR_TEXT, code) ? ROOT_ERROR_TEXT[code] : "讀取失敗（無法辨識的回應）";
+    var key = Object.prototype.hasOwnProperty.call(ROOT_ERROR_TEXT, code) ? ROOT_ERROR_TEXT[code] : UNKNOWN_ERROR_KEY;
+    return t(key, { seconds: REQUEST_TIMEOUT_MS / 1000 });
   }
 
   // git 狀態端點失敗的文案（spec git-review「git 端點的共同規則」的代碼；文字對照
   // `cockpit::git::GitApiError::reason()`，但這裡是獨立維護的前端文案，不是同一份字串）。
   var GIT_ERROR_TEXT = {
-    not_git: "這個根目錄不是 git repo",
-    bad_request: "請求格式不正確",
-    git_unavailable: "找不到可用的 git",
-    git_untrusted: "git 拒絕讀取這個 repo（擁有者不符）",
-    git_timeout: "執行逾時",
-    git_failed: "執行 git 時發生錯誤",
-    network: "無法連線到 Cockpit 服務",
-    timeout: "讀取逾時（超過 10 秒沒有回應）",
+    not_git: "git.error.notGit",
+    bad_request: "git.error.badRequest",
+    git_unavailable: "git.error.gitUnavailable",
+    git_untrusted: "git.error.gitUntrusted",
+    git_timeout: "git.error.gitTimeout",
+    git_failed: "git.error.gitFailed",
+    network: "files.error.network",
+    timeout: "files.error.timeout",
     // git-review task 4.3：diff 端點另外會用到的錯誤代碼（spec「git 端點的共同規則」）。
-    rev_unknown: "找不到這個版本",
-    ref_unknown: "找不到這個分支",
-    not_found_in_rev: "檔案在這個版本不存在",
-    no_merge_base: "兩者沒有共同祖先",
-    too_large: "差異過大，請在 VS Code 查看",
+    rev_unknown: "git.error.revUnknown",
+    ref_unknown: "git.error.refUnknown",
+    not_found_in_rev: "git.error.notFoundInRev",
+    no_merge_base: "git.error.noMergeBase",
+    too_large: "git.error.tooLarge",
     // 目視驗收缺陷 V1、Ruling R11：對未合併（衝突中）的檔案請求 INDEX→WORKTREE 時的錯誤代碼。
-    unmerged_path: "這個檔案還在合併衝突中，暫存區沒有單一版本可比較",
+    unmerged_path: "git.error.unmergedPath",
   };
 
   function gitErrorText(code) {
-    return Object.prototype.hasOwnProperty.call(GIT_ERROR_TEXT, code) ? GIT_ERROR_TEXT[code] : "讀取失敗（無法辨識的回應）";
+    var key = Object.prototype.hasOwnProperty.call(GIT_ERROR_TEXT, code) ? GIT_ERROR_TEXT[code] : UNKNOWN_ERROR_KEY;
+    return t(key, { seconds: REQUEST_TIMEOUT_MS / 1000 });
   }
 
   // ---------------------------------------------------------------------------
@@ -267,8 +275,8 @@
     close.type = "button";
     close.className = "review-tab-close";
     close.tabIndex = -1;
-    close.setAttribute("aria-label", "關閉 " + label);
-    close.title = "關閉";
+    close.setAttribute("aria-label", t("git.tab.closeNamed", { label: label }));
+    close.title = t("git.tab.close");
     close.textContent = "×";
 
     wrap.appendChild(tab);
@@ -310,13 +318,13 @@
   // 「短 hash ↔ 短 hash」——本 task 只會遇到前兩種，commit 相關的顯示留給 task 4.5 的比較功能擴充）。
   function sideLabel(version) {
     if (version === "WORKTREE") {
-      return "工作區";
+      return t("git.side.worktree");
     }
     if (version === "INDEX") {
-      return "已暫存";
+      return t("git.side.index");
     }
     if (version === "EMPTY") {
-      return "（空）";
+      return t("git.side.empty");
     }
     return shortHash(version);
   }
@@ -335,16 +343,16 @@
   // 應該顯示正常的左右並排格線。
   function diffSpecialText(body) {
     if (body.binary) {
-      return "二進位檔，不顯示差異";
+      return t("git.diff.binary");
     }
     if (body.mode_only) {
-      return "只有權限改變";
+      return t("git.diff.modeOnly");
     }
     if (body.submodule) {
-      return "子模組，不顯示差異";
+      return t("git.diff.submodule");
     }
     if (body.rows.length === 0) {
-      return "兩側內容相同";
+      return t("git.diff.identical");
     }
     return null;
   }
@@ -380,7 +388,7 @@
     if (row.kind === "gap") {
       var gapEl = document.createElement("div");
       gapEl.className = "diff-gap";
-      gapEl.textContent = "省略 " + row.lines + " 行";
+      gapEl.textContent = tn("git.diff.gap", row.lines);
       frag.appendChild(gapEl);
       return;
     }
@@ -474,7 +482,7 @@
       text = gitErrorText(tab.diffCode);
       tone = "warn";
     } else if (tab.diffBody === null) {
-      text = "正在讀取差異…";
+      text = t("git.diff.loading");
     } else {
       text = diffSpecialText(tab.diffBody);
     }
@@ -665,8 +673,11 @@
     if (shell === null) {
       return null;
     }
-    var titleParts = [fields.oldPath ? fields.oldPath + " → " + fields.path : fields.path, sideLabel(fields.from) + " → " + sideLabel(fields.to), "根目錄：" + fields.rootName];
-    shell.els.tab.title = titleParts.join("\n");
+    shell.els.tab.title = t("git.diff.tabTitle", {
+      path: fields.oldPath ? fields.oldPath + " → " + fields.path : fields.path,
+      sides: sideLabel(fields.from) + " → " + sideLabel(fields.to),
+      root: fields.rootName,
+    });
     setAttr(shell.els.tab, "data-diff-path", fields.path);
     setAttr(shell.els.tab, "data-diff-from", fields.from);
     setAttr(shell.els.tab, "data-diff-to", fields.to);
@@ -683,24 +694,24 @@
     versionsEl.className = "diff-toolbar-versions";
     var staleLabel = document.createElement("span");
     staleLabel.className = "file-stale-label";
-    staleLabel.textContent = "過期";
+    staleLabel.textContent = t("git.stale");
     staleLabel.hidden = true;
     var openFileBtn = document.createElement("button");
     openFileBtn.type = "button";
     openFileBtn.className = "action-button";
-    openFileBtn.textContent = "開啟檔案";
+    openFileBtn.textContent = t("git.diff.openFile");
     var vscodeLink = document.createElement("a");
     vscodeLink.className = "action-button file-vscode";
-    vscodeLink.textContent = "在 VS Code 開啟";
+    vscodeLink.textContent = t("git.diff.vscode");
     vscodeLink.hidden = true;
     var leftVersionBtn = document.createElement("button");
     leftVersionBtn.type = "button";
     leftVersionBtn.className = "action-button";
-    leftVersionBtn.textContent = "看左側版本";
+    leftVersionBtn.textContent = t("git.diff.leftVersion");
     var rightVersionBtn = document.createElement("button");
     rightVersionBtn.type = "button";
     rightVersionBtn.className = "action-button";
-    rightVersionBtn.textContent = "看右側版本";
+    rightVersionBtn.textContent = t("git.diff.rightVersion");
     toolbar.appendChild(pathEl);
     toolbar.appendChild(versionsEl);
     toolbar.appendChild(staleLabel);
@@ -870,8 +881,8 @@
   var GRAPH_LANE_VARS = ["--accent", "--ok", "--warn", "--bad", "--graph-lane-4", "--graph-lane-5"];
   var SVG_NS = "http://www.w3.org/2000/svg";
   var GRAPH_FILTER_GROUPS = [
-    { kind: "branch", title: "本地分支" },
-    { kind: "remote", title: "遠端分支" },
+    { kind: "branch", title: t("git.graph.filter.branches") },
+    { kind: "remote", title: t("git.graph.filter.remotes") },
     { kind: "tag", title: "tag" },
   ];
 
@@ -958,8 +969,8 @@
   function graphLogUrl(tab, offset, limit) {
     var q = "offset=" + offset + "&limit=" + limit;
     if (tab.tips !== null) {
-      tab.tips.forEach(function (t) {
-        q += "&tip=" + seg(t);
+      tab.tips.forEach(function (tip) {
+        q += "&tip=" + seg(tip);
       });
     } else if (tab.selectedRefs.length > 0) {
       tab.selectedRefs.forEach(function (r) {
@@ -1105,7 +1116,7 @@
       clearTimeout(copyFeedbackTimer.timer);
       setCopyFeedbackText(copyFeedbackTimer.tab, null);
     }
-    setCopyFeedbackText(tab, ok ? "已複製" : "無法複製");
+    setCopyFeedbackText(tab, ok ? t("git.copy.copied") : t("git.copy.failed"));
     var timer = setTimeout(function () {
       setCopyFeedbackText(tab, null);
       copyFeedbackTimer = null;
@@ -1185,8 +1196,8 @@
     btn.type = "button";
     btn.className = "action-button";
     setFocusKey(btn, "copy:" + label);
-    btn.textContent = "複製";
-    btn.setAttribute("aria-label", "複製" + label);
+    btn.textContent = t("git.detail.copy");
+    btn.setAttribute("aria-label", t("git.detail.copyAria", { label: label }));
     btn.addEventListener("click", function () {
       copyToClipboard(tab, text);
     });
@@ -1204,7 +1215,7 @@
       var span = document.createElement("span");
       span.style.fontFamily = "var(--font-mono)";
       span.style.color = "var(--text-dim)";
-      span.textContent = shortHash(oid) + "（不在已載入範圍）";
+      span.textContent = t("git.detail.parentNotLoaded", { hash: shortHash(oid) });
       return span;
     }
     var btn = document.createElement("button");
@@ -1262,7 +1273,7 @@
       viewBtn.type = "button";
       viewBtn.className = "action-button";
       setFocusKey(viewBtn, "view:" + entry.path);
-      viewBtn.textContent = "看此版本";
+      viewBtn.textContent = t("git.detail.viewVersion");
       viewBtn.addEventListener("click", function (event) {
         event.stopPropagation();
         onOpenVersion(entry);
@@ -1316,7 +1327,7 @@
     if (tab.detailStatus === "loading") {
       var loading = document.createElement("p");
       loading.className = "file-status";
-      loading.textContent = "正在讀取 commit 詳情…";
+      loading.textContent = t("git.detail.loading");
       wrap.appendChild(loading);
       return;
     }
@@ -1340,11 +1351,11 @@
     hashValue.textContent = body.oid;
     hashRow.appendChild(hashLabel);
     hashRow.appendChild(hashValue);
-    hashRow.appendChild(commitDetailCopyButton(tab, body.oid, "完整 hash"));
+    hashRow.appendChild(commitDetailCopyButton(tab, body.oid, t("git.detail.fullHash")));
     wrap.appendChild(hashRow);
 
-    wrap.appendChild(commitDetailFieldRow("作者", document.createTextNode(body.author.name + " <" + body.author.email + ">")));
-    wrap.appendChild(commitDetailFieldRow("時間", document.createTextNode(formatGraphTime(body.author.time))));
+    wrap.appendChild(commitDetailFieldRow(t("git.detail.author"), document.createTextNode(body.author.name + " <" + body.author.email + ">")));
+    wrap.appendChild(commitDetailFieldRow(t("git.detail.time"), document.createTextNode(formatGraphTime(body.author.time))));
     if (body.committer && (body.committer.name !== body.author.name || body.committer.email !== body.author.email)) {
       wrap.appendChild(commitDetailFieldRow("committer", document.createTextNode(body.committer.name + " <" + body.committer.email + ">")));
     }
@@ -1368,7 +1379,7 @@
       refsRow.className = "commit-detail-row";
       var refsLabel = document.createElement("span");
       refsLabel.className = "commit-detail-label";
-      refsLabel.textContent = "指向它的 ref";
+      refsLabel.textContent = t("git.detail.refs");
       refsRow.appendChild(refsLabel);
       pointingRefs.forEach(function (r) {
         var badge = document.createElement("span");
@@ -1376,7 +1387,7 @@
         setAttr(badge, "data-kind", r.kind);
         badge.textContent = r.short;
         refsRow.appendChild(badge);
-        refsRow.appendChild(commitDetailCopyButton(tab, r.short, "「" + r.short + "」"));
+        refsRow.appendChild(commitDetailCopyButton(tab, r.short, t("git.detail.refQuote", { name: r.short })));
       });
       wrap.appendChild(refsRow);
     }
@@ -1392,7 +1403,7 @@
     baseBtn.type = "button";
     baseBtn.className = "action-button";
     setFocusKey(baseBtn, "compare-base");
-    baseBtn.textContent = "選為比較基準";
+    baseBtn.textContent = t("git.detail.compareBase");
     baseBtn.addEventListener("click", function () {
       tab.compareBaseOid = body.oid;
       renderGraphDetail(tab); // 立即反映；真正進入比較畫面要等使用者選第二個 commit
@@ -1401,7 +1412,7 @@
     if (tab.compareBaseOid === body.oid) {
       var baseNote = document.createElement("span");
       baseNote.className = "tree-note";
-      baseNote.textContent = "已選為比較基準，點選另一個 commit 開始比較";
+      baseNote.textContent = t("git.detail.compareBaseNote");
       actions.appendChild(baseNote);
     }
     wrap.appendChild(actions);
@@ -1410,12 +1421,12 @@
     filesHead.className = "commit-detail-row";
     var filesLabel = document.createElement("span");
     filesLabel.className = "commit-detail-label";
-    filesLabel.textContent = "變更檔案（" + body.files.length + "）";
+    filesLabel.textContent = tn("git.detail.files", body.files.length);
     filesHead.appendChild(filesLabel);
     if (Array.isArray(body.parents) && body.parents.length > 1) {
       var mergeNote = document.createElement("span");
       mergeNote.className = "tree-note";
-      mergeNote.textContent = "與第一個父 commit 比較";
+      mergeNote.textContent = t("git.detail.mergeNote");
       filesHead.appendChild(mergeNote);
     }
     wrap.appendChild(filesHead);
@@ -1446,7 +1457,7 @@
   function truncatedFilesNote() {
     var note = document.createElement("div");
     note.className = "tree-note";
-    note.textContent = "變更過多，只列出前面一部分";
+    note.textContent = t("git.truncated");
     return note;
   }
 
@@ -1457,7 +1468,7 @@
     header.className = "commit-detail-row";
     var headerLabel = document.createElement("span");
     headerLabel.className = "commit-detail-label";
-    headerLabel.textContent = "比較 " + shortHash(data.baseOid) + " ↔ " + shortHash(data.targetOid);
+    headerLabel.textContent = t("git.compare.header", { base: shortHash(data.baseOid), target: shortHash(data.targetOid) });
     header.appendChild(headerLabel);
     wrap.appendChild(header);
 
@@ -1467,7 +1478,7 @@
     directBtn.type = "button";
     directBtn.className = "action-button";
     setFocusKey(directBtn, "toggle:direct");
-    directBtn.textContent = "直接比較";
+    directBtn.textContent = t("git.compare.direct");
     directBtn.setAttribute("aria-pressed", tab.compareMode === "direct" ? "true" : "false");
     directBtn.addEventListener("click", function () {
       if (tab.compareMode !== "direct") {
@@ -1479,7 +1490,7 @@
     forkBtn.type = "button";
     forkBtn.className = "action-button";
     setFocusKey(forkBtn, "toggle:fork");
-    forkBtn.textContent = "自分岔點起";
+    forkBtn.textContent = t("git.compare.fork");
     forkBtn.setAttribute("aria-pressed", tab.compareMode === "fork" ? "true" : "false");
     forkBtn.addEventListener("click", function () {
       if (tab.compareMode !== "fork") {
@@ -1494,7 +1505,7 @@
     if (tab.detailStatus === "loading") {
       var loading = document.createElement("p");
       loading.className = "file-status";
-      loading.textContent = "正在讀取變更…";
+      loading.textContent = t("git.status.loadingChanges");
       wrap.appendChild(loading);
       return;
     }
@@ -1511,7 +1522,7 @@
     filesHead.className = "commit-detail-row";
     var filesLabel = document.createElement("span");
     filesLabel.className = "commit-detail-label";
-    filesLabel.textContent = "變更檔案（" + data.files.length + "）";
+    filesLabel.textContent = tn("git.detail.files", data.files.length);
     filesHead.appendChild(filesLabel);
     wrap.appendChild(filesHead);
 
@@ -1870,7 +1881,7 @@
       text = gitErrorText(tab.loadCode);
       tone = "warn";
     } else if (tab.loadStatus === "loading" && tab.rows.length === 0) {
-      text = "正在讀取 commit…";
+      text = t("git.graph.loading");
     }
     setHidden(tab.els.status, text === null);
     if (text !== null && tab.els.status.textContent !== text) {
@@ -2168,9 +2179,9 @@
   function renderGraphSearchState(tab) {
     var text = "";
     if (tab.searchMatches.length > 0) {
-      text = tab.searchIndex >= 0 ? "第 " + (tab.searchIndex + 1) + "／共 " + tab.searchMatches.length + " 筆" : "共 " + tab.searchMatches.length + " 筆";
+      text = tab.searchIndex >= 0 ? tn("git.graph.search.position", tab.searchMatches.length, { i: tab.searchIndex + 1 }) : tn("git.graph.search.total", tab.searchMatches.length);
     } else if (tab.searchQuery !== "") {
-      text = "沒有符合的結果";
+      text = t("git.graph.search.none");
     }
     if (tab.els.searchCount.textContent !== text) {
       tab.els.searchCount.textContent = text;
@@ -2250,7 +2261,7 @@
     if (shell === null) {
       return null;
     }
-    shell.els.tab.title = label + "\nruntime：" + fields.runtime;
+    shell.els.tab.title = t("git.graph.tabTitle", { label: label, runtime: fields.runtime });
     setAttr(shell.els.tab, "data-graph-root", fields.rootId);
 
     var panel = shell.els.panel;
@@ -2264,7 +2275,7 @@
     var filterToggle = document.createElement("button");
     filterToggle.type = "button";
     filterToggle.className = "action-button";
-    filterToggle.textContent = "分支篩選";
+    filterToggle.textContent = t("git.graph.filter.toggle");
     filterToggle.setAttribute("data-action", "graph-filter-toggle");
     filterToggle.setAttribute("aria-haspopup", "true");
     filterToggle.setAttribute("aria-expanded", "false");
@@ -2272,7 +2283,7 @@
     filterPopover.className = "graph-filter-popover";
     filterPopover.hidden = true;
     filterPopover.setAttribute("role", "dialog");
-    filterPopover.setAttribute("aria-label", "分支篩選");
+    filterPopover.setAttribute("aria-label", t("git.graph.filter.toggle"));
     var filterBody = document.createElement("div");
     filterBody.className = "graph-filter-body";
     var filterActions = document.createElement("div");
@@ -2280,22 +2291,22 @@
     var filterAllBtn = document.createElement("button");
     filterAllBtn.type = "button";
     filterAllBtn.className = "action-button";
-    filterAllBtn.textContent = "全選";
+    filterAllBtn.textContent = t("git.graph.filter.all");
     filterAllBtn.setAttribute("data-action", "graph-filter-all");
     var filterNoneBtn = document.createElement("button");
     filterNoneBtn.type = "button";
     filterNoneBtn.className = "action-button";
-    filterNoneBtn.textContent = "清除";
+    filterNoneBtn.textContent = t("git.graph.filter.none");
     filterNoneBtn.setAttribute("data-action", "graph-filter-none");
     var filterCancel = document.createElement("button");
     filterCancel.type = "button";
     filterCancel.className = "action-button";
-    filterCancel.textContent = "取消";
+    filterCancel.textContent = t("git.graph.filter.cancel");
     filterCancel.setAttribute("data-action", "graph-filter-cancel");
     var filterApply = document.createElement("button");
     filterApply.type = "button";
     filterApply.className = "action-button";
-    filterApply.textContent = "套用";
+    filterApply.textContent = t("git.graph.filter.apply");
     filterApply.setAttribute("data-action", "graph-filter-apply");
     filterActions.appendChild(filterAllBtn);
     filterActions.appendChild(filterNoneBtn);
@@ -2311,19 +2322,19 @@
     var searchInput = document.createElement("input");
     searchInput.type = "search";
     searchInput.className = "graph-search-input";
-    searchInput.placeholder = "搜尋 commit";
-    searchInput.setAttribute("aria-label", "搜尋 commit");
+    searchInput.placeholder = t("git.graph.search.placeholder");
+    searchInput.setAttribute("aria-label", t("git.graph.search.placeholder"));
     var searchCount = document.createElement("span");
     searchCount.className = "graph-search-count";
     var searchPrev = document.createElement("button");
     searchPrev.type = "button";
     searchPrev.className = "action-button";
-    searchPrev.textContent = "上一筆";
+    searchPrev.textContent = t("git.graph.search.prev");
     searchPrev.setAttribute("data-action", "graph-search-prev");
     var searchNext = document.createElement("button");
     searchNext.type = "button";
     searchNext.className = "action-button";
-    searchNext.textContent = "下一筆";
+    searchNext.textContent = t("git.graph.search.next");
     searchNext.setAttribute("data-action", "graph-search-next");
     searchWrap.appendChild(searchInput);
     searchWrap.appendChild(searchCount);
@@ -2333,7 +2344,7 @@
     var refreshBtn = document.createElement("button");
     refreshBtn.type = "button";
     refreshBtn.className = "action-button files-refresh";
-    refreshBtn.textContent = "重新整理";
+    refreshBtn.textContent = t("git.refresh");
     refreshBtn.setAttribute("data-action", "graph-refresh");
 
     toolbar.appendChild(filterWrap);
@@ -2345,11 +2356,11 @@
     banner.hidden = true;
     var bannerText = document.createElement("span");
     bannerText.className = "action-banner-text";
-    bannerText.textContent = "分支已變更";
+    bannerText.textContent = t("git.graph.banner.changed");
     var bannerReload = document.createElement("button");
     bannerReload.type = "button";
     bannerReload.className = "action-button";
-    bannerReload.textContent = "重新載入";
+    bannerReload.textContent = t("git.graph.banner.reload");
     bannerReload.setAttribute("data-action", "graph-reload");
     banner.appendChild(bannerText);
     banner.appendChild(bannerReload);
@@ -2372,23 +2383,23 @@
     var listbox = document.createElement("div");
     listbox.className = "graph-listbox";
     listbox.setAttribute("role", "listbox");
-    listbox.setAttribute("aria-label", "Commit 清單");
+    listbox.setAttribute("aria-label", t("git.graph.listAria"));
 
     var loadMoreBtn = document.createElement("button");
     loadMoreBtn.type = "button";
     loadMoreBtn.className = "action-button graph-load-more";
-    loadMoreBtn.textContent = "載入更多";
+    loadMoreBtn.textContent = t("git.graph.loadMore");
     loadMoreBtn.hidden = true;
     loadMoreBtn.setAttribute("data-action", "graph-load-more");
 
     var capNote = document.createElement("p");
     capNote.className = "tree-note"; // 重用（不新增只有這裡才用得到的選擇器）
-    capNote.textContent = "已達上限 5000 筆，可用分支篩選縮小範圍";
+    capNote.textContent = t("git.graph.capNote", { max: GRAPH_MAX_TOTAL });
     capNote.hidden = true;
 
     var emptyNote = document.createElement("p");
     emptyNote.className = "tree-note";
-    emptyNote.textContent = "沒有可顯示的 commit";
+    emptyNote.textContent = t("git.graph.empty");
     emptyNote.hidden = true;
 
     scroller.appendChild(listbox);
@@ -2636,7 +2647,7 @@
   }
 
   function revSideLabel(rev) {
-    return rev === "INDEX" ? "暫存區" : shortHash(rev);
+    return rev === "INDEX" ? t("git.rev.index") : shortHash(rev);
   }
 
   function revNeedsPolling(tab) {
@@ -2685,7 +2696,7 @@
       text = gitErrorText(tab.code);
       tone = "warn";
     } else if (tab.shown === null) {
-      text = "正在讀取…";
+      text = t("files.status.loading");
     }
     setHidden(els.status, text === null);
     if (text !== null && els.status.textContent !== text) {
@@ -2767,7 +2778,7 @@
     if (typeof viewer !== "function") {
       var placeholder = document.createElement("p");
       placeholder.className = "file-placeholder";
-      placeholder.textContent = "尚未實作「" + tab.meta.viewer + "」檢視器";
+      placeholder.textContent = t("files.viewer.notImplemented", { kind: tab.meta.viewer });
       tab.els.host.replaceChildren(placeholder);
       finishRevRead(tab, sig, { ok: true });
       return;
@@ -2917,7 +2928,7 @@
     if (shell === null) {
       return null;
     }
-    shell.els.tab.title = fields.path + "\n版本：" + revSideLabel(fields.rev) + "\n根目錄：" + fields.rootName;
+    shell.els.tab.title = t("git.rev.tabTitle", { path: fields.path, rev: revSideLabel(fields.rev), root: fields.rootName });
     setAttr(shell.els.tab, "data-rev-path", fields.path);
     setAttr(shell.els.tab, "data-rev", fields.rev);
 
@@ -2930,14 +2941,14 @@
     pathEl.className = "file-toolbar-path";
     var staleLabel = document.createElement("span");
     staleLabel.className = "file-stale-label";
-    staleLabel.textContent = "過期";
+    staleLabel.textContent = t("git.stale");
     staleLabel.hidden = true;
     var versionEl = document.createElement("span");
     versionEl.className = "diff-toolbar-versions"; // 重用（等寬次要文字），同款版本標示（同 diff 工具列）
     var openCurrentBtn = document.createElement("button");
     openCurrentBtn.type = "button";
     openCurrentBtn.className = "action-button";
-    openCurrentBtn.textContent = "開啟目前版本";
+    openCurrentBtn.textContent = t("git.rev.openCurrent");
     toolbar.appendChild(pathEl);
     toolbar.appendChild(staleLabel);
     toolbar.appendChild(versionEl);
@@ -3110,7 +3121,7 @@
     changesBranchEl.hidden = true;
     changesStaleLabelEl = document.createElement("span");
     changesStaleLabelEl.className = "file-stale-label";
-    changesStaleLabelEl.textContent = "過期";
+    changesStaleLabelEl.textContent = t("git.stale");
     changesStaleLabelEl.hidden = true;
     names.appendChild(changesRootNameEl);
     names.appendChild(changesRuntimeEl);
@@ -3139,7 +3150,7 @@
     refreshButton = document.createElement("button");
     refreshButton.type = "button";
     refreshButton.className = "action-button files-refresh";
-    refreshButton.textContent = "重新整理";
+    refreshButton.textContent = t("git.refresh");
     refreshButton.addEventListener("click", function () {
       if (selectedPane !== null) {
         lookupRoot();
@@ -3157,7 +3168,7 @@
     changesListEl = document.createElement("div");
     changesListEl.className = "files-tree";
     changesListEl.setAttribute("role", "list");
-    changesListEl.setAttribute("aria-label", "變更清單");
+    changesListEl.setAttribute("aria-label", t("git.changes.listAria"));
     changesListEl.hidden = true;
     changesListEl.addEventListener("scroll", function () {
       if (!changesListEl.hidden && !changesPanelEl.hidden) {
@@ -3295,10 +3306,10 @@
   // --- 清單重畫（同 files.js `renderTree()` 的鍵比對做法：同一份資料重讀不換掉任何節點）---
 
   var GROUP_ORDER = [
-    { key: "conflict", title: "合併衝突" },
-    { key: "staged", title: "已暫存" },
-    { key: "unstaged", title: "變更" },
-    { key: "untracked", title: "未追蹤" },
+    { key: "conflict", title: t("git.group.conflict") },
+    { key: "staged", title: t("git.group.staged") },
+    { key: "unstaged", title: t("git.group.unstaged") },
+    { key: "untracked", title: t("git.group.untracked") },
   ];
 
   // 狀態字母的顏色（見檔頭「變更面板」最後一段：行內樣式，理由是避免 CL1 死規則）。
@@ -3327,7 +3338,7 @@
       if (list.length === 0) {
         return;
       }
-      rows.push({ key: "h:" + g.key, kind: "heading", text: g.title + "（" + list.length + "）" });
+      rows.push({ key: "h:" + g.key, kind: "heading", text: t("git.group.heading", { title: g.title, n: list.length }) });
       list.forEach(function (entry) {
         rows.push({
           key: "r:" + g.key + ":" + entry.path + ":" + (entry.old_path || ""),
@@ -3338,7 +3349,7 @@
       });
     });
     if (body.truncated) {
-      rows.push({ key: "n:truncated", kind: "note", text: "變更過多，只列出前面一部分" });
+      rows.push({ key: "n:truncated", kind: "note", text: t("git.truncated") });
     }
     return rows;
   }
@@ -3509,7 +3520,7 @@
   // --- 分支資訊文字 ---
 
   function branchText(branch) {
-    var head = branch.head !== null ? branch.head : "分離 HEAD " + shortHash(branch.oid || "");
+    var head = branch.head !== null ? branch.head : t("git.branch.detached", { hash: shortHash(branch.oid || "") });
     var parts = [head];
     if (branch.upstream !== null) {
       var ahead = typeof branch.ahead === "number" ? branch.ahead : 0;
@@ -3575,21 +3586,21 @@
     if (!sel) {
       // 空狀態已由 changesEmptyEl 顯示。
     } else if (view === null || view.status === "loading") {
-      statusText = "正在讀取根目錄…";
+      statusText = t("files.tree.loadingRoot");
     } else if (view.status === "error") {
       statusText = errorText(view.code);
       tone = "warn";
     } else if (view.root.is_git === false) {
-      statusText = "這個根目錄不是 git repo";
+      statusText = t("git.error.notGit");
     } else if (stale) {
       statusText = gitErrorText(gitStatus.code);
       tone = "warn";
       showList = gitStatus.body.entries.length > 0;
     } else if (gitStatus.body === null) {
-      statusText = gitStatus.status === "error" ? gitErrorText(gitStatus.code) : "正在讀取變更…";
+      statusText = gitStatus.status === "error" ? gitErrorText(gitStatus.code) : t("git.status.loadingChanges");
       tone = gitStatus.status === "error" ? "warn" : "dim";
     } else if (gitStatus.body.entries.length === 0) {
-      statusText = "沒有未 commit 的變更";
+      statusText = t("git.changes.clean");
     } else {
       showList = true;
     }

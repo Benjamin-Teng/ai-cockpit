@@ -31,14 +31,14 @@ use tokio::sync::oneshot;
 use tokio::time::Instant;
 
 use crate::handle::StoreHandle;
+use crate::message::Message;
 use crate::runtime::{AgentRuntime, RuntimeError};
 use crate::types::connection::ConnectionState;
 use crate::types::ids::RuntimeId;
 use crate::types::model::RuntimeSnapshot;
 
-/// 事件流自然結束（`next()` 回 `None`）時寫進 `Disconnected.reason` 的原因；
-/// 其餘情況一律用 `RuntimeError` 自己的 `Display`。
-const STREAM_ENDED: &str = "事件流結束";
+// 事件流自然結束（`next()` 回 `None`）時寫進 `Disconnected.reason` 的原因是
+// `Message::EventStreamEnded.text()`；其餘情況一律用 `RuntimeError` 自己的 `Display`。
 
 /// `Policy.backoff` 是空序列時的保底重試間隔。
 ///
@@ -119,7 +119,7 @@ impl Outcome {
     /// 事件流自然結束（`next()` 回 `None`）：沒有錯誤物件，原因固定、走退避序列。
     fn stream_ended() -> Self {
         Outcome::Disconnected {
-            reason: STREAM_ENDED.to_string(),
+            reason: Message::EventStreamEnded.text(),
             retry_after: None,
         }
     }

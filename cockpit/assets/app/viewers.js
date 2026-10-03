@@ -24,7 +24,7 @@
 //                     自動更新的中繼資料輪詢本身不會讓它變成 false；file-review task 4.6）
 //   回傳值（可為 Promise）：成功回 undefined 或 `{ ok: true }`，files.js 記下「最後一次成功讀取的時間」；
 //   讀取失敗回 `{ ok: false, code }`（code 為錯誤本體的 `code`，連線失敗 "network"、逾時 "timeout"），
-//   files.js 依 code 在狀態列顯示中文原因（design D10），分頁不消失。丟出例外視同 `{ ok: false, code: "unknown" }`。
+//   files.js 依 code 在狀態列顯示原因（design D10；文字隨介面語言），分頁不消失。丟出例外視同 `{ ok: false, code: "unknown" }`。
 //
 // Markdown（design D5、D8）：渲染端點回的 HTML 片段先放進 `<template>`（其內容是惰性的：圖片不載入、腳本
 // 不執行），在 template 裡依序做完三件事之後才移入頁面——
@@ -47,6 +47,9 @@
 (function () {
   "use strict";
 
+  var t = window.cockpitI18n.t;
+  var tn = window.cockpitI18n.tn;
+
   var REQUEST_TIMEOUT_MS = 10000; // 同 files.js
   var TEXT_PREVIEW_MAX_BYTES = 2 * 1024 * 1024; // spec「檢視器」text：超過 2 MiB 不讀內容
   var HTML_LOAD_TIMEOUT_MS = 10000; // HTML iframe 等導覽結果的上限（R30）；同文字檔，逾時文案「超過 10 秒」才準
@@ -59,10 +62,6 @@
   var SCHEME_RE = /^[a-z][a-z0-9+.\-]*:/i;
   var NETWORK_PATH_RE = /^[\/\\]{2}/; // `//host`、`\\host`、`/\host`、`\/host`：瀏覽器都當成另一台主機
   var RASTER_DATA_IMAGE_RE = /^data:image\/(?:png|gif|jpeg|webp)[;,]/i;
-  var TOO_LARGE_TEXT = "檔案太大，無法預覽";
-  var UNSUPPORTED_TEXT = "不支援預覽";
-  var INERT_LINK_TITLE = "這個連結不會開啟（指向根目錄以外，或不是 http／https 網址）";
-  var BLOCKED_IMAGE_TITLE = "這張圖片沒有載入（只載入根目錄內以相對路徑引用的圖片）";
 
   // --- 共用 ---
 
@@ -175,7 +174,7 @@
   // 人類可讀的檔案大小（1024 進位）。
   function formatSize(bytes) {
     if (typeof bytes !== "number" || !isFinite(bytes) || bytes < 0) {
-      return "未知";
+      return t("viewers.size.unknown");
     }
     if (bytes < 1024) {
       return bytes + " B";
@@ -197,11 +196,11 @@
     var head = el("p", "viewer-note-title");
     head.textContent = title;
     var meta = el("p", "viewer-note-meta");
-    meta.appendChild(document.createTextNode("檔案大小："));
+    meta.appendChild(document.createTextNode(t("viewers.note.sizeLabel")));
     var value = el("span", "viewer-note-size");
     value.textContent = formatSize(size);
     if (typeof size === "number") {
-      value.title = size + " 位元組";
+      value.title = tn("viewers.size.bytes", size);
     }
     meta.appendChild(value);
     box.appendChild(head);
@@ -408,13 +407,13 @@
         }
       } else {
         a.removeAttribute("href");
-        a.title = INERT_LINK_TITLE;
+        a.title = t("viewers.md.inertLink");
       }
       // comrak 在每個標題後放一個空的 `a.anchor`（href 是未加前綴的標題 id），aria-label 是英文；
       // 改成中文，鍵盤聚焦時才看得到「#」（見 style.css .md-body .anchor）。
       if (a.classList.contains("anchor")) {
         var heading = a.closest("h1,h2,h3,h4,h5,h6");
-        a.setAttribute("aria-label", "連到標題「" + (heading ? heading.textContent.trim() : "") + "」");
+        a.setAttribute("aria-label", t("viewers.md.anchorLabel", { heading: heading ? heading.textContent.trim() : "" }));
       }
     }
   }
@@ -426,8 +425,8 @@
       var src = img.hasAttribute("src") ? imageSrc(img.getAttribute("src"), dirSegs, ctx) : null;
       if (src === null) {
         var alt = el("span", "md-img-alt");
-        alt.textContent = img.getAttribute("alt") || "圖片";
-        alt.title = BLOCKED_IMAGE_TITLE;
+        alt.textContent = img.getAttribute("alt") || t("viewers.md.imageAlt");
+        alt.title = t("viewers.md.blockedImage");
         img.parentNode.replaceChild(alt, img);
       } else {
         img.setAttribute("src", src);
@@ -517,7 +516,7 @@
   function textViewer(ctx) {
     var size = ctx.meta ? ctx.meta.size : undefined;
     if (typeof size === "number" && size > TEXT_PREVIEW_MAX_BYTES) {
-      mount(ctx, noteView("text", TOO_LARGE_TEXT, size));
+      mount(ctx, noteView("text", t("viewers.note.tooLarge"), size));
       return { ok: true };
     }
     return getText(ctx.rawUrl, TEXT_PREVIEW_MAX_BYTES).then(function (result) {
@@ -528,7 +527,7 @@
         return { ok: false, code: result.code };
       }
       if (result.tooLarge) {
-        mount(ctx, noteView("text", TOO_LARGE_TEXT, undefined));
+        mount(ctx, noteView("text", t("viewers.note.tooLarge"), undefined));
         return { ok: true };
       }
       var lines = result.text.replace(/\r\n?/g, "\n").split("\n");
@@ -581,7 +580,7 @@
     view.hidden = true;
     var frame = el("iframe", "html-frame");
     frame.setAttribute("sandbox", "");
-    frame.title = ctx.file.path + " 的內容（腳本已停用）";
+    frame.title = t("viewers.html.frameTitle", { path: ctx.file.path });
     view.appendChild(frame);
     return new Promise(function (resolve) {
       var statuses = [];
@@ -657,7 +656,7 @@
   }
 
   function unsupportedViewer(ctx) {
-    mount(ctx, noteView("unsupported", UNSUPPORTED_TEXT, ctx.meta ? ctx.meta.size : undefined));
+    mount(ctx, noteView("unsupported", t("viewers.note.unsupported"), ctx.meta ? ctx.meta.size : undefined));
     return { ok: true };
   }
 
@@ -706,7 +705,6 @@
   var PDF_MAX_CANVAS_PIXELS = 16777216; // 2^24 個像素（約 64 MB）
   var PDF_RENDERED_PAGES_MAX = 10;
   var PDF_NEAR_MARGIN = "100% 0px"; // IntersectionObserver：捲動區上下各一個自身高度內算「接近」
-  var PDF_UNPARSABLE_TEXT = "PDF 無法解析";
 
   var pdfjsPromise = null;
 
@@ -788,7 +786,7 @@
 
     var bar = el("div", "pdf-toolbar");
     bar.setAttribute("role", "group");
-    bar.setAttribute("aria-label", "PDF 頁面與縮放");
+    bar.setAttribute("aria-label", t("viewers.pdf.toolbarLabel"));
     function tool(text, onActivate) {
       var button = el("button", "action-button pdf-tool");
       button.type = "button";
@@ -800,23 +798,23 @@
       });
       return button;
     }
-    var prevButton = tool("上一頁", function () {
+    var prevButton = tool(t("viewers.pdf.prev"), function () {
       goToPage(state.page - 1);
     });
     var pageStatus = el("span", "pdf-page-status");
-    pageStatus.title = "目前頁／總頁數";
-    var nextButton = tool("下一頁", function () {
+    pageStatus.title = t("viewers.pdf.pageStatusTitle");
+    var nextButton = tool(t("viewers.pdf.next"), function () {
       goToPage(state.page + 1);
     });
-    var zoomOutButton = tool("縮小", function () {
+    var zoomOutButton = tool(t("viewers.pdf.zoomOut"), function () {
       stepZoom(-1);
     });
     var zoomLevel = el("span", "pdf-zoom-level");
-    zoomLevel.title = "縮放比例";
-    var zoomInButton = tool("放大", function () {
+    zoomLevel.title = t("viewers.pdf.zoomLevelTitle");
+    var zoomInButton = tool(t("viewers.pdf.zoomIn"), function () {
       stepZoom(1);
     });
-    var fitButton = tool("符合寬度", function () {
+    var fitButton = tool(t("viewers.pdf.fit"), function () {
       setZoom("fit");
     });
     var navGroup = el("span", "pdf-toolbar-group");
@@ -837,7 +835,7 @@
       var box = el("div", "pdf-page");
       box.setAttribute("data-page", String(i + 1));
       box.setAttribute("role", "img");
-      box.setAttribute("aria-label", "第 " + (i + 1) + " 頁");
+      box.setAttribute("aria-label", t("viewers.pdf.pageLabel", { n: i + 1 }));
       var canvas = blankCanvas();
       box.appendChild(canvas);
       scroller.appendChild(box);
@@ -1207,11 +1205,11 @@
       }
     };
     var unparsable = function (error) {
-      console.warn(PDF_UNPARSABLE_TEXT + "：" + ctx.file.path, error);
+      console.warn("PDF 無法解析：" + ctx.file.path, error);
       if (load.task !== null) {
         quietly(load.task.destroy());
       }
-      mount(ctx, noteView("pdf", PDF_UNPARSABLE_TEXT, size));
+      mount(ctx, noteView("pdf", t("viewers.pdf.unparsable"), size));
       return { ok: true };
     };
 

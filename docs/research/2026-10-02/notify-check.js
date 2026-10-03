@@ -358,7 +358,7 @@ async function startChrome(cdpPort) {
   const chrome = spawn(
     CHROME,
     [
-      '--headless=new',
+      '--headless=new', '--lang=zh-TW',
       '--disable-gpu',
       '--no-first-run',
       `--remote-debugging-port=${cdpPort}`,

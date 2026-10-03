@@ -34,3 +34,20 @@ pub enum Rejection {
     #[error("pane 已 exited")]
     PaneExited,
 }
+
+impl Rejection {
+    /// 穩定的 snake_case 代碼（ui-language design D4）：HTTP 錯誤本體的 `code`，前端依它查字典
+    /// 翻譯；`Display` 的繁中原文仍照舊放在 `error` 欄位。代碼集中定義在這裡，handler 不散寫字串。
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::AlreadyLastStage => "already_last_stage",
+            Self::AlreadyFirstStage => "already_first_stage",
+            Self::AlreadyMarked => "already_marked",
+            Self::TaskNotInWorkstream => "task_not_in_workstream",
+            Self::RuntimeNotRegistered => "runtime_not_registered",
+            Self::RuntimeNotConnected => "runtime_not_connected",
+            Self::PaneNotFound => "pane_not_found",
+            Self::PaneExited => "pane_exited",
+        }
+    }
+}

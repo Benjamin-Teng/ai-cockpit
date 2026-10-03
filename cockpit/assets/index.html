@@ -6,6 +6,9 @@
     <title>AI Agent Cockpit</title>
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="stylesheet" href="/app/style.css" />
+    <!-- i18n.js 放在 <head>（ui-language M1；spec「任何介面文字繪製之前決定語言」）：同步腳本，<body> 解析之前就決定語言
+         並設定 <html lang>；英文介面在套用翻譯前由 style.css 的 html.i18n-pending 藏起帶 data-i18n 的節點。 -->
+    <script src="/app/i18n.js"></script>
   </head>
   <body>
     <!-- 外框（direction-01-visual task 2.1；design D2）：`.shell` 是一個 CSS grid 容器，包住
@@ -20,22 +23,22 @@
            Project 清單以 margin-top 讓出分頁列的高度；目前分頁是 files.js 的模組狀態，render.js
            每次重畫讀它決定 Project 清單是否 hidden。放在 #app 之前，鍵盤 Tab 順序先到分頁列。 -->
       <div id="files">
-        <div class="tabbar files-tabbar" role="tablist" aria-label="左欄">
+        <div class="tabbar files-tabbar" role="tablist" aria-label="左欄" data-i18n="index.leftTabs.aria" data-i18n-attr="aria-label">
           <button type="button" class="tabbar-tab" role="tab" id="files-tab-projects" data-left-tab="projects" aria-selected="true" tabindex="0">Project</button>
-          <button type="button" class="tabbar-tab" role="tab" id="files-tab-files" data-left-tab="files" aria-selected="false" aria-controls="files-panel" tabindex="-1">檔案</button>
+          <button type="button" class="tabbar-tab" role="tab" id="files-tab-files" data-left-tab="files" aria-selected="false" aria-controls="files-panel" tabindex="-1" data-i18n="index.tab.files">檔案</button>
           <!-- 「變更」分頁（git-review task 4.2；spec file-review「左欄檔案樹」三分頁 tablist）：內容
                （分支資訊、四組變更清單）由 git.js 填入 #changes-panel。 -->
-          <button type="button" class="tabbar-tab" role="tab" id="files-tab-changes" data-left-tab="changes" aria-selected="false" aria-controls="changes-panel" tabindex="-1">變更</button>
+          <button type="button" class="tabbar-tab" role="tab" id="files-tab-changes" data-left-tab="changes" aria-selected="false" aria-controls="changes-panel" tabindex="-1" data-i18n="index.tab.changes">變更</button>
         </div>
         <!-- 「檔案」分頁的內容（檔案樹由 file-review task 4.2 填入）。Project 分頁的內容是 #app 內的
              Project 清單，不在這裡，所以「Project」分頁沒有 aria-controls。 -->
         <div class="files-panel" id="files-panel" role="tabpanel" aria-labelledby="files-tab-files" hidden>
-          <p class="files-empty">先在 Factory Floor 或 runtime 清單選一個 pane</p>
+          <p class="files-empty" data-i18n="index.files.empty">先在 Factory Floor 或 runtime 清單選一個 pane</p>
         </div>
         <!-- 「變更」分頁的內容（git-review task 4.2；design D9）：沒有選定 pane 時與「檔案」分頁同一句
              空狀態文案，其餘（根目錄名稱、分支、四組清單）由 git.js 動態建立、附加在這個容器內。 -->
         <div class="files-panel" id="changes-panel" role="tabpanel" aria-labelledby="files-tab-changes" hidden>
-          <p class="files-empty">先在 Factory Floor 或 runtime 清單選一個 pane</p>
+          <p class="files-empty" data-i18n="index.files.empty">先在 Factory Floor 或 runtime 清單選一個 pane</p>
         </div>
       </div>
       <!-- app 容器：初始內容是跟 renderState() 輸出同一組 data-region 的靜態占位（首份投影
@@ -64,7 +67,7 @@
           <div class="runtime-cards"></div>
         </div>
         <div class="recent-events" data-region="events">
-          <h2 class="recent-events-title">最近事件</h2>
+          <h2 class="recent-events-title" data-i18n="index.events.title">最近事件</h2>
           <ul class="recent-events-list"></ul>
         </div>
         <!-- 底列（design D4「連線配色也適用底列通道狀態」；direction-01-visual task 2.3）：
@@ -72,8 +75,8 @@
              前還沒有版本號，留空）。結構要跟 render.js 的 renderStatusbarRegion() 一致，讓
              window.onChannel 在第一份投影到達前就能正確更新 #channel-status。 -->
         <div class="region-statusbar" data-region="statusbar">
-          <span class="statusbar-channel" title="瀏覽器 → cockpit 服務：connecting">
-            <span class="statusbar-channel-label">cockpit 服務</span>
+          <span class="statusbar-channel" title="瀏覽器 → cockpit 服務：connecting" data-i18n="index.channel.title" data-i18n-attr="title" data-i18n-params='{"state":"connecting"}'>
+            <span class="statusbar-channel-label" data-i18n="index.channel.label">cockpit 服務</span>
             <span id="channel-status" class="channel-status channel-connecting" data-channel-state>
               <span class="channel-status-dot conn-symbol" aria-hidden="true"></span>
               <span class="channel-status-text">connecting</span>
@@ -86,7 +89,7 @@
            時也顯示）＋各分頁內容。第一個分頁固定是 Live Output、不可關閉；檔案分頁由 files.js 加在它
            後面（file-review task 4.3）。切換分頁用 hidden 屬性。 -->
       <section id="review" data-region="review">
-        <div class="tabbar review-tabbar" role="tablist" aria-label="分頁">
+        <div class="tabbar review-tabbar" role="tablist" aria-label="分頁" data-i18n="index.reviewTabs.aria" data-i18n-attr="aria-label">
           <button type="button" class="tabbar-tab" role="tab" id="review-tab-live" aria-selected="true" aria-controls="review-panel-live" tabindex="0">Live Output</button>
         </div>
         <div class="review-panel" id="review-panel-live" role="tabpanel" aria-labelledby="review-tab-live">
@@ -96,7 +99,7 @@
         </div>
       </section>
     </div>
-    <!-- 載入順序：output.js → viewers.js → git.js → files.js → notify.js → render.js → actions.js → channel.js。
+    <!-- 載入順序：i18n.js（在 <head>）→ output.js → viewers.js → git.js → files.js → notify.js → render.js → actions.js → channel.js。
          notify.js 在 render.js 之前（desktop-launch-notify task 3.3；design D7）：render.js 的
          window.onState 重畫後呼叫 window.cockpitNotify.observe(state)；通知設定面板是 notify.js
          自己建在 body 底下、#app 之外的節點（design D8），不在整頁重畫的範圍內。
@@ -108,7 +111,11 @@
          viewers.js 在 files.js 之前（file-review task 4.4 起 files.js 用它畫檔案內容）。channel.js 最後，收到第一則訊息時
          window.onState／window.onChannel 一定已經綁好，不需要暫存訊息等 render.js 補齊；
          actions.js 在第一次重畫前就把 UI 狀態（window.cockpitActions）與 #app 上的事件委派
-         準備好。 -->
+         準備好。
+         i18n.js 永遠第一個（ui-language task 1.1；design D1、D2），而且在 <head>（見上）：它在載入時
+         決定介面語言、設定 <html lang>、並提供 window.cockpitI18n.t()，DOMContentLoaded 時把上面帶
+         data-i18n 的靜態節點換成該語言；其餘每個腳本在載入時（含模組層級的常數表）讀到的 t() 就已是
+         正確語言，所以任何會呼叫 t() 的腳本都必須排在它後面。 -->
     <script src="/app/output.js"></script>
     <script src="/app/viewers.js"></script>
     <script src="/app/git.js"></script>

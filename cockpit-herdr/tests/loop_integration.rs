@@ -604,6 +604,10 @@ async fn l_close_disconnects_then_reconnects_with_fresh_seed() {
         reason.contains('L'),
         "斷線原因應指名是 L 這條連線結束，實際: {reason:?}"
     );
+    // ui-language task 3.2：同一則原因歸 `event_connection_ended`，label 為 L。
+    let msg = cockpit_core::Message::classify(&reason).msg();
+    assert_eq!(msg.code, "event_connection_ended", "{reason:?}");
+    assert_eq!(msg.params["label"], "L");
     assert_eq!(
         retry_in,
         Duration::from_secs(1),

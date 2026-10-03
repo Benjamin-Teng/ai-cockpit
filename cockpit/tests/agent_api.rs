@@ -884,6 +884,13 @@ async fn start_on_someone_elses_task_is_403() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["code"], "pane_not_bound");
+    assert_eq!(body["params"], json!({"task": "f1", "pane": PANE}));
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("沒有綁定到 pane")),
+        "error 原文照舊：{body:?}"
+    );
     assert!(
         handle.with_domain(|d| d.active.is_empty()),
         "fe 的目前 task 不變"
@@ -910,6 +917,8 @@ async fn start_on_marked_task_is_409() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert!(body["error"].as_str().is_some_and(|s| !s.is_empty()));
+    assert_eq!(body["code"], "already_marked");
+    assert!(body.get("params").is_none());
     assert!(
         handle.with_domain(|d| d.active.is_empty()),
         "目前 task 不變"
@@ -925,11 +934,31 @@ async fn unknown_project_or_task_is_404_not_403() {
     let router = http::router(state);
     wait_bound(&router, "be").await;
 
-    for (uri, pane) in [
-        ("/api/agent/projects/nope/tasks/t1/start", PANE),
-        ("/api/agent/projects/p/tasks/nope/start", PANE),
-        ("/api/agent/projects/p/tasks/nope/advance", "zzz:p9"),
-        ("/api/agent/projects/nope/tasks/nope/advance", "zzz:p9"),
+    for (uri, pane, code, id) in [
+        (
+            "/api/agent/projects/nope/tasks/t1/start",
+            PANE,
+            "unknown_project",
+            "nope",
+        ),
+        (
+            "/api/agent/projects/p/tasks/nope/start",
+            PANE,
+            "unknown_task",
+            "nope",
+        ),
+        (
+            "/api/agent/projects/p/tasks/nope/advance",
+            "zzz:p9",
+            "unknown_task",
+            "nope",
+        ),
+        (
+            "/api/agent/projects/nope/tasks/nope/advance",
+            "zzz:p9",
+            "unknown_project",
+            "nope",
+        ),
     ] {
         let (status, body) = agent(&router, "POST", uri, pane).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
@@ -938,6 +967,8 @@ async fn unknown_project_or_task_is_404_not_403() {
             "{uri}"
         );
         assert_ne!(body["code"], "pane_not_bound", "{uri}");
+        assert_eq!(body["code"], code, "{uri}");
+        assert_eq!(body["params"], json!({"id": id}), "{uri}");
     }
 }
 
@@ -958,6 +989,8 @@ async fn no_progress_service_is_404() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(body["error"].as_str().is_some_and(|s| !s.is_empty()));
+    assert_eq!(body["code"], "unknown_project");
+    assert_eq!(body["params"], json!({"id": "p"}));
 }
 
 // ---------------------------------------------------------------------------
@@ -1019,6 +1052,8 @@ async fn advance_at_last_stage_is_409() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["error"], "已是最後一個 Stage");
+    assert_eq!(body["code"], "already_last_stage");
+    assert!(body.get("params").is_none());
 
     let projected = wait_state(&router, "t1 仍為目前 task", |s| {
         active_of(s, "be") == "t1"
@@ -1074,6 +1109,8 @@ async fn agent_cannot_use_other_ops() {
             body["error"].as_str().is_some_and(|s| !s.is_empty()),
             "{op}"
         );
+        assert_eq!(body["code"], "invalid_op", "{op}");
+        assert_eq!(body["params"], json!({"op": op}), "{op}");
     }
     handle.with_domain(|d| {
         let t1 = &d.progress[&ProjectId::new("p")][&TaskId::new("t1")];

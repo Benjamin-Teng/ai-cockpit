@@ -381,7 +381,7 @@ async function startChrome(cdpPort, url, label, windowSize = '1536,1024') {
   const udd = fs.mkdtempSync(path.join(os.tmpdir(), `${CHROME_UDD_PREFIX}${label.replace(/[^A-Za-z0-9-]/g, '')}-`));
   const chrome = spawn(
     CHROME,
-    ['--headless=new', '--disable-gpu', '--no-first-run', `--remote-debugging-port=${cdpPort}`, '--remote-allow-origins=*', `--user-data-dir=${udd}`, `--window-size=${windowSize}`, url],
+    ['--headless=new', '--lang=zh-TW', '--disable-gpu', '--no-first-run', `--remote-debugging-port=${cdpPort}`, '--remote-allow-origins=*', `--user-data-dir=${udd}`, `--window-size=${windowSize}`, url],
     { stdio: 'ignore', windowsHide: true }
   );
   chrome.on('error', (e) => check(false, `${label} chrome spawn error：${e.message}`));

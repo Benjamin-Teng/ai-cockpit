@@ -62,6 +62,8 @@ async fn routes_return_200_with_expected_content_types() {
         ("/app/git.js", "text/javascript"),
         // desktop-launch-notify task 3.3（design D7）：桌面通知模組與設定面板（notify.js）。
         ("/app/notify.js", "text/javascript"),
+        // ui-language task 1.1（design D1）：介面字典與語言決定（i18n.js），第一個載入。
+        ("/app/i18n.js", "text/javascript"),
         ("/manifest.webmanifest", "application/manifest+json"),
         ("/icons/icon-192.png", "image/png"),
         ("/icons/icon-512.png", "image/png"),
@@ -189,6 +191,17 @@ async fn embedded_assets_are_the_final_files() {
         "channel.js 應該呼叫 window.onChannel"
     );
 
+    // ui-language task 1.1：i18n.js 是正式內容（掛 window.cockpitI18n、讀 cockpit.lang），不是佔位檔。
+    let i18n_js = body_text(http::router(state.clone()), "/app/i18n.js").await;
+    assert!(
+        i18n_js.contains("window.cockpitI18n = {"),
+        "i18n.js 應該把 cockpitI18n 掛在 window 上"
+    );
+    assert!(
+        i18n_js.contains("cockpit.lang"),
+        "i18n.js 應該讀寫 localStorage 的 cockpit.lang"
+    );
+
     let style_css = body_text(http::router(state.clone()), "/app/style.css").await;
     assert!(
         style_css.contains(".status-working"),
@@ -234,6 +247,31 @@ async fn index_loads_actions_js_between_render_and_channel() {
     let notify = position(r#"<script src="/app/notify.js"></script>"#);
     let render = position(r#"<script src="/app/render.js"></script>"#);
     assert!(notify < render, "notify.js 應該在 render.js 之前載入");
+    // ui-language task 1.1（design D1、D2）：i18n.js 是第一個 <script>，其他模組載入時讀到的
+    // window.cockpitI18n.t() 才已是正確語言。
+    let i18n = position(r#"<script src="/app/i18n.js"></script>"#);
+    let output = position(r#"<script src="/app/output.js"></script>"#);
+    assert!(
+        i18n < output,
+        "i18n.js 應該在 output.js 之前載入（第一個 script）"
+    );
+    assert_eq!(
+        index_html.find("<script src="),
+        Some(i18n),
+        "i18n.js 應該是 index.html 的第一個 <script src>"
+    );
+    // ui-language（階段審查 1 M1；spec「任何介面文字繪製之前決定語言」）：i18n.js 在 <head> 內同步載入
+    // （在 <body> 之前執行，<html lang> 與語言先決定），style.css 有英文介面載入前先藏靜態節點的規則。
+    let head_end = position("</head>");
+    assert!(
+        i18n < head_end,
+        "i18n.js 應該在 <head> 內（</head> 之前）載入，語言才會在第一次繪製前決定"
+    );
+    let style_css = body_text(http::router(state.clone()), "/app/style.css").await;
+    assert!(
+        style_css.contains("html.i18n-pending [data-i18n]"),
+        "style.css 應該有 html.i18n-pending [data-i18n] 規則，英文介面套用翻譯前先藏起靜態節點"
+    );
     let actions = position(r#"<script src="/app/actions.js"></script>"#);
     let channel = position(r#"<script src="/app/channel.js"></script>"#);
     assert!(
@@ -252,28 +290,129 @@ async fn index_loads_actions_js_between_render_and_channel() {
     );
 }
 
-/// Task 3.5 驗收（spec 節錄：「`done` 顯示為 `done`，不出現『完成』字樣」）：直接 grep
-/// 內嵌的 render.js 原始碼，防止有人手滑把狀態文字翻成中文「完成」。
-#[tokio::test]
-async fn render_js_never_prints_completion_word() {
-    let (_handle, state) = new_app_state();
-    let router = http::router(state);
+/// 從 `i18n.js` 原始碼抓一份字典（`var zh = {` 或 `var en = {` 到 `};`）的 `鍵 -> 值`：只認
+/// `"鍵": "值",` 這種單行條目（註解行與其他行略過），值裡的 `\"` 還原成 `"`。
+fn i18n_dictionary(source: &str, start_marker: &str) -> Vec<(String, String)> {
+    let start = source
+        .find(start_marker)
+        .unwrap_or_else(|| panic!("i18n.js 找不到 {start_marker}"));
+    let body = &source[start + start_marker.len()..];
+    let end = body.find("\n  };").expect("字典應該以 `};` 結尾");
+    let mut entries = Vec::new();
+    for line in body[..end].lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix('"') else {
+            continue;
+        };
+        let Some((key, value)) = rest.split_once("\": \"") else {
+            continue;
+        };
+        let value = value
+            .strip_suffix("\",")
+            .or_else(|| value.strip_suffix('"'))
+            .unwrap_or(value);
+        entries.push((key.to_string(), value.replace("\\\"", "\"")));
+    }
+    entries
+}
 
+/// 守門對象（design D5）：任何一段（以 `.` 分段）以 `done` 或 `agentDone` 開頭的字典鍵——
+/// 描述 HERDR `done` 的文字都要用這個命名（見 i18n.js 檔頭）。
+fn is_done_key(key: &str) -> bool {
+    key.split('.')
+        .any(|segment| segment.starts_with("done") || segment.starts_with("agentDone"))
+}
+
+/// 檢查守門對象：繁中值不得含「完成」，英文值不得含 complete／finished（不分大小寫，
+/// `completed` 已被 `complete` 涵蓋）。回傳違規清單（空＝通過）。
+fn done_guard_violations(source: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    for (key, value) in i18n_dictionary(source, "var zh = {") {
+        if is_done_key(&key) && value.contains("完成") {
+            violations.push(format!("zh {key}：{value}"));
+        }
+    }
+    for (key, value) in i18n_dictionary(source, "var en = {") {
+        let lower = value.to_lowercase();
+        if is_done_key(&key) && (lower.contains("complete") || lower.contains("finished")) {
+            violations.push(format!("en {key}：{value}"));
+        }
+    }
+    violations
+}
+
+/// design D5：「done 不是完成」的禁字守門檢查字典（取代過去只看 render.js 原始碼的斷言）：描述 `done` 的鍵
+/// 繁中不得含「完成」、英文不得含 complete／completed／finished。守門對象的數量也要 > 0，守門才不會空轉。
+#[tokio::test]
+async fn i18n_done_descriptions_avoid_completion_words() {
+    let (_handle, state) = new_app_state();
     let request = Request::builder()
-        .uri("/app/render.js")
+        .uri("/app/i18n.js")
         .body(Body::empty())
         .expect("request 建構不應該失敗");
-    let response = router
+    let response = http::router(state)
         .oneshot(request)
         .await
         .expect("oneshot 呼叫不應該失敗");
     assert_eq!(response.status(), StatusCode::OK);
+    let source = String::from_utf8(body_bytes(response).await).expect("body 應該是合法 UTF-8");
 
-    let text = String::from_utf8(body_bytes(response).await).expect("body 應該是合法 UTF-8");
+    // 解析不能靜默失敗：兩份字典都要抓得到條目、鍵集合相同，否則下面的守門等於沒檢查。
+    let zh = i18n_dictionary(&source, "var zh = {");
+    let en = i18n_dictionary(&source, "var en = {");
+    assert!(zh.len() > 30, "繁中字典應該抓得到條目（實際 {}）", zh.len());
+    let zh_keys: Vec<&str> = zh.iter().map(|(k, _)| k.as_str()).collect();
+    let en_keys: Vec<&str> = en.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(zh_keys, en_keys, "兩份字典的鍵（含順序）應該相同");
+
+    // 守門不能空轉：真實字典裡至少要有描述 done 的鍵（notify.kind.done.desc 等），兩份字典各自都要有。
+    let guarded = |dict: &[(String, String)]| dict.iter().filter(|(k, _)| is_done_key(k)).count();
     assert!(
-        !text.contains("完成"),
-        "render.js 不該出現「完成」字樣（done 顯示為 done）"
+        guarded(&zh) > 0 && guarded(&en) > 0,
+        "字典裡沒有任何守門對象的鍵（zh {}、en {}）：描述 HERDR done 的文字要照 is_done_key 命名",
+        guarded(&zh),
+        guarded(&en)
     );
+
+    for key in ["notify.kind.done.desc", "notify.title.done"] {
+        assert!(
+            zh.iter().any(|(k, _)| k == key) && en.iter().any(|(k, _)| k == key),
+            "字典缺少描述 done 的鍵 {key}"
+        );
+    }
+
+    let violations = done_guard_violations(&source);
+    assert!(
+        violations.is_empty(),
+        "描述 HERDR done 的字典值不得暗示 task 已完成：{violations:#?}"
+    );
+}
+
+/// 守門本身要有牙齒：違規的字典值會被抓到，守門對象以外的鍵（例如「請求沒有完成」）不誤報。
+#[test]
+fn done_guard_flags_forbidden_words_only_on_done_keys() {
+    let source = |zh_done: &str, en_done: &str| {
+        format!(
+            "var zh = {{\n    \"notify.kind.done\": \"{zh_done}\",\n    \"actions.error.network\": \"操作失敗（請求沒有完成）\"\n  }};\n\
+             var en = {{\n    \"notify.kind.done\": \"{en_done}\",\n    \"actions.error.network\": \"Request did not complete\"\n  }};\n"
+        )
+    };
+    assert!(done_guard_violations(&source("pane 已停下", "Pane stopped")).is_empty());
+    assert_eq!(
+        done_guard_violations(&source("task 完成", "Pane stopped")).len(),
+        1
+    );
+    assert_eq!(
+        done_guard_violations(&source("pane 已停下", "Task Completed")).len(),
+        1
+    );
+    assert_eq!(
+        done_guard_violations(&source("pane 已停下", "Agent finished")).len(),
+        1
+    );
+    assert_eq!(done_guard_violations(&source("完成", "COMPLETE")).len(), 2);
+    assert!(is_done_key("render.agentDone.hint") && is_done_key("notify.kind.doneBody"));
+    assert!(!is_done_key("actions.error.network") && !is_done_key("render.task.advance"));
 }
 
 #[tokio::test]
@@ -606,5 +745,242 @@ async fn index_forbids_framing() {
     assert_eq!(
         header("content-security-policy").as_deref(),
         Some("frame-ancestors 'none'")
+    );
+}
+
+/// 在 Rust 原始碼裡找出傳給 `coded_error_response(`／`coded_error_response_with_params(` 的第二個引數
+/// 字串字面值（代碼）；第二個引數不是字面值的呼叫（例如 `error.code()`、函式定義本身）略過。
+fn coded_response_literals(source: &str) -> Vec<String> {
+    let mut codes = Vec::new();
+    for name in ["coded_error_response(", "coded_error_response_with_params("] {
+        for (at, _) in source.match_indices(name) {
+            // 註解行與函式定義不算呼叫。
+            let line_start = source[..at].rfind('\n').map_or(0, |i| i + 1);
+            let prefix = source[line_start..at].trim_start();
+            if prefix.starts_with("//") || prefix.ends_with("fn ") {
+                continue;
+            }
+            let args = &source[at + name.len()..];
+            let Some((_status, rest)) = args.split_once(',') else {
+                continue;
+            };
+            let Some(rest) = rest.trim_start().strip_prefix('"') else {
+                continue;
+            };
+            let Some((code, _)) = rest.split_once('"') else {
+                continue;
+            };
+            codes.push(code.to_string());
+        }
+    }
+    codes.sort();
+    codes.dedup();
+    codes
+}
+
+/// ui-language 階段審查 2 M2：後端能送出的每一個訊息代碼（錯誤本體與投影 `*_msg` 的 `code`）都要在
+/// `i18n.js` 兩份字典有 `msg.<code>`，反過來字典的 `msg.*` 也都對得到一個後端代碼。代碼來源：
+/// - `Rejection::code`、`WriteError::code`、`Message::msg`：以沒有萬用分支的 `match` 逐一列出每個變體，
+///   新增變體時編譯失敗，逼人把它補進這裡，再由下面的字典斷言逼人補 `msg.<code>`；
+/// - http／agent／來源檢查的固定代碼：掃 `src/http.rs`、`agent.rs`、`source_check.rs` 傳給
+///   `coded_error_response*` 的字面值（新增一個固定代碼卻沒補字典會失敗）。
+///
+/// 檔案端點與 git 端點的代碼（`FileApiError`／`GitApiError`）不在這裡：它們有自己的前端 `ERROR_TEXT`
+/// 表（files.js／git.js，鍵 `files.error.*`），由 `i18n-check.js` 的 ① 與 ② 逐一驗。
+#[tokio::test]
+async fn every_backend_message_code_has_a_msg_key_in_both_dictionaries() {
+    use cockpit::progress_service::WriteError;
+    use cockpit_core::{Message, ProjectId, Rejection, TaskId, WorkstreamId};
+    use std::collections::BTreeSet;
+
+    let s = |v: &str| v.to_string();
+
+    // Rejection：Copy，直接列。
+    let rejections = [
+        Rejection::AlreadyLastStage,
+        Rejection::AlreadyFirstStage,
+        Rejection::AlreadyMarked,
+        Rejection::TaskNotInWorkstream,
+        Rejection::RuntimeNotRegistered,
+        Rejection::RuntimeNotConnected,
+        Rejection::PaneNotFound,
+        Rejection::PaneExited,
+    ];
+    for r in &rejections {
+        match r {
+            Rejection::AlreadyLastStage
+            | Rejection::AlreadyFirstStage
+            | Rejection::AlreadyMarked
+            | Rejection::TaskNotInWorkstream
+            | Rejection::RuntimeNotRegistered
+            | Rejection::RuntimeNotConnected
+            | Rejection::PaneNotFound
+            | Rejection::PaneExited => {}
+        }
+    }
+    assert_eq!(
+        rejections.len(),
+        8,
+        "Rejection 的變體數與上面的 match 對不上"
+    );
+
+    // WriteError：每個變體各一個（Internal 需要真的 JoinError）。
+    let join_error = tokio::spawn(async { panic!("測試用：造出一個 JoinError") })
+        .await
+        .expect_err("panic 的 task 應該回 JoinError");
+    let write_errors = vec![
+        WriteError::UnknownProject(ProjectId::new("p")),
+        WriteError::UnknownTask(TaskId::new("t")),
+        WriteError::UnknownWorkstream(WorkstreamId::new("w")),
+        WriteError::Rejected(Rejection::AlreadyMarked),
+        WriteError::Persist {
+            path: std::path::PathBuf::from("x.json"),
+            source: std::io::Error::other("disk full"),
+        },
+        WriteError::PaneNotBound,
+        WriteError::Internal(join_error),
+    ];
+    for e in &write_errors {
+        match e {
+            WriteError::UnknownProject(_)
+            | WriteError::UnknownTask(_)
+            | WriteError::UnknownWorkstream(_)
+            | WriteError::Rejected(_)
+            | WriteError::Persist { .. }
+            | WriteError::PaneNotBound
+            | WriteError::Internal(_) => {}
+        }
+    }
+    assert_eq!(
+        write_errors.len(),
+        7,
+        "WriteError 的變體數與上面的 match 對不上"
+    );
+
+    // Message：每個變體各一個。
+    let messages = vec![
+        Message::WslDistroNotRunning { distro: s("d") },
+        Message::WslProbeFailed { detail: s("x") },
+        Message::SnapshotFailed { detail: s("x") },
+        Message::SeedSnapshotFailed { detail: s("x") },
+        Message::LifecycleSubscribeFailed { detail: s("x") },
+        Message::StatusSubscribeFailed { detail: s("x") },
+        Message::StatusResubscribeFailed { detail: s("x") },
+        Message::ProtocolUntested {
+            protocol: s("1"),
+            tested: s("2"),
+        },
+        Message::EventStreamEnded,
+        Message::EventConnectionError {
+            label: s("L"),
+            detail: s("x"),
+        },
+        Message::EventConnectionEnded { label: s("S") },
+        Message::TaskStageReset {
+            task: s("t"),
+            stage: s("a"),
+            start: s("b"),
+        },
+        Message::DriftWorkspaceNotFound { id: s("w") },
+        Message::DriftTabNotFound { id: s("t") },
+        Message::DriftPaneNotFound { id: s("p") },
+        Message::DriftRuntimeNotRegistered { id: s("r") },
+        Message::EventPayloadUnparsable {
+            event: s("e"),
+            detail: s("x"),
+        },
+        Message::Raw { text: s("x") },
+    ];
+    for m in &messages {
+        match m {
+            Message::WslDistroNotRunning { .. }
+            | Message::WslProbeFailed { .. }
+            | Message::SnapshotFailed { .. }
+            | Message::SeedSnapshotFailed { .. }
+            | Message::LifecycleSubscribeFailed { .. }
+            | Message::StatusSubscribeFailed { .. }
+            | Message::StatusResubscribeFailed { .. }
+            | Message::ProtocolUntested { .. }
+            | Message::EventStreamEnded
+            | Message::EventConnectionError { .. }
+            | Message::EventConnectionEnded { .. }
+            | Message::TaskStageReset { .. }
+            | Message::DriftWorkspaceNotFound { .. }
+            | Message::DriftTabNotFound { .. }
+            | Message::DriftPaneNotFound { .. }
+            | Message::DriftRuntimeNotRegistered { .. }
+            | Message::EventPayloadUnparsable { .. }
+            | Message::Raw { .. } => {}
+        }
+    }
+    assert_eq!(messages.len(), 18, "Message 的變體數與上面的 match 對不上");
+
+    let mut codes: BTreeSet<String> = BTreeSet::new();
+    codes.extend(rejections.iter().map(|r| r.code().to_string()));
+    codes.extend(write_errors.iter().map(|e| e.code().to_string()));
+    codes.extend(messages.iter().map(|m| m.msg().code));
+
+    // http／agent／來源檢查的固定代碼（掃原始碼）。掃描器要有牙齒：已知的九個都得抓到。
+    let mut literals = coded_response_literals(include_str!("../src/http.rs"));
+    literals.extend(coded_response_literals(include_str!("../src/agent.rs")));
+    literals.extend(coded_response_literals(include_str!(
+        "../src/source_check.rs"
+    )));
+    for known in [
+        "invalid_op",
+        "runtime_not_found",
+        "pane_gone",
+        "output_read_failed",
+        "read_timeout",
+        "method_not_allowed",
+        "missing_pane_id",
+        "pane_not_bound",
+        "forbidden_source",
+    ] {
+        assert!(
+            literals.iter().any(|c| c == known),
+            "掃描 coded_error_response* 應該抓到固定代碼 {known}（實際 {literals:?}）"
+        );
+    }
+    codes.extend(literals);
+
+    let (_handle, state) = new_app_state();
+    let response = http::router(state)
+        .oneshot(
+            Request::builder()
+                .uri("/app/i18n.js")
+                .body(Body::empty())
+                .expect("request 建構不應該失敗"),
+        )
+        .await
+        .expect("oneshot 呼叫不應該失敗");
+    assert_eq!(response.status(), StatusCode::OK);
+    let source = String::from_utf8(body_bytes(response).await).expect("body 應該是合法 UTF-8");
+    let msg_keys = |marker: &str| -> BTreeSet<String> {
+        i18n_dictionary(&source, marker)
+            .into_iter()
+            .filter_map(|(key, _)| key.strip_prefix("msg.").map(str::to_string))
+            .collect()
+    };
+    let zh = msg_keys("var zh = {");
+    let en = msg_keys("var en = {");
+
+    let missing_zh: Vec<_> = codes.difference(&zh).collect();
+    let missing_en: Vec<_> = codes.difference(&en).collect();
+    assert!(
+        missing_zh.is_empty() && missing_en.is_empty(),
+        "後端會送出的代碼缺少字典鍵 msg.<code>（繁中缺 {missing_zh:?}、英文缺 {missing_en:?}）"
+    );
+    // 反向：字典的 msg.* 都對得到後端代碼（沒人送的鍵是死字串）。
+    let dead_zh: Vec<_> = zh.difference(&codes).collect();
+    let dead_en: Vec<_> = en.difference(&codes).collect();
+    assert!(
+        dead_zh.is_empty() && dead_en.is_empty(),
+        "字典有後端不會送出的 msg.* 鍵（繁中 {dead_zh:?}、英文 {dead_en:?}）"
+    );
+    assert!(
+        codes.len() > 30,
+        "代碼清單應該有 30 個以上（實際 {}）",
+        codes.len()
     );
 }

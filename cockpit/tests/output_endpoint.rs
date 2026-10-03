@@ -27,11 +27,12 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};
 use cockpit::http::{self, AppState};
 use cockpit_core::{
-    AgentRuntime, AnsiColor, OutputSegment, PaneId, PaneOutput, RuntimeError, RuntimeEvents,
-    RuntimeId, RuntimeSnapshot, RuntimeStore, SegmentStyle, StoreHandle,
+    AgentRuntime, AnsiColor, OutputSegment, PaneId, PaneOutput, READ_OUTPUT_FAILED_PREFIX,
+    RuntimeError, RuntimeEvents, RuntimeId, RuntimeSnapshot, RuntimeStore, SegmentStyle,
+    StoreHandle,
 };
 use http_body_util::BodyExt;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::time::Instant;
 use tower::ServiceExt;
 
@@ -468,6 +469,9 @@ async fn read_output_unknown_runtime_404_no_read() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(content_type.as_deref(), Some("application/json"));
     assert_error_body(&body);
+    assert_eq!(body["error"], "runtime 不存在：nope");
+    assert_eq!(body["code"], "runtime_not_found");
+    assert_eq!(body["params"], json!({"runtime": "nope"}));
     assert_no_store_and_nosniff(&headers);
     assert_eq!(fake.call_count(), 0, "不認識的 runtime 不該發出讀取");
 }
@@ -484,6 +488,9 @@ async fn read_output_pane_not_found_404() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(content_type.as_deref(), Some("application/json"));
     assert_error_body(&body);
+    assert_eq!(body["error"], "pane 不存在：w1:p99");
+    assert_eq!(body["code"], "pane_gone");
+    assert_eq!(body["params"], json!({"pane": "w1:p99"}));
     assert_no_store_and_nosniff(&headers);
 }
 
@@ -519,6 +526,8 @@ async fn read_output_unavailable_503() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(content_type.as_deref(), Some("application/json"));
     assert_eq!(body["error"], "連不上 wsl");
+    assert_eq!(body["code"], "output_read_failed");
+    assert_eq!(body["params"], json!({"detail": "連不上 wsl"}));
     assert_no_store_and_nosniff(&headers);
 }
 
@@ -538,7 +547,28 @@ async fn read_output_failed_503() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(content_type.as_deref(), Some("application/json"));
     assert_eq!(body["error"], "回應無法解析");
+    assert_eq!(body["code"], "output_read_failed");
+    assert_eq!(body["params"], json!({"detail": "回應無法解析"}));
     assert_no_store_and_nosniff(&headers);
+}
+
+/// ui-language task 3.1（design D4）：cockpit-herdr 的 `Failed` 原文以固定前綴開頭
+/// （`READ_OUTPUT_FAILED_PREFIX`）；`error` 照舊含前綴，`params.detail` 只放前綴之後的底層原因，
+/// 讓英文介面的範本不會夾一段繁中前綴。
+#[tokio::test]
+async fn read_output_failed_detail_omits_the_herdr_prefix() {
+    let message = format!("{READ_OUTPUT_FAILED_PREFIX}HERDR 回應 error: boom");
+    let fake = Arc::new(
+        FakeOutputRuntime::new(RUNTIME).with_behavior("w1:p1", Behavior::Failed(message.clone())),
+    );
+    let router = http::router(build(fake));
+
+    let (status, body, _, _) = send(&router, "GET", &output_uri(RUNTIME, "w1:p1")).await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["error"], message);
+    assert_eq!(body["code"], "output_read_failed");
+    assert_eq!(body["params"], json!({"detail": "HERDR 回應 error: boom"}));
 }
 
 /// Scenario「讀取逾時」：5 秒後 504，且服務不因此卡住其他請求（對另一個 pane 的請求仍能
@@ -597,6 +627,9 @@ async fn read_output_timeout_504_does_not_block_other_request() {
     let elapsed = start.elapsed();
     assert_eq!(stuck_status, StatusCode::GATEWAY_TIMEOUT);
     assert_error_body(&stuck_body);
+    assert_eq!(stuck_body["error"], "讀取逾時");
+    assert_eq!(stuck_body["code"], "read_timeout");
+    assert!(stuck_body.get("params").is_none());
     assert_no_store_and_nosniff(&stuck_headers);
     assert!(
         elapsed >= Duration::from_secs(5),

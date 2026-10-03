@@ -32,8 +32,8 @@ which stage it reached, and which one is waiting on you.
   front. Click one and Cockpit opens that pane.
 - **Opens like a desktop app.** A Windows shortcut starts Cockpit in the background and opens
   it in its own window. Close the window and Cockpit shuts down.
-
-The dashboard's labels are mostly in Traditional Chinese.
+- **English or Traditional Chinese.** The dashboard picks one from your browser language and
+  time zone, and a button in the top bar switches between the two.
 
 ## Read-only by design
 

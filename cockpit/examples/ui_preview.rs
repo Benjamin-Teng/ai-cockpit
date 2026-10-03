@@ -3385,6 +3385,47 @@ mod tests {
         ));
     }
 
+    /// ui-language task 3.2：預覽資料的 WSL 斷線卡與 project 警告帶代碼欄位，task 3.3 才能在英文
+    /// 介面看到翻譯；原文欄位照舊。
+    #[test]
+    fn fixture_carries_message_codes_for_english_preview() {
+        let state: ProjectedState = serde_json::from_str(FIXTURE).expect("fixture 應該能反序列化");
+        let wsl = state
+            .runtimes
+            .iter()
+            .find(|r| r.id.as_str() == "wsl")
+            .expect("fixture 有 wsl runtime");
+        match &wsl.connection {
+            cockpit_core::ProjectedConnection::Disconnected {
+                reason, reason_msg, ..
+            } => {
+                assert_eq!(reason, "WSL 發行版 Ubuntu-24.04 未啟動");
+                assert_eq!(reason_msg.code, "wsl_distro_not_running");
+                assert_eq!(reason_msg.params["distro"], "Ubuntu-24.04");
+            }
+            other => panic!("wsl 應為 Disconnected：{other:?}"),
+        }
+        let project = &state.projects[0];
+        assert_eq!(project.warning_msgs.len(), project.warnings.len());
+        assert_eq!(project.warning_msgs[0].code, "task_stage_reset");
+        // 最近事件的 drift 說明也帶代碼；HERDR 產生的 detail（working、exit code 0）不帶。
+        let drift = state
+            .recent_events
+            .iter()
+            .find(|e| e.kind == "drift")
+            .expect("fixture 有 drift 事件");
+        let detail_msg = drift.detail_msg.as_ref().expect("drift 事件帶 detail_msg");
+        assert_eq!(detail_msg.code, "wsl_distro_not_running");
+        assert_eq!(detail_msg.params["distro"], "Ubuntu-24.04");
+        assert!(
+            state
+                .recent_events
+                .iter()
+                .filter(|e| e.kind != "drift")
+                .all(|e| e.detail_msg.is_none())
+        );
+    }
+
     #[test]
     fn add_review_fixture_panes_adds_new_tab_without_touching_existing_panes() {
         let mut state: ProjectedState =

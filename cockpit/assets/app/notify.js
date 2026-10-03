@@ -42,19 +42,23 @@
   var MAX_SINGLE = 3;
   var BELL_SELECTOR = '#app [data-action="notify-settings"]';
 
-  // 面板上的標籤與說明（spec「通知設定」：英文標籤各附一句中文說明；不得出現「完」「成」連用的
-  // 那兩個字，見 cockpit-dashboard「畫面整頁重畫」）。
+  var t = window.cockpitI18n.t;
+  var tn = window.cockpitI18n.tn;
+
+  // 面板上的標籤與說明（spec「通知設定」「介面文字涵蓋範圍」）：四個事件名稱是產品詞彙，兩種語言都照原文；
+  // 說明走字典（`notify.kind.<kind>.desc`）。描述 HERDR done 的字典鍵照 design D5 命名（`notify.kind.done.desc`、
+  // `notify.title.done`），由 cockpit/tests/http.rs 守門：值不得暗示 task 已結束。
   var KIND_LABELS = {
-    blocked: { name: "agent blocked", desc: "agent 卡住，等你回應" },
-    done: { name: "agent done", desc: "agent 停下，等你來看（不代表 task 結束）" },
-    failed: { name: "task failed", desc: "task 被標記為 failed" },
-    completed: { name: "task completed", desc: "task 被標記為 completed" },
+    blocked: { name: "agent blocked", desc: t("notify.kind.blocked.desc") },
+    done: { name: "agent done", desc: t("notify.kind.done.desc") },
+    failed: { name: "task failed", desc: t("notify.kind.failed.desc") },
+    completed: { name: "task completed", desc: t("notify.kind.completed.desc") },
   };
 
-  // 通知標題（spec「通知呈現」）。
+  // 通知標題（spec「通知呈現」）：task failed／task completed 是事件名稱，兩種語言同文。
   var TITLES = {
-    blocked: "agent 卡住",
-    done: "agent 停下等你看",
+    blocked: t("notify.title.blocked"),
+    done: t("notify.title.done"),
     failed: "task failed",
     completed: "task completed",
   };
@@ -78,8 +82,8 @@
       var workspaces = arr(runtime.workspaces);
       for (var w = 0; w < workspaces.length; w += 1) {
         var tabs = arr(workspaces[w] && workspaces[w].tabs);
-        for (var t = 0; t < tabs.length; t += 1) {
-          var panes = arr(tabs[t] && tabs[t].panes);
+        for (var ti = 0; ti < tabs.length; ti += 1) {
+          var panes = arr(tabs[ti] && tabs[ti].panes);
           for (var p = 0; p < panes.length; p += 1) {
             if (panes[p]) {
               fn(runtime.id, panes[p]);
@@ -219,10 +223,14 @@
 
   function single(event) {
     if (event.kind === "blocked" || event.kind === "done") {
-      var body = event.runtime + " / " + event.pane;
-      if (event.names && event.names.length > 0) {
-        body += "（" + event.names.join("、") + "）";
-      }
+      var body =
+        event.names && event.names.length > 0
+          ? t("notify.body.paneNames", {
+              runtime: event.runtime,
+              pane: event.pane,
+              names: event.names.join(t("notify.body.namesSeparator")),
+            })
+          : t("notify.body.pane", { runtime: event.runtime, pane: event.pane });
       return {
         title: TITLES[event.kind],
         body: body,
@@ -232,14 +240,14 @@
     }
     return {
       title: TITLES[event.kind],
-      body: event.projectName + "：" + event.taskTitle,
+      body: t("notify.body.task", { project: event.projectName, task: event.taskTitle }),
       tag: "cockpit:" + event.kind + ":" + event.project + "/" + event.task,
       target: null,
     };
   }
 
   // 套用設定（關閉的類別不產生通知、不計入件數），1 至 3 件逐一，超過 3 件合併成一則：
-  // 標題「Cockpit：N 件事需要注意」，內文列前 3 件、最後一行「…」，標籤 cockpit:summary。
+  // 標題「Cockpit：N 件事需要注意」（英文 `Cockpit: N items need attention`），內文列前 3 件、最後一行「…」，標籤 cockpit:summary。
   function toNotifications(events, settings) {
     var enabled = normalizeSettings(settings);
     var list = [];
@@ -254,12 +262,12 @@
     }
     var lines = [];
     for (var j = 0; j < MAX_SINGLE; j += 1) {
-      lines.push(list[j].title + " · " + list[j].body);
+      lines.push(t("notify.summary.line", { title: list[j].title, body: list[j].body }));
     }
     lines.push("…");
     return [
       {
-        title: "Cockpit：" + list.length + " 件事需要注意",
+        title: tn("notify.summary.title", list.length),
         body: lines.join("\n"),
         tag: "cockpit:summary",
         target: null,
@@ -407,10 +415,10 @@
   panel.setAttribute("aria-labelledby", "notify-panel-title");
   panel.hidden = true;
 
-  var heading = make("h2", "notify-panel-title", "桌面通知");
+  var heading = make("h2", "notify-panel-title", t("notify.panel.title"));
   heading.id = "notify-panel-title";
   panel.appendChild(heading);
-  panel.appendChild(make("p", "notify-panel-note", "Cockpit 視窗在前景時不跳出通知。"));
+  panel.appendChild(make("p", "notify-panel-note", t("notify.panel.note")));
 
   var toggles = [];
   var kindList = make("ul", "notify-kinds");
@@ -469,14 +477,14 @@
     var message;
     var button = null;
     if (current === "granted") {
-      message = "通知權限：已允許。";
+      message = t("notify.permission.granted");
     } else if (current === "denied") {
-      message = "通知權限：已封鎖。要收到通知，請到瀏覽器的網站設定把這個網站的通知改為允許。";
+      message = t("notify.permission.denied");
     } else if (current === "unsupported") {
-      message = "這個瀏覽器不支援桌面通知。";
+      message = t("notify.permission.unsupported");
     } else {
-      message = "通知權限：尚未決定。";
-      button = make("button", "action-button", "允許通知");
+      message = t("notify.permission.default");
+      button = make("button", "action-button", t("notify.permission.allowButton"));
       button.type = "button";
       button.addEventListener("click", requestPermission);
     }

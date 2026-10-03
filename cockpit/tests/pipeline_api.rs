@@ -395,6 +395,46 @@ fn assert_error_response(
     );
 }
 
+/// `persist_failed`：參數只有底層 I/O 原因 `detail`，不含暫存目錄（狀態檔路徑）。
+fn assert_persist_failed(body: &Value, dir: &TempDir) {
+    assert_eq!(body["code"], "persist_failed", "本體：{body:?}");
+    let params = body["params"]
+        .as_object()
+        .expect("persist_failed 應有 params");
+    assert_eq!(params.len(), 1, "只應有 detail：{params:?}");
+    let detail = params["detail"].as_str().expect("detail 是字串");
+    assert!(!detail.is_empty());
+    let dir_text = dir.path().to_string_lossy().to_string();
+    assert!(
+        !detail.contains(&dir_text),
+        "detail 不得含狀態檔路徑：{detail}"
+    );
+    // error 原文照舊（含路徑；這是既有行為，params 才是新增、要避免洩漏的地方）。
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|e| e.starts_with("寫入狀態檔失敗"))
+    );
+}
+
+/// ui-language task 3.1（design D4）：錯誤本體的 `code` 與 `params`；沒有參數時 `params`
+/// 整個欄位省略。
+fn assert_code(body: &Value, code: &str, params: &[(&str, &str)]) {
+    assert_eq!(body["code"], code, "本體：{body:?}");
+    if params.is_empty() {
+        assert!(
+            body.get("params").is_none(),
+            "沒有參數時 params 應省略，實際：{body:?}"
+        );
+    } else {
+        let expected: serde_json::Map<String, Value> = params
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), Value::String((*v).to_string())))
+            .collect();
+        assert_eq!(body["params"], Value::Object(expected), "本體：{body:?}");
+    }
+}
+
 /// 讀 `/api/state` 的 version（不是完整輪詢，只取當下一次）。
 async fn state_version(router: &axum::Router) -> u64 {
     let (status, body, _content_type) = send(router, "GET", "/api/state", None).await;
@@ -502,6 +542,7 @@ async fn progress_rejected_409() {
 
     assert_error_response(status, &body, &content_type, StatusCode::CONFLICT);
     assert_eq!(body["error"], "已是最後一個 Stage");
+    assert_code(&body, "already_last_stage", &[]);
     assert_eq!(stage_of(&handle), "Build", "被拒絕不應改變投影中的進度");
 }
 
@@ -515,6 +556,8 @@ async fn progress_unknown_task_404() {
         send(&router, "POST", "/api/projects/p/tasks/nope/complete", None).await;
 
     assert_error_response(status, &body, &content_type, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"], "task 不存在：nope");
+    assert_code(&body, "unknown_task", &[("id", "nope")]);
 }
 
 #[tokio::test]
@@ -532,6 +575,8 @@ async fn progress_unknown_project_404() {
     .await;
 
     assert_error_response(status, &body, &content_type, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"], "project 不存在：nope");
+    assert_code(&body, "unknown_project", &[("id", "nope")]);
 }
 
 /// `<op>` 不是 `advance`／`complete`／`fail`／`clear` 四者之一：路由層就回 404，不進到寫入
@@ -546,6 +591,8 @@ async fn progress_unknown_op_404() {
         send(&router, "POST", "/api/projects/p/tasks/t1/bogus", None).await;
 
     assert_error_response(status, &body, &content_type, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"], "不是合法的操作：bogus");
+    assert_code(&body, "invalid_op", &[("op", "bogus")]);
     assert_eq!(stage_of(&handle), "Spec", "不合法的操作不該動到進度");
 }
 
@@ -590,6 +637,7 @@ async fn progress_retreat_at_first_stage_rejected_409() {
 
     assert_error_response(status, &body, &content_type, StatusCode::CONFLICT);
     assert_eq!(body["error"], "已是第一個 Stage");
+    assert_code(&body, "already_first_stage", &[]);
     assert_eq!(stage_of(&handle), "Spec", "被拒絕不應改變進度");
 }
 
@@ -631,6 +679,7 @@ async fn progress_write_failure_500() {
         &content_type,
         StatusCode::INTERNAL_SERVER_ERROR,
     );
+    assert_persist_failed(&body, &dir);
     assert_eq!(mark_of(&handle), Mark::None, "落檔失敗記憶體不應生效");
 }
 
@@ -727,6 +776,7 @@ async fn override_unknown_workstream_404() {
     .await;
 
     assert_error_response(status, &body, &content_type, StatusCode::NOT_FOUND);
+    assert_code(&body, "unknown_workstream", &[("id", "nope")]);
 }
 
 #[tokio::test]
@@ -746,6 +796,7 @@ async fn override_rejected_409() {
 
     assert_error_response(status, &body, &content_type, StatusCode::CONFLICT);
     assert_eq!(body["error"], "runtime 未登記");
+    assert_code(&body, "runtime_not_registered", &[]);
     assert_eq!(override_of(&handle), None, "被拒絕不應該留下覆蓋");
 }
 
@@ -807,6 +858,7 @@ async fn override_write_failure_500() {
         &content_type,
         StatusCode::INTERNAL_SERVER_ERROR,
     );
+    assert_persist_failed(&body, &dir);
     assert_eq!(override_of(&handle), None, "落檔失敗記憶體不應生效");
 }
 
@@ -876,6 +928,7 @@ async fn no_progress_service_returns_404_for_writes() {
     let (status, body, content_type) =
         send(&router, "POST", "/api/projects/p/tasks/t1/advance", None).await;
     assert_error_response(status, &body, &content_type, StatusCode::NOT_FOUND);
+    assert_code(&body, "unknown_project", &[("id", "p")]);
 
     let (status, body, content_type) = send(
         &router,
@@ -885,6 +938,7 @@ async fn no_progress_service_returns_404_for_writes() {
     )
     .await;
     assert_error_response(status, &body, &content_type, StatusCode::NOT_FOUND);
+    assert_code(&body, "unknown_project", &[("id", "p")]);
 
     let (status, body, content_type) = send(
         &router,
@@ -894,6 +948,7 @@ async fn no_progress_service_returns_404_for_writes() {
     )
     .await;
     assert_error_response(status, &body, &content_type, StatusCode::NOT_FOUND);
+    assert_code(&body, "unknown_project", &[("id", "p")]);
 }
 
 // ---------------------------------------------------------------------------

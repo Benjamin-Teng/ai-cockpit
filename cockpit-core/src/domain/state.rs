@@ -28,6 +28,11 @@ pub struct DomainState {
     pub active: HashMap<ProjectId, HashMap<WorkstreamId, TaskId>>,
     /// 每個 Project 載入狀態檔時產生的 warning（例如 task 的 `stage` 已不存在）；沒有 warning
     /// 的 project 不在這裡，等同空清單。
+    ///
+    /// **每一則 warning 的字串必須由 [`crate::Message`] 的 `text()` 產生**（ui-language design D4）：
+    /// 投影以 `Message::classify` 反推 `warning_msgs`，英文介面才能依代碼翻譯；自己 `format!` 的繁中原文會被
+    /// 歸成 `raw`、英文介面退回顯示繁中，而且不會有任何測試失敗。新增 warning 種類時，先在 `message.rs` 新增
+    /// `Message` 變體並補前端字典的 `msg.<code>`。
     pub warnings: HashMap<ProjectId, Vec<String>>,
 }
 

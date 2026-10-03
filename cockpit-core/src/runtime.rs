@@ -181,9 +181,20 @@ impl PaneOutput {
     }
 }
 
+/// `read_output` 實作回 `RuntimeError::Failed` 時，原因字串固定以這段開頭（`cockpit-herdr` 組字串、
+/// `cockpit` 的 HTTP 層取 `params.detail` 時剝掉；ui-language design D4：前綴是繁中，英文介面的範本
+/// 不該夾著它）。集中在這裡，兩端不各寫一份。
+pub const READ_OUTPUT_FAILED_PREFIX: &str = "讀取 pane 輸出失敗：";
+
 /// 呼叫 `AgentRuntime` 時可能發生的錯誤。
 ///
 /// `Display` 的輸出直接就是可以拿來當 `ConnectionState::Disconnected.reason` 用的字串。
+///
+/// **給人看的原因（`Unavailable.reason`、`Failed` 的字串）必須由 [`crate::Message`] 的 `text()` 產生**
+/// （ui-language design D4）：投影以 `Message::classify(原文)` 反推 `reason_msg`，英文介面才能依代碼翻譯；
+/// 直接 `format!` 出新的繁中原文不會有任何測試失敗，但那則原因會被歸成 `raw`、英文介面退回顯示繁中原文。
+/// 要新增一種失敗原因，先在 `message.rs` 新增 `Message` 變體（`text`／`msg`／`classify`），並補前端字典
+/// 的 `msg.<code>`（`cockpit/tests/http.rs` 的對帳測試會擋住缺鍵）。
 #[derive(Debug, Error)]
 pub enum RuntimeError {
     /// runtime 目前無法使用，但附上建議的重試間隔（例如 HERDR 還沒啟動、正在重連）。

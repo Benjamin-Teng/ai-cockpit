@@ -25,8 +25,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use cockpit_core::{
-    DomainState, Mark, Override, PaneId, ProjectDef, ProjectId, RuntimeId, TaskId, TaskProgress,
-    WorkstreamId,
+    DomainState, Mark, Message, Override, PaneId, ProjectDef, ProjectId, RuntimeId, TaskId,
+    TaskProgress, WorkstreamId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -310,10 +310,14 @@ fn resolve_tasks(
                 }
             }
             Some(state_task) => {
-                warnings.push(format!(
-                    "task {} 的 stage「{}」已不在 pipeline 的 stages 中，已退回起始 stage「{}」",
-                    task.id, state_task.stage, task.stage
-                ));
+                warnings.push(
+                    Message::TaskStageReset {
+                        task: task.id.to_string(),
+                        stage: state_task.stage.clone(),
+                        start: task.stage.clone(),
+                    }
+                    .text(),
+                );
                 TaskProgress {
                     stage: task.stage.clone(),
                     mark: state_task.mark,

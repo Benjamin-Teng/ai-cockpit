@@ -45,7 +45,7 @@
 //     比對更新（reconcile）：同一份資料重讀不會換掉任何節點，整頁重畫（render.js，只動 `#app`）本來
 //     就碰不到 `#files`，所以重畫期間檔案樹的節點、展開狀態、捲動位置與焦點都不變（spec「重畫不影響
 //     檔案樹」）。捲動容器是 tree 本身（契約 C2）。
-//   - 錯誤依回應本體的 `code` 查 ERROR_TEXT 顯示中文文案（design D10），不顯示 HTTP 狀態碼或 API 路徑；
+//   - 錯誤依回應本體的 `code` 查 ERROR_TEXT 顯示文案（design D10；文字隨介面語言，字典在 i18n.js），不顯示 HTTP 狀態碼或 API 路徑；
 //     資料夾讀取失敗只在該資料夾下方顯示原因，不影響樹的其他部分。
 //   - icon 以 `<img src="/vendor/material-icons/icons/<檔名>" alt="">` 顯示（design D11；裝飾性）。
 //   - 點檔案列（或 Enter）呼叫 `openFile()`（見下方「檔案分頁」）。
@@ -103,6 +103,9 @@
   // `changesTabLeft()` 讓 git.js 自己決定要不要查詢、要不要輪詢（見 setLeftTab()）。
   var LEFT_CHANGES = "changes";
   var LIVE_TAB_ID = "review-tab-live";
+
+  var t = window.cockpitI18n.t;
+  var tn = window.cockpitI18n.tn;
 
   var filesRoot = document.getElementById("files");
   var reviewRoot = document.getElementById("review");
@@ -179,33 +182,32 @@
 
   var ICON_BASE = "/vendor/material-icons/icons/";
   var REQUEST_TIMEOUT_MS = 10000;
-  var LOADING_ROOT_TEXT = "正在讀取根目錄…";
-  var LOADING_DIR_TEXT = "讀取中…";
-  var EMPTY_DIR_TEXT = "（空資料夾）";
 
   // design D10：依錯誤本體的 `code` 查表（spec「檔案端點的共同規則」代碼表），不以 HTTP 狀態碼或 API
-  // 路徑開頭。`not_found`／`wrong_kind` 依目標是根目錄查詢還是資料夾給不同說法（見 errorText()）。
+  // 路徑開頭。表裡存字典鍵（ui-language：文字隨介面語言，見 i18n.js 的 files.error.*）；`not_found`／
+  // `wrong_kind` 依目標是根目錄查詢還是資料夾給不同說法（見 errorText()）。
   var ERROR_TEXT = {
-    forbidden_source: "請求來源不被接受，請從本機的 Cockpit 頁面開啟",
-    method_not_allowed: "這個操作不被接受",
-    bad_request: "名稱含有無法處理的字元，無法讀取",
-    runtime_unknown: "設定中沒有這個 runtime",
-    pane_unknown: "這個 pane 已不在目前的畫面中",
-    no_root: "這個 pane 沒有可瀏覽的資料夾（沒有回報工作目錄，或該目錄不存在）",
-    root_unavailable: "這個資料夾目前無法瀏覽（不在允許的根目錄中）",
-    path_outside_root: "這個資料夾指向根目錄以外，不顯示內容",
-    not_found: "資料夾已不存在",
-    wrong_kind: "這個項目已不是資料夾",
-    too_large: "內容太大，無法顯示",
-    not_markdown: "不是 Markdown 檔案",
-    io_error: "讀取時發生錯誤",
-    network: "無法連線到 Cockpit 服務",
-    timeout: "讀取逾時（超過 10 秒沒有回應）",
+    forbidden_source: "files.error.forbiddenSource",
+    method_not_allowed: "files.error.methodNotAllowed",
+    bad_request: "files.error.badRequest",
+    runtime_unknown: "files.error.runtimeUnknown",
+    pane_unknown: "files.error.paneUnknown",
+    no_root: "files.error.noRoot",
+    root_unavailable: "files.error.rootUnavailable",
+    path_outside_root: "files.error.pathOutsideRoot",
+    not_found: "files.error.notFound",
+    wrong_kind: "files.error.wrongKind",
+    too_large: "files.error.tooLarge",
+    not_markdown: "files.error.notMarkdown",
+    io_error: "files.error.ioError",
+    network: "files.error.network",
+    timeout: "files.error.timeout",
   };
-  var UNKNOWN_ERROR_TEXT = "讀取失敗（無法辨識的回應）";
+  var UNKNOWN_ERROR_KEY = "files.error.unknown";
 
   function errorText(code) {
-    return Object.prototype.hasOwnProperty.call(ERROR_TEXT, code) ? ERROR_TEXT[code] : UNKNOWN_ERROR_TEXT;
+    var key = Object.prototype.hasOwnProperty.call(ERROR_TEXT, code) ? ERROR_TEXT[code] : UNKNOWN_ERROR_KEY;
+    return t(key, { seconds: REQUEST_TIMEOUT_MS / 1000 });
   }
 
   function seg(value) {
@@ -338,7 +340,7 @@
     refreshButton = document.createElement("button");
     refreshButton.type = "button";
     refreshButton.className = "action-button files-refresh";
-    refreshButton.textContent = "重新整理";
+    refreshButton.textContent = t("files.tree.refresh");
     refreshButton.addEventListener("click", function () {
       if (selectedPane !== null) {
         lookupRoot();
@@ -355,7 +357,7 @@
     treeEl = document.createElement("div");
     treeEl.className = "files-tree";
     treeEl.setAttribute("role", "tree");
-    treeEl.setAttribute("aria-label", "檔案樹");
+    treeEl.setAttribute("aria-label", t("files.tree.aria"));
     treeEl.hidden = true;
     treeEl.addEventListener("click", onTreeClick);
     treeEl.addEventListener("keydown", onTreeKeydown);
@@ -467,7 +469,7 @@
         if (listing === undefined) {
           missing.push(path);
         }
-        rows.push({ key: noteKey + "loading", level: level, text: path === "" ? LOADING_ROOT_TEXT : LOADING_DIR_TEXT, tone: "dim" });
+        rows.push({ key: noteKey + "loading", level: level, text: path === "" ? t("files.tree.loadingRoot") : t("files.tree.loadingDir"), tone: "dim" });
         return;
       }
       if (listing.error !== null) {
@@ -493,9 +495,9 @@
       });
       var hiddenCount = listing.omitted + listing.skipped;
       if (hiddenCount > 0) {
-        rows.push({ key: noteKey + "more", level: level, text: "還有 " + hiddenCount + " 項未顯示", tone: "dim" });
+        rows.push({ key: noteKey + "more", level: level, text: tn("files.tree.more", hiddenCount), tone: "dim" });
       } else if (listing.entries.length === 0) {
-        rows.push({ key: noteKey + "empty", level: level, text: EMPTY_DIR_TEXT, tone: "dim" });
+        rows.push({ key: noteKey + "empty", level: level, text: t("files.tree.emptyDir"), tone: "dim" });
       }
     };
     walk("", 1);
@@ -664,7 +666,7 @@
       status = errorText(view.code);
       tone = "warn";
     } else if (hasSelection && !treeVisible) {
-      status = LOADING_ROOT_TEXT;
+      status = t("files.tree.loadingRoot");
     }
     treeStatus.hidden = status === null;
     if (status !== null && treeStatus.textContent !== status) {
@@ -864,23 +866,21 @@
   // git-review task 4.1（design D9）：v1（本 change 之前）只有檔案分頁、每筆沒有 kind 欄位；v2 每筆帶
   // kind，讀到 v1 時每筆視為 kind:"file"（見 restoreTabs()）。
   var STORAGE_VERSION = 2;
-  var LOADING_FILE_TEXT = "正在讀取…";
-  var NOT_READ_TEXT = "尚未讀取";
   var NEAR_BOTTOM_PX = 6; // 同 output.js 的貼底門檻
   var POLL_INTERVAL_MS = 2000; // spec「自動更新」：前一次查詢結束後 2 秒才發下一次
-  var STALE_TEXT = "過期"; // 同 output.js 標題列的「過期」字樣
 
   // 檔案分頁專用的說法（design D10）：同一個 code 對檔案與資料夾給不同文案；其餘沿用 ERROR_TEXT。
   // root_unavailable 在檔案分頁上＝這個根目錄已沒有任何 pane 推算得出（spec「分頁還原」逐字文案）。
+  // 同 ERROR_TEXT，表裡存字典鍵。
   var FILE_ERROR_TEXT = {
-    not_found: "檔案已不存在",
-    wrong_kind: "這個項目已不是檔案",
-    path_outside_root: "這個檔案指向根目錄以外，不顯示內容",
-    root_unavailable: "這個根目錄目前沒有任何 pane，無法讀取",
+    not_found: "files.fileError.notFound",
+    wrong_kind: "files.fileError.wrongKind",
+    path_outside_root: "files.fileError.pathOutsideRoot",
+    root_unavailable: "files.fileError.rootUnavailable",
   };
 
   function fileErrorText(code) {
-    return Object.prototype.hasOwnProperty.call(FILE_ERROR_TEXT, code) ? FILE_ERROR_TEXT[code] : errorText(code);
+    return Object.prototype.hasOwnProperty.call(FILE_ERROR_TEXT, code) ? t(FILE_ERROR_TEXT[code]) : errorText(code);
   }
 
   function fileUrl(kind, runtime, rootId, path) {
@@ -1069,7 +1069,7 @@
     tab.setAttribute("aria-controls", "review-panel-f" + n);
     tab.setAttribute("data-path", file.path);
     tab.tabIndex = -1;
-    tab.title = file.path + "\n根目錄：" + file.rootName;
+    tab.title = t("files.tab.title", { path: file.path, root: file.rootName });
     var icon = document.createElement("img");
     icon.className = "review-tab-icon";
     icon.alt = "";
@@ -1087,8 +1087,8 @@
     close.type = "button";
     close.className = "review-tab-close";
     close.tabIndex = -1;
-    close.setAttribute("aria-label", "關閉 " + name);
-    close.title = "關閉";
+    close.setAttribute("aria-label", t("files.tab.closeNamed", { name: name }));
+    close.title = t("files.tab.close");
     close.textContent = "×";
 
     wrap.appendChild(tab);
@@ -1113,13 +1113,13 @@
     // 畫面上留著上一次的內容時顯示。
     var staleLabel = document.createElement("span");
     staleLabel.className = "file-stale-label";
-    staleLabel.textContent = STALE_TEXT;
+    staleLabel.textContent = t("files.toolbar.stale");
     staleLabel.hidden = true;
     var timeEl = document.createElement("span");
     timeEl.className = "file-toolbar-time";
     var vscode = document.createElement("a");
     vscode.className = "action-button file-vscode";
-    vscode.textContent = "在 VS Code 開啟";
+    vscode.textContent = t("files.toolbar.vscode");
     vscode.hidden = true;
     toolbar.appendChild(pathEl);
     toolbar.appendChild(staleLabel);
@@ -1191,7 +1191,7 @@
   // 工具列、狀態列與過期標示（只在值改變時寫 DOM：自動更新每 2 秒都會呼叫，內容沒變時不得動到節點）。
   function renderFilePanel(ft) {
     var els = ft.els;
-    var timeText = ft.lastReadAt === null ? NOT_READ_TEXT : "讀取於 " + clockText(ft.lastReadAt);
+    var timeText = ft.lastReadAt === null ? t("files.toolbar.notRead") : t("files.toolbar.readAt", { time: clockText(ft.lastReadAt) });
     if (els.timeEl.textContent !== timeText) {
       els.timeEl.textContent = timeText;
     }
@@ -1205,7 +1205,7 @@
       text = fileErrorText(ft.code);
       tone = "warn";
     } else if (ft.shown === null) {
-      text = LOADING_FILE_TEXT; // 還沒有任何內容畫出來（查詢中或第一次讀取中）
+      text = t("files.status.loading"); // 還沒有任何內容畫出來（查詢中或第一次讀取中）
     }
     setHidden(els.status, text === null);
     if (text !== null && els.status.textContent !== text) {
@@ -1325,7 +1325,7 @@
     if (typeof viewer !== "function") {
       var placeholder = document.createElement("p");
       placeholder.className = "file-placeholder";
-      placeholder.textContent = "尚未實作「" + ft.meta.viewer + "」檢視器";
+      placeholder.textContent = t("files.viewer.notImplemented", { kind: ft.meta.viewer });
       ft.els.host.replaceChildren(placeholder);
       finishRead(ft, sig, { ok: true });
       return;
@@ -1455,10 +1455,10 @@
       }
       // 目前分頁的包裝元素（外觀：同 Live Output 分頁的目前分頁標示）與關閉按鈕的 tabindex：只有目前
       // 分頁的關閉按鈕在 Tab 順序中（分頁列本身是 roving tabindex）。
-      reviewTabs.forEach(function (t) {
-        var current = t.els.tab === tabEl;
-        t.els.wrap.classList.toggle("is-current", current);
-        t.els.close.tabIndex = current ? 0 : -1;
+      reviewTabs.forEach(function (entry) {
+        var current = entry.els.tab === tabEl;
+        entry.els.wrap.classList.toggle("is-current", current);
+        entry.els.close.tabIndex = current ? 0 : -1;
       });
     };
     var fromLive = currentReviewTabId === LIVE_TAB_ID;
@@ -1642,8 +1642,8 @@
     );
   }
 
-  function isStoredFileTab(t) {
-    return t !== null && typeof t === "object" && isNonEmptyString(t.runtime) && isNonEmptyString(t.rootId) && isRelPath(t.path) && typeof t.rootName === "string";
+  function isStoredFileTab(tab) {
+    return tab !== null && typeof tab === "object" && isNonEmptyString(tab.runtime) && isNonEmptyString(tab.rootId) && isRelPath(tab.path) && typeof tab.rootName === "string";
   }
 
   // 只驗整體骨架（版本、`tabs` 是不是陣列、`left` 是不是認得的值、`current` 是不是 null 或物件）；單筆

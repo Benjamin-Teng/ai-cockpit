@@ -58,6 +58,10 @@
 (function () {
   "use strict";
 
+  // 介面文字經字典（i18n.js，ui-language task 2.1）：錯誤訊息是整句範本加具名佔位符，不拼接。
+  var t = window.cockpitI18n.t;
+  var tMsg = window.cockpitI18n.tMsg;
+
   var root = document.getElementById("app");
 
   var ui = {
@@ -126,8 +130,8 @@
       }
       for (var w = 0; w < rt.workspaces.length; w += 1) {
         var tabs = rt.workspaces[w] && Array.isArray(rt.workspaces[w].tabs) ? rt.workspaces[w].tabs : [];
-        for (var t = 0; t < tabs.length; t += 1) {
-          var panes = tabs[t] && Array.isArray(tabs[t].panes) ? tabs[t].panes : [];
+        for (var ti = 0; ti < tabs.length; ti += 1) {
+          var panes = tabs[ti] && Array.isArray(tabs[ti].panes) ? tabs[ti].panes : [];
           for (var p = 0; p < panes.length; p += 1) {
             if (panes[p] && panes[p].id === paneId) {
               return !panes[p].exited;
@@ -204,7 +208,8 @@
           try {
             var parsed = JSON.parse(text);
             if (parsed && typeof parsed.error === "string") {
-              reason = parsed.error;
+              // 錯誤本體帶 code／params 時依介面語言翻譯，沒有或字典不認得就是原文 error（design D4）。
+              reason = tMsg(parsed, parsed.error);
             }
           } catch (e) {
             reason = null;
@@ -212,11 +217,14 @@
           if (reason === null) {
             reason = text === "" ? response.statusText : text;
           }
-          showError(op, "操作失敗（HTTP " + response.status + "，" + label + "）：" + reason);
+          showError(op, t("actions.error.http", { status: response.status, label: label, reason: reason }));
         });
       },
       function (err) {
-        showError(op, "操作失敗（請求沒有完成，" + label + "）：" + (err && err.message ? err.message : err));
+        showError(
+          op,
+          t("actions.error.network", { label: label, reason: err && err.message ? err.message : err })
+        );
       }
     );
   }
@@ -250,6 +258,17 @@
       // 也不重畫（面板是 notify.js 在 #app 之外管理的節點）。
       if (window.cockpitNotify && typeof window.cockpitNotify.togglePanel === "function") {
         window.cockpitNotify.togglePanel();
+      }
+      return;
+    }
+
+    if (action === "toggle-language") {
+      // 語言切換按鈕（spec ui-language「語言切換按鈕」；design D3）：與鈴鐺同一套提早處理——不算「畫面操作」
+      // （不遞增 latestOp、不清 ui.error），也不重畫：setLang 寫 cockpit.lang 後整頁重新載入。
+      // 儲存不可用時按鈕本身已停用（render.js），這裡再擋一次，點了什麼都不做。
+      var i18n = window.cockpitI18n;
+      if (i18n && i18n.canPersist) {
+        i18n.setLang(i18n.lang === "zh" ? "en" : "zh");
       }
       return;
     }

@@ -5,7 +5,7 @@ mod common;
 use std::time::{Duration, SystemTime};
 
 use cockpit_core::{
-    AgentStatus, ConnectionState, FocusChange, RuntimeEvent, RuntimeState, RuntimeStore,
+    AgentStatus, ConnectionState, FocusChange, Message, RuntimeEvent, RuntimeState, RuntimeStore,
 };
 
 use common::{
@@ -872,5 +872,71 @@ fn set_connection_on_unregistered_runtime_is_drift() {
         store.state(&win).expect("win 應已登記"),
         &before_win,
         "既有 runtime 的完整狀態不受影響"
+    );
+}
+
+/// ui-language（事件 detail 翻譯）：狀態庫產生的每一種 drift 原因都由 `Message` 目錄組出，
+/// `classify` 能還原成對應代碼與 id（原文位元組與改動前相同，其他測試以字串斷言）。
+#[test]
+fn store_drift_reasons_are_catalog_messages() {
+    let mut store = RuntimeStore::new();
+    let win = runtime_id("win");
+    store.register(win.clone(), "herdr".to_string(), "x".to_string());
+    store
+        .replace(
+            &win,
+            snapshot(
+                vec![workspace("wJ", 1)],
+                vec![],
+                vec![],
+                vec![],
+                empty_focused(),
+            ),
+        )
+        .expect("replace 應成功");
+    let now = SystemTime::now();
+    let mut reason_of = |event: RuntimeEvent| {
+        store
+            .apply(&win, event, now)
+            .expect_err("應回傳 Drift")
+            .reason
+    };
+    // workspace 類、tab 類、pane 類、FocusChanged 各層級。
+    let cases = [
+        (
+            reason_of(RuntimeEvent::WorkspaceRemoved(workspace_id("wX"))),
+            Message::DriftWorkspaceNotFound { id: "wX".into() },
+        ),
+        (
+            reason_of(RuntimeEvent::TabRemoved(tab_id("wJ:t9"))),
+            Message::DriftTabNotFound { id: "wJ:t9".into() },
+        ),
+        (
+            reason_of(RuntimeEvent::PaneRemoved(pane_id("wJ:p9"))),
+            Message::DriftPaneNotFound { id: "wJ:p9".into() },
+        ),
+        (
+            reason_of(RuntimeEvent::FocusChanged(FocusChange {
+                workspace_id: None,
+                tab_id: Some(tab_id("wJ:t8")),
+                pane_id: None,
+            })),
+            Message::DriftTabNotFound { id: "wJ:t8".into() },
+        ),
+    ];
+    for (reason, expected) in cases {
+        assert_eq!(reason, expected.text());
+        assert_eq!(Message::classify(&reason), expected);
+    }
+    let ghost = runtime_id("ghost");
+    let err = store
+        .replace(
+            &ghost,
+            snapshot(vec![], vec![], vec![], vec![], empty_focused()),
+        )
+        .expect_err("未登記的 runtime");
+    assert_eq!(
+        Message::classify(&err.reason),
+        Message::DriftRuntimeNotRegistered { id: "ghost".into() }
     );
 }

@@ -4,7 +4,7 @@ mod common;
 
 use std::time::Duration;
 
-use cockpit_core::RuntimeError;
+use cockpit_core::{Message, RuntimeError};
 use cockpit_herdr::probe::{DistroProber, ProbeOutcome, WslProber, decode_list, evaluate};
 
 const RETRY_AFTER: Duration = Duration::from_secs(60);
@@ -135,4 +135,46 @@ async fn real_wsl_probe_lists_running_distro() {
         }
         Err(other) => panic!("預期探測成功或「未啟動」，實得: {other}"),
     }
+}
+
+/// ui-language task 3.2：三種探測失敗各自歸入正確代碼，原文照舊。
+#[test]
+fn probe_reasons_classify_to_stable_codes() {
+    fn reason_of(err: RuntimeError) -> String {
+        match err {
+            RuntimeError::Unavailable { reason, .. } => reason,
+            other => panic!("預期 RuntimeError::Unavailable，實得 {other:?}"),
+        }
+    }
+
+    // 發行版未啟動。
+    let outcome = ProbeOutcome {
+        status_ok: true,
+        stdout: utf16le_bytes("docker-desktop\r\n"),
+        stderr: vec![],
+    };
+    let reason = reason_of(evaluate("Ubuntu-24.04", Ok(outcome), RETRY_AFTER).unwrap_err());
+    assert_eq!(reason, "WSL 發行版 Ubuntu-24.04 未啟動");
+    let msg = Message::classify(&reason).msg();
+    assert_eq!(msg.code, "wsl_distro_not_running");
+    assert_eq!(msg.params["distro"], "Ubuntu-24.04");
+
+    // 指令非零結束：detail 是去頭尾空白的 stderr。
+    let outcome = ProbeOutcome {
+        status_ok: false,
+        stdout: vec![],
+        stderr: b"  no wsl \n".to_vec(),
+    };
+    let reason = reason_of(evaluate("Ubuntu-24.04", Ok(outcome), RETRY_AFTER).unwrap_err());
+    assert_eq!(reason, "WSL 探測失敗：no wsl");
+    let msg = Message::classify(&reason).msg();
+    assert_eq!(msg.code, "wsl_probe_failed");
+    assert_eq!(msg.params["detail"], "no wsl");
+
+    // 指令跑不起來。
+    let io = std::io::Error::other("boom");
+    let reason = reason_of(evaluate("Ubuntu-24.04", Err(io), RETRY_AFTER).unwrap_err());
+    let msg = Message::classify(&reason).msg();
+    assert_eq!(msg.code, "wsl_probe_failed");
+    assert_eq!(msg.params["detail"], "boom");
 }

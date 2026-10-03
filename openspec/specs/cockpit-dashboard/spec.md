@@ -10,7 +10,7 @@ Direction 01 視覺語彙與三欄版面（含 Project 切換）。證據：設�
 
 ### Requirement: 路由與內嵌資源
 
-系統必須提供 `GET /`（`index.html`）、`GET /app/<檔名>`（`channel.js`、`render.js`、`actions.js`、`output.js`、
+系統必須提供 `GET /`（`index.html`）、`GET /app/<檔名>`（`i18n.js`、`channel.js`、`render.js`、`actions.js`、`output.js`、
 `files.js`、`viewers.js`、`git.js`、`notify.js`、`style.css`）、`GET /manifest.webmanifest`、`GET /icons/<檔名>`（192 與 512 px PNG）、
 `GET /vendor/<路徑>`（隨附的第三方前端資源：`pdfjs/` 下的 PDF 函式庫、worker、`cmaps/`、`standard_fonts/` 與該版本
 函式庫執行時需要的其他資源檔，`material-icons/` 下的檔案 icon 與主題對照表）、`GET /api/state`（目前整張圖 JSON）、`GET /ws`、`live-output` 定義的
@@ -23,9 +23,9 @@ Direction 01 視覺語彙與三欄版面（含 Project 切換）。證據：設�
 
 #### Scenario: 路由與 content-type
 
-- **WHEN** 逐一請求 `/`、`/app/render.js`、`/app/actions.js`、`/app/output.js`、`/app/files.js`、`/app/viewers.js`、
+- **WHEN** 逐一請求 `/`、`/app/i18n.js`、`/app/render.js`、`/app/actions.js`、`/app/output.js`、`/app/files.js`、`/app/viewers.js`、
   `/app/git.js`、`/app/notify.js`、`/app/style.css`、`/manifest.webmanifest`、`/icons/icon-192.png`、`/api/state`
-- **THEN** 皆為 200，content-type 分別為 HTML、JavaScript、JavaScript、JavaScript、JavaScript、JavaScript、JavaScript、JavaScript、CSS、
+- **THEN** 皆為 200，content-type 分別為 HTML、JavaScript、JavaScript、JavaScript、JavaScript、JavaScript、JavaScript、JavaScript、JavaScript、CSS、
   `application/manifest+json`、`image/png`、`application/json`
 
 #### Scenario: vendored 資源

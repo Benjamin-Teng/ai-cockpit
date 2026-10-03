@@ -91,7 +91,7 @@
 //! 落回 axum 內建的 405、`HEAD` 落回 axum 內建的「轉發到 `GET` 再清空本體」，理由見
 //! [`crate::vendor`] 模組文件。
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU16;
 use std::time::Duration;
@@ -105,7 +105,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use cockpit_core::{
     AgentRuntime, OutputFormat, Override, PaneId, ProgressOp, ProjectId, ProjectedState,
-    RuntimeError, RuntimeId, TaskId, WorkstreamId,
+    READ_OUTPUT_FAILED_PREFIX, RuntimeError, RuntimeId, TaskId, WorkstreamId,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
@@ -458,6 +458,12 @@ async fn app_asset(Path(file): Path<String>) -> Response {
             include_str!("../assets/app/actions.js"),
         )
             .into_response(),
+        // ui-language task 1.1（design D1）：介面字典與語言決定；index.html 第一個載入。
+        "i18n.js" => (
+            [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+            include_str!("../assets/app/i18n.js"),
+        )
+            .into_response(),
         "output.js" => (
             [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
             include_str!("../assets/app/output.js"),
@@ -598,7 +604,7 @@ async fn progress_op(
     Path((project, task, op)): Path<(String, String, String)>,
 ) -> Response {
     let Some(parsed_op) = parse_progress_op(&op) else {
-        return error_response(StatusCode::NOT_FOUND, &format!("不是合法的操作：{op}"));
+        return invalid_op_response(&format!("不是合法的操作：{op}"), &op);
     };
     let Some(progress) = &app.progress else {
         // 沒有任何 project 時（design Migration Plan）任何 project 引用都等於「不存在」；
@@ -614,6 +620,12 @@ async fn progress_op(
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => write_error_response(error),
     }
+}
+
+/// 404 `invalid_op`（參數 `op`）：進度端點與 agent 端點遇到不認得的 `<op>` 共用，`reason` 是各自的
+/// 繁中原文（ui-language design D4）。
+pub(crate) fn invalid_op_response(reason: &str, op: &str) -> Response {
+    coded_error_response_with_params(StatusCode::NOT_FOUND, "invalid_op", reason, [("op", op)])
 }
 
 /// 把路徑上的 `<op>` 字串比對成 [`ProgressOp`]；不是五值之一回 `None`（design D6；progress-model
@@ -737,7 +749,12 @@ async fn read_pane_output(
     };
 
     let Some(agent_runtime) = app.runtimes.get(&RuntimeId::new(runtime.as_str())) else {
-        return error_response(StatusCode::NOT_FOUND, &format!("runtime 不存在：{runtime}"));
+        return coded_error_response_with_params(
+            StatusCode::NOT_FOUND,
+            "runtime_not_found",
+            &format!("runtime 不存在：{runtime}"),
+            [("runtime", runtime.as_str())],
+        );
     };
 
     let pane_id = PaneId::new(pane.as_str());
@@ -749,13 +766,29 @@ async fn read_pane_output(
 
     match read {
         Ok(Ok(output)) => output_response(&runtime, &pane, output),
-        Ok(Err(err @ RuntimeError::PaneNotFound { .. })) => {
-            error_response(StatusCode::NOT_FOUND, &err.to_string())
-        }
+        Ok(Err(err @ RuntimeError::PaneNotFound { .. })) => coded_error_response_with_params(
+            StatusCode::NOT_FOUND,
+            "pane_gone",
+            &err.to_string(),
+            [("pane", pane.as_str())],
+        ),
         Ok(Err(err @ (RuntimeError::Unavailable { .. } | RuntimeError::Failed(_)))) => {
-            error_response(StatusCode::SERVICE_UNAVAILABLE, &err.to_string())
+            // `detail`：底層原因。`Failed` 的原文帶 cockpit-herdr 加的繁中前綴，剝掉讓英文介面
+            // 的範本不夾繁中；`error` 欄位照舊是完整原文。
+            let text = err.to_string();
+            let detail = text
+                .strip_prefix(READ_OUTPUT_FAILED_PREFIX)
+                .unwrap_or(&text);
+            coded_error_response_with_params(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "output_read_failed",
+                &text,
+                [("detail", detail)],
+            )
         }
-        Err(_elapsed) => error_response(StatusCode::GATEWAY_TIMEOUT, "讀取逾時"),
+        Err(_elapsed) => {
+            coded_error_response(StatusCode::GATEWAY_TIMEOUT, "read_timeout", "讀取逾時")
+        }
     }
 }
 
@@ -852,21 +885,19 @@ pub(crate) fn with_no_store_headers(mut response: Response) -> Response {
 /// 不符；axum 自己判定路徑完全不匹配的 404（例如未知路徑）不在此限，那種情況根本不會進到
 /// 這個函式）。
 pub(crate) fn write_error_response(error: WriteError) -> Response {
-    match &error {
+    let status = match &error {
         WriteError::UnknownProject(_)
         | WriteError::UnknownTask(_)
-        | WriteError::UnknownWorkstream(_) => {
-            error_response(StatusCode::NOT_FOUND, &error.to_string())
-        }
-        WriteError::PaneNotBound => {
-            coded_error_response(StatusCode::FORBIDDEN, "pane_not_bound", &error.to_string())
-        }
-        WriteError::Rejected(_) => error_response(StatusCode::CONFLICT, &error.to_string()),
+        | WriteError::UnknownWorkstream(_) => StatusCode::NOT_FOUND,
+        WriteError::PaneNotBound => StatusCode::FORBIDDEN,
+        WriteError::Rejected(_) => StatusCode::CONFLICT,
         WriteError::Persist { .. } | WriteError::Internal(_) => {
             tracing::error!(%error, "寫入端點：狀態檔寫入失敗");
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string())
+            StatusCode::INTERNAL_SERVER_ERROR
         }
-    }
+    };
+    // `code`／`params` 由 `WriteError` 自己提供（ui-language design D4），`error` 仍是繁中原文。
+    coded_error_response_with_params(status, error.code(), &error.to_string(), error.params())
 }
 
 /// 錯誤回應本體 `{"error": "<reason>"}`（spec 多處要求的形狀）；檔案端點（file-review design
@@ -876,6 +907,9 @@ struct ErrorBody<'a> {
     error: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     code: Option<&'a str>,
+    /// 代碼的參數（名稱 → 字串值；ui-language design D4）；沒有參數時整個欄位省略。
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    params: BTreeMap<String, String>,
 }
 
 /// 全 crate 共用的錯誤回應：本體 `{"error": "<reason>"}`，並帶上
@@ -883,20 +917,45 @@ struct ErrorBody<'a> {
 /// 要帶這兩個標頭，這裡是唯一、不會漏掉任何分支的掛點——見 [`with_no_store_headers`] 的文件
 /// 說明為什麼連寫入端點的錯誤回應也一起帶）。
 pub(crate) fn error_response(status: StatusCode, reason: &str) -> Response {
-    error_body_response(status, reason, None)
+    error_body_response(status, reason, None, BTreeMap::new())
 }
 
 /// 同 [`error_response`]，本體多帶 `code`：`{"error": "<reason>", "code": "<code>"}`（file-review
 /// spec「檔案端點的共同規則」；design D10）。檔案端點的錯誤一律走這裡（經
 /// [`crate::files::FileApiError`] 的 `IntoResponse`）。
 pub(crate) fn coded_error_response(status: StatusCode, code: &str, reason: &str) -> Response {
-    error_body_response(status, reason, Some(code))
+    error_body_response(status, reason, Some(code), BTreeMap::new())
 }
 
-fn error_body_response(status: StatusCode, reason: &str, code: Option<&str>) -> Response {
+/// 同 [`coded_error_response`]，本體再帶 `params`：`{"error", "code", "params": {…}}`（ui-language
+/// design D4；前端以代碼加參數翻譯，`error` 仍是繁中原文）。`params` 為空時省略該欄位。
+pub(crate) fn coded_error_response_with_params<K, V>(
+    status: StatusCode,
+    code: &str,
+    reason: &str,
+    params: impl IntoIterator<Item = (K, V)>,
+) -> Response
+where
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    let params = params
+        .into_iter()
+        .map(|(name, value)| (name.as_ref().to_string(), value.as_ref().to_string()))
+        .collect();
+    error_body_response(status, reason, Some(code), params)
+}
+
+fn error_body_response(
+    status: StatusCode,
+    reason: &str,
+    code: Option<&str>,
+    params: BTreeMap<String, String>,
+) -> Response {
     let body = serde_json::to_string(&ErrorBody {
         error: reason,
         code,
+        params,
     })
     .expect("ErrorBody 只含字串，序列化不會失敗");
     with_no_store_headers(

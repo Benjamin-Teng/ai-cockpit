@@ -49,7 +49,7 @@ async function main() {
   const url = `http://127.0.0.1:${PORT}/`;
   const chrome = spawn(
     CHROME,
-    ['--headless=new', '--disable-gpu', '--no-first-run', `--remote-debugging-port=${CDP_PORT}`,
+    ['--headless=new', '--lang=zh-TW', '--disable-gpu', '--no-first-run', `--remote-debugging-port=${CDP_PORT}`,
       '--remote-allow-origins=*', `--user-data-dir=${udd}`, '--window-size=1536,1000', url],
     { stdio: 'ignore', windowsHide: true }
   );

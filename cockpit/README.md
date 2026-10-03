@@ -419,6 +419,103 @@ Cockpit 在檔案根目錄是 git repo 時（`is_git` 為真），另外提供�
   `meta`／`blob`／`render` 直接重用同一套 [`resolve`／`read_capped`]／viewer 分類／Markdown 渲染／
   原始內容 content-type 規則）。
 
+## 介面語言（change `ui-language`）
+
+儀表板的介面文字可在繁體中文與英文之間切換，字典集中在 `cockpit/assets/app/i18n.js`（繁中與英文兩份、鍵完全相同）。
+
+**語言怎麼決定**（頁面載入時、任何文字繪製前；結果只有 `zh` 與 `en`）：
+
+1. `localStorage` 的 `cockpit.lang` 是 `zh` 或 `en`：照它（手動選過的結果）。
+2. 否則看瀏覽器第一順位語言（`navigator.languages[0]`，沒有時用 `navigator.language`）：不分大小寫為 `zh`、`zh-Hant`、`zh-Hans`，
+   或其後再接 `-TW`、`-HK`、`-MO`、`-CN` 之一，就是 `zh`。只看第一順位：語言清單是 `en-US`、`zh-TW` 時仍為英文。
+3. 否則看時區（`Intl` 解析結果）：`Asia/Taipei`、`Asia/Hong_Kong`、`Asia/Macau`、`Asia/Macao`、`Asia/Shanghai`、
+   `Asia/Chongqing`、`Asia/Chungking`、`Asia/Harbin`、`Asia/Urumqi`、`Asia/Kashgar`、`PRC`、`ROC`、`Hongkong` 就是 `zh`。
+4. 其餘為 `en`。
+
+`localStorage` 或 `Intl` 不能用時，視為沒有該項資訊。`<html lang>` 依結果設為 `zh-Hant` 或 `en`。這套規則與宣傳頁 `site/` 相同。
+
+**切換**：頂列通知鈴鐺旁有切換按鈕（繁中介面顯示 `EN`，英文介面顯示 `中文`）。按下會把另一種語言存進
+`cockpit.lang` 並重新載入頁面；不做執行期熱切換。同一個 Cockpit 在其他視窗開著時，會收到 `cockpit.lang` 的 `storage` 事件，
+同樣重新載入。重新載入後開著的檔案與 git 分頁、通知設定照既有機制還原。`localStorage` 寫不進去時按鈕停用。
+
+**桌面啟動器**（`cockpit-launch`）的訊息框不經過瀏覽器，改依 Windows 顯示語言（`GetUserDefaultUILanguage`）：主要語言為中文
+且為繁體或簡體（台灣、香港、澳門、中國或未指定地區）用繁中，其餘一律英文。訊息框標題維持 `AI Agent Cockpit`，附在訊息後的記錄檔
+路徑與內容照原文。設定檔與命令列錯誤只有前綴（「設定錯誤：」「命令列錯誤：」）跟語言，錯誤細節維持繁中（設定驗證訊息不在翻譯範圍）。
+環境變數 `COCKPIT_LAUNCH_LANG=en|zh` 是**測試用覆寫**（自動驗收用，一般使用不要設）。
+
+**不翻譯**：使用者資料（project、stage、task、workstream 名稱、檔案內容、pane 輸出、git 資料）、HERDR 與 git 回傳的原文、
+HERDR 的 agent 狀態值、task 狀態值、連線狀態值、事件 `kind` 與 HERDR 產生的事件說明、`AI Agent Cockpit`、`Factory Floor`、
+`Live Output`、`Git Graph`、`Completed`／`Failed` 按鈕，以及終端機與日誌訊息、設定檔驗證錯誤。
+
+### 後端訊息代碼
+
+前端原文顯示的後端訊息同時提供穩定的代碼與參數，讓前端依介面語言翻譯；原本的繁中文字欄位（`error`、`reason`、`warnings` 等）
+**保留不變**。前端的規則：**繁中介面一律顯示原文欄位**（原文就是繁中，且可能帶範本放不下的細節）；**英文介面**遇到字典（`msg.<代碼>`）有
+範本、且範本的佔位符都有參數時，以範本代入參數值顯示（參數值原樣代入，不翻譯），遇到字典沒有的代碼或欄位不存在時退回顯示原文。
+
+**HTTP 錯誤本體**：`{"error": "<繁中文字>", "code": "<代碼>", "params": {"<名稱>": "<字串>"}}`，沒有參數時省略 `params`。
+適用於進度寫入、綁定覆蓋、agent 端點與輸出讀取端點。檔案與 git 端點另有自己的 `code` 表（見前面兩節），由前端的 `files.error.*`、
+`git.error.*` 字典對應。
+
+| code | params | 出現的地方 |
+|---|---|---|
+| `invalid_op` | `op` | 進度端點的操作名稱不合法（404）；agent 端點只提供 start、advance（404） |
+| `unknown_project` | `id` | project 不存在或尚無寫入服務（404） |
+| `unknown_task` | `id` | task 不存在（404） |
+| `unknown_workstream` | `id` | workstream 不存在（404） |
+| `already_last_stage` | 無 | 推進時已是最後一個 stage（409） |
+| `already_first_stage` | 無 | 退回時已是第一個 stage（409） |
+| `already_marked` | 無 | task 已有 Completed／Failed 標記（409） |
+| `task_not_in_workstream` | 無 | task 不屬於該 workstream（409） |
+| `runtime_not_registered` | 無 | 綁定指定的 runtime 未登記（409） |
+| `runtime_not_connected` | 無 | 綁定指定的 runtime 未連線（409） |
+| `pane_not_found` | 無 | 綁定指定的 pane 不存在（409） |
+| `pane_exited` | 無 | 綁定指定的 pane 已 exited（409） |
+| `persist_failed` | `detail`（I/O 原因，不含路徑） | 狀態檔寫入失敗（500） |
+| `internal_error` | 無 | 寫入任務異常結束（500） |
+| `pane_not_bound` | `task`、`pane`（寫入鎖內重驗發現綁定已變時沒有參數） | agent 的 pane 沒有綁定到該 task 所屬的 workstream（403） |
+| `missing_pane_id` | 無 | agent 端點缺少 `X-Herdr-Pane-Id` 標頭（400） |
+| `forbidden_source` | 無 | 本機同源檢查不通過（403） |
+| `method_not_allowed` | 無 | 不被接受的 HTTP method（405） |
+| `runtime_not_found` | `runtime` | 輸出讀取：runtime 不存在（404） |
+| `pane_gone` | `pane` | 輸出讀取：pane 不存在（404） |
+| `output_read_failed` | `detail` | 輸出讀取：runtime 無法連線或讀取失敗（503） |
+| `read_timeout` | 無 | 輸出讀取：單次讀取逾時（504） |
+
+**投影裡的訊息**（`/api/state` 與 `/ws`）：原文欄位旁多一個 `{"code": "<代碼>", "params": {…}}` 形式的欄位，同一個 `Message`
+目錄（`cockpit-core/src/message.rs`）同時產生原文與代碼。欄位：
+
+- 連線 `reason`（`disconnected`）旁的 `reason_msg`，一律有值。
+- 連線 `protocol_warning`（`connected`）旁的 `protocol_warning_msg`，沒有警告時為 `null`。
+- project `warnings` 旁的 `warning_msgs`，與 `warnings` 等長、同順序。
+- 最近事件 `detail` 旁的 `detail_msg`：**只有** `drift` 種類、且 `detail`（`Drift::reason`）是下表內的 Cockpit 訊息時才有。
+  Cockpit 自己產生的事件說明只出現在 drift（狀態庫的「不存在／未登記」與事件 payload 無法解析；目錄內其他訊息也可能以 `Drift` 事件帶入）；
+  其餘種類的 `detail` 是 HERDR 產生的英文值（agent 狀態、exit code、`from <舊值>`）或使用者取的名稱，一律省略，前端顯示 `detail` 原文。
+
+| code | params | 原文（繁中） |
+|---|---|---|
+| `wsl_distro_not_running` | `distro` | WSL 發行版 {distro} 未啟動 |
+| `wsl_probe_failed` | `detail` | WSL 探測失敗：{detail} |
+| `snapshot_failed` | `detail` | snapshot 失敗：{detail} |
+| `seed_snapshot_failed` | `detail` | seed snapshot 失敗：{detail} |
+| `lifecycle_subscribe_failed` | `detail` | L 訂閱建立失敗：{detail} |
+| `status_subscribe_failed` | `detail` | S 訂閱建立失敗：{detail} |
+| `status_resubscribe_failed` | `detail` | S 重開失敗：{detail} |
+| `protocol_untested` | `protocol`、`tested`（如 `20..=22`） | HERDR protocol {protocol} 不在已測範圍 {tested} |
+| `event_stream_ended` | 無 | 事件流結束 |
+| `event_connection_error` | `label`（`L`／`S`）、`detail` | {label} 連線錯誤：{detail} |
+| `event_connection_ended` | `label`（`L`／`S`） | {label} 連線結束 |
+| `task_stage_reset` | `task`、`stage`、`start` | task {task} 的 stage「{stage}」已不在 pipeline 的 stages 中，已退回起始 stage「{start}」 |
+| `drift_workspace_not_found` | `id` | workspace {id} 不存在（事件指到狀態庫沒有的 workspace，drift） |
+| `drift_tab_not_found` | `id` | tab {id} 不存在（同上） |
+| `drift_pane_not_found` | `id` | pane {id} 不存在（同上） |
+| `drift_runtime_not_registered` | `id` | runtime {id} 未登記（事件或快照指到沒登記的 runtime，drift） |
+| `event_payload_unparsable` | `event`、`detail`（serde 英文原文） | {event} payload 無法解析：{detail} |
+| `raw` | `text` | 無法歸類的原文（HERDR 或作業系統回傳的英文錯誤等），前端照 `text` 顯示 |
+
+`detail` 多為 HERDR 或作業系統回傳的原文（可能是英文），兩種語言都原樣代入範本。新增一種訊息時，先在 `Message` 目錄加變體、再補
+`i18n.js` 兩份字典的 `msg.<代碼>`；`cockpit/tests/http.rs` 的對帳測試會擋缺鍵或多餘的鍵。
+
 ## 單一執行檔
 
 所有靜態資源（HTML、JS、CSS、manifest、PNG 圖示）都用 `include_str!`／`include_bytes!` 內嵌進
@@ -479,6 +576,7 @@ dashboard 提供 `manifest.webmanifest` 與 192／512 圖示，沒有 service wo
 - `COCKPIT_BROWSER`：瀏覽器執行檔的完整路徑，覆寫上述尋找順序。
 - `COCKPIT_LAUNCH_DIALOG_FILE`：**測試用入口**。有值時不顯示訊息框（訊息框會阻塞），改把訊息以 UTF-8
   附加寫入該檔，供自動驗收讀取。一般使用不要設。
+- `COCKPIT_LAUNCH_LANG`：**測試用入口**（`en` 或 `zh`）。覆寫訊息框的語言，供自動驗收用；一般使用不要設，語言見「介面語言」一節。
 
 ### 安裝腳本 `scripts/install-desktop.ps1`
 

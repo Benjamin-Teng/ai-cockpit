@@ -1,7 +1,8 @@
 # 交接：下一段任務
 
-> **建立日期**：2026-10-02　|　**上一段做完的事**：change 11 `desktop-launch-notify`——一鍵開啟的桌面啟動器（`cockpit-launch`＋桌面捷徑）、
-> 關窗即結束（`cockpit --exit-when-idle`）、四類可開關的桌面通知。使用者授權細節由 Claude 決定、事後彙整；審查由 Opus 5.5 擔任（本專案視同 Codex）。
+> **建立日期**：2026-10-03　|　**上一段做完的事**：change `ws-source-check`（m1）與 change `ui-language`（介面可切中英、後端訊息代碼、
+> 啟動器跟隨 Windows 語言）；審查由 Opus 5.5 擔任（本專案視同 Codex）。v0.1.0 打包與發布由另一個 session「打包發佈與版本管理」負責。
+> 2026-10-02：change 11 `desktop-launch-notify`（啟動器、關窗即結束、桌面通知）。
 > 同日稍早：change 9 去識別化並改寫 git 歷史、repo 公開、change 10 Live Output 色彩微調。
 > 同日最後：宣傳頁（GitHub Pages）與 README 中英雙語（非 OpenSpec change，文件與靜態頁）。
 > **性質**：接手用文件，會過期，每段重寫。
@@ -17,7 +18,7 @@
 2. repo **已公開** `https://github.com/Benjamin-Teng/ai-cockpit`；**每次推送前**跑 `node docs/research/2026-10-02/deid-check.js --history`（0 命中才推）；
    **歷史不再改寫**。
 3. 審查：本專案 Opus 5.5 subagent 審查**視同 Codex**（memory 有）。
-4. **使用者 2026-10-03 排定的三件事**：① m1 來源檢查——已完成（change `ws-source-check`，archive `2026-10-03-ws-source-check`）；② 介面語言可選中英（change `ui-language`，設計已提給使用者，待確認後 propose）；③ 發布 v0.1.0（Inno Setup 安裝精靈＋zip、GitHub Actions 建置、MIT 授權、tag `v0.1.0`），排在 ② 之後。
+4. **使用者 2026-10-03 排定的三件事**：① m1 來源檢查——完成（archive `2026-10-03-ws-source-check`）；② 介面語言可選中英——完成（archive `2026-10-03-ui-language`，含 SDD ledger）；③ 發布 v0.1.0——由另一個 session「打包發佈與版本管理」在分支 `release-packaging`（獨立 worktree `D:\projects\ai-cockpit-release`）負責：Inno Setup 安裝精靈＋zip、推 `vX.Y.Z` tag 觸發 GitHub Actions、MIT LICENSE、CHANGELOG、`rust-toolchain.toml` 釘 1.97.1；它等 ui-language 併回 main 的通知後 rebase、改 README 下載段落、打 `v0.1.0`。**Tauri：使用者 2026-10-03 再次確認不包**，有常駐／系統匣需求才重評。
 
 ## 1. 現在的狀態
 
@@ -30,6 +31,7 @@
   - 後端 `--exit-when-idle`：最後一個 `/ws` 關閉滿 10 秒（`GET /`、`/api/state` 會延長）或 60 秒內從未連線即正常結束。手動跑 `cockpit` 不帶旗標時不受影響。
   - 通知：頂列鈴鐺開設定面板；agent blocked／done、task failed／completed 四類開關（預設 blocked、failed）；前景不打擾、>3 件合併、點通知帶回並選定 pane、
     多視窗設定同步。**task failed／completed 目前只由人工標記產生**（agent 不能標記），所以這兩類幾乎只在另一個視窗標記時才會出現。
+- **介面語言**（規格 `openspec/specs/ui-language/`）：字典 `cockpit/assets/app/i18n.js`（`t`／`tn`／`tMsg`，繁中與英文兩份、鍵與佔位符必須一致）；語言規則同宣傳頁，手動選擇存 `localStorage` 的 `cockpit.lang`，頂列切換鈕重新載入、其他視窗跟著換。後端訊息：錯誤本體 `{error, code, params}`、投影 `reason_msg`／`protocol_warning_msg`／`warning_msgs`／事件 `detail_msg`，代碼由 `cockpit-core` 的 `Message` 目錄產生（新增訊息**一律加變體**，對帳測試會擋缺字典鍵）；繁中介面顯示原文、英文套 `msg.*` 範本。代碼清單在 `cockpit/README.md`「介面語言」。啟動器依 `GetUserDefaultUILanguage`。驗收 `docs/research/2026-10-03/i18n-check.js`（第 5 段會重拍 15 張英文截圖並覆寫已提交的 PNG，重拍後必跑 deid-check 並逐張看圖）。**既有驗收腳本都帶 `--lang=zh-TW`**，不依賴機器時區。
 - **宣傳頁與 README**：`site/`（靜態頁，`.github/workflows/pages.yml` 在 `site/**` 有變動推上 `main` 時發布到 `https://benjamin-teng.github.io/ai-cockpit/`；Pages 來源已設為 GitHub Actions）。主視覺是 Signal Grid 點陣動畫（使用者 2026-10-02 從三個原型選定）。語言：`index.html` head 腳本決定——手動選過照 `localStorage` 的 `cockpit.site.lang`；否則第一順位瀏覽器語言符合 `zh`／`zh-Hant`／`zh-Hans`（可帶 TW／HK／MO／CN）或時區在台港澳中就用繁中；繁中字串在 `site/i18n.js`，鍵與 `index.html` 的 `data-i18n` 一對一。根目錄 `README.md`（英文）與 `README.zh-TW.md` 頂端互相連結；橫幅 `docs/assets/readme-banner.svg` 由 `node docs/assets/gen-readme-banner.js` 產生（改橫幅改產生器再重跑）。`site/img/` 的兩張截圖是 `docs/research/` 既有去識別化截圖的複本。
 - **去識別化**：`docs/research/2026-10-02/deid-check.js`（用法 `deid-check.md`）＋本機詞表 `.deid-terms`（repo 根、不進 git，換機器要重建）。保留 `quant-dev`、`shioaji`。
 - **可用指令**（repo 根目錄）：
@@ -84,7 +86,7 @@ change 10 與更早仍有效的坑：本檔前一版第 3 節（`git log -2 --fo
 
 ## 5. 之後的路
 
-使用者回饋 → 依回饋修正。之後可考慮：`/ws` 來源檢查（同時解掉 m1）、若常駐需求出現再評估 Tauri（系統匣、開機自啟；ADR-0005 補充段）。
+使用者回饋 → 依回饋修正。之後可考慮：若常駐需求出現再評估 Tauri（系統匣、開機自啟；ADR-0005 補充段）。
 
 ## 版本紀錄
 
@@ -105,3 +107,4 @@ change 10 與更早仍有效的坑：本檔前一版第 3 節（`git log -2 --fo
 | 36 | 2026-10-02 | change 11 `desktop-launch-notify`（啟動器、關窗即結束、桌面通知）併回並 archive；兩份備份已刪除 |
 | 37 | 2026-10-02 | 宣傳頁（GitHub Pages）、README 中英雙語與生成藝術橫幅；Opus 審查兩輪 |
 | 38 | 2026-10-03 | change `ws-source-check`（m1）：`/api/state`、`/ws` 來源檢查，`listen` 收緊為 `127.0.0.1`／`::1`、埠不得為 80，`GET /` 防嵌入；Opus 審查兩輪 |
+| 39 | 2026-10-03 | change `ui-language`（介面中英切換、後端訊息代碼、啟動器語言）SDD 完成，Opus 兩段階段審查＋整支審查；Tauri 確認不包；release 交給打包 session |

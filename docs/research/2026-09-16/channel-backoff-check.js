@@ -109,7 +109,7 @@ async function attachCdp(cdpPort, pageUrlPrefix) {
 async function launchHeadlessChrome(cdpPort, url, label) {
   const udd = fs.mkdtempSync(path.join(os.tmpdir(), 'cockpit-chrome-'));
   const chrome = spawnTracked(CHROME, [
-    '--headless=new', '--disable-gpu', '--no-first-run',
+    '--headless=new', '--lang=zh-TW', '--disable-gpu', '--no-first-run',
     `--remote-debugging-port=${cdpPort}`, '--remote-allow-origins=*',
     `--user-data-dir=${udd}`, '--window-size=1024,768', url,
   ], label);

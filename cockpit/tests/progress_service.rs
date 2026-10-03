@@ -1270,3 +1270,59 @@ async fn agent_advance_rejects_when_binding_basis_no_longer_holds() {
     assert_eq!(stage_of(&handle, "a"), stage_before, "stage 不動");
     assert_eq!(active_of(&handle, "be"), None);
 }
+
+/// ui-language task 3.1（design D4）：`WriteError::code()`／`params()` 是前端翻譯用的穩定代碼與
+/// 參數；`Display` 的繁中原文不變；`persist_failed` 的參數只有底層 I/O 原因，不含狀態檔路徑。
+#[tokio::test]
+async fn write_error_codes_and_params() {
+    let params = |error: &WriteError| -> Vec<(String, String)> {
+        error
+            .params()
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect()
+    };
+
+    let unknown_project = WriteError::UnknownProject(ProjectId::new("px"));
+    assert_eq!(unknown_project.code(), "unknown_project");
+    assert_eq!(params(&unknown_project), [("id".into(), "px".into())]);
+    assert_eq!(unknown_project.to_string(), "project 不存在：px");
+
+    let unknown_task = WriteError::UnknownTask(TaskId::new("tx"));
+    assert_eq!(unknown_task.code(), "unknown_task");
+    assert_eq!(params(&unknown_task), [("id".into(), "tx".into())]);
+
+    let unknown_ws = WriteError::UnknownWorkstream(WorkstreamId::new("wx"));
+    assert_eq!(unknown_ws.code(), "unknown_workstream");
+    assert_eq!(params(&unknown_ws), [("id".into(), "wx".into())]);
+
+    let rejected = WriteError::Rejected(Rejection::AlreadyMarked);
+    assert_eq!(rejected.code(), "already_marked");
+    assert!(params(&rejected).is_empty());
+
+    let not_bound = WriteError::PaneNotBound;
+    assert_eq!(not_bound.code(), "pane_not_bound");
+    assert!(params(&not_bound).is_empty());
+
+    let secret = PathBuf::from("C:/Users/some-user/AppData/state.json");
+    let persist = WriteError::Persist {
+        path: secret.clone(),
+        source: std::io::Error::other("磁碟已滿"),
+    };
+    assert_eq!(persist.code(), "persist_failed");
+    assert_eq!(params(&persist), [("detail".into(), "磁碟已滿".into())]);
+    assert!(
+        !params(&persist)
+            .iter()
+            .any(|(_, v)| v.contains("some-user")),
+        "params 不得含狀態檔路徑"
+    );
+    assert!(persist.to_string().contains("some-user"), "error 原文照舊");
+
+    let join_error = tokio::spawn(async { panic!("boom") })
+        .await
+        .expect_err("task panic 應回 JoinError");
+    let internal = WriteError::Internal(join_error);
+    assert_eq!(internal.code(), "internal_error");
+    assert!(params(&internal).is_empty());
+}

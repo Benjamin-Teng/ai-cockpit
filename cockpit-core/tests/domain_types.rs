@@ -192,3 +192,44 @@ fn domain_state_initial_progress_is_starting_stage_and_none() {
             .is_none_or(Vec::is_empty)
     );
 }
+
+/// ui-language task 3.1（design D4）：`Rejection::code()` 是前端翻譯用的穩定代碼，
+/// 八個變體各一個 snake_case 名稱；`Display` 的繁中原文不受影響。
+#[test]
+fn rejection_code_is_stable_snake_case_per_variant() {
+    let cases: [(Rejection, &str, &str); 8] = [
+        (
+            Rejection::AlreadyLastStage,
+            "already_last_stage",
+            "已是最後一個 Stage",
+        ),
+        (
+            Rejection::AlreadyFirstStage,
+            "already_first_stage",
+            "已是第一個 Stage",
+        ),
+        (Rejection::AlreadyMarked, "already_marked", "已有標記"),
+        (
+            Rejection::TaskNotInWorkstream,
+            "task_not_in_workstream",
+            "task 不屬於該 workstream",
+        ),
+        (
+            Rejection::RuntimeNotRegistered,
+            "runtime_not_registered",
+            "runtime 未登記",
+        ),
+        (
+            Rejection::RuntimeNotConnected,
+            "runtime_not_connected",
+            "runtime 未連線",
+        ),
+        (Rejection::PaneNotFound, "pane_not_found", "pane 不存在"),
+        (Rejection::PaneExited, "pane_exited", "pane 已 exited"),
+    ];
+
+    for (rejection, code, text) in cases {
+        assert_eq!(rejection.code(), code);
+        assert_eq!(rejection.to_string(), text, "原文不得改變");
+    }
+}

@@ -356,6 +356,12 @@ fn stage_renamed_falls_back_to_initial_stage_and_warns() {
     assert_eq!(project_warnings.len(), 1);
     assert!(project_warnings[0].contains("t1"));
     assert!(project_warnings[0].contains("Build"));
+    // ui-language task 3.2：這則 warning 投影時歸 `task_stage_reset`（原文欄位不變）。
+    let msg = cockpit_core::Message::classify(&project_warnings[0]).msg();
+    assert_eq!(msg.code, "task_stage_reset");
+    assert_eq!(msg.params["task"], "t1");
+    assert_eq!(msg.params["stage"], "Build");
+    assert_eq!(msg.params["start"], "Spec");
 }
 
 #[test]

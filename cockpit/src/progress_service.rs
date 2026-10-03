@@ -66,6 +66,34 @@ pub enum WriteError {
     Internal(#[source] tokio::task::JoinError),
 }
 
+impl WriteError {
+    /// 穩定的 snake_case 代碼（ui-language design D4）：HTTP 錯誤本體的 `code`，前端依它查字典
+    /// 翻譯；`Rejected` 沿用 [`Rejection::code`]。代碼集中定義在這裡，handler 不散寫字串。
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::UnknownProject(_) => "unknown_project",
+            Self::UnknownTask(_) => "unknown_task",
+            Self::UnknownWorkstream(_) => "unknown_workstream",
+            Self::Rejected(rejection) => rejection.code(),
+            Self::Persist { .. } => "persist_failed",
+            Self::PaneNotBound => "pane_not_bound",
+            Self::Internal(_) => "internal_error",
+        }
+    }
+
+    /// 與 [`WriteError::code`] 搭配的參數（名稱 → 字串值）；沒有參數回空。`persist_failed` 的
+    /// `detail` 只有底層 I/O 原因，刻意**不含**狀態檔路徑（路徑可能帶使用者名稱）。
+    pub fn params(&self) -> Vec<(&'static str, String)> {
+        match self {
+            Self::UnknownProject(id) => vec![("id", id.to_string())],
+            Self::UnknownTask(id) => vec![("id", id.to_string())],
+            Self::UnknownWorkstream(id) => vec![("id", id.to_string())],
+            Self::Persist { source, .. } => vec![("detail", source.to_string())],
+            Self::Rejected(_) | Self::PaneNotBound | Self::Internal(_) => Vec::new(),
+        }
+    }
+}
+
 /// 測試用：落檔 IO 的開始與結束時點，交給 [`WriteHook`]。
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -158,18 +158,21 @@
   // 「小於數像素」的門檻：freshly 開啟、內容還沒超過一屏時 scrollHeight - scrollTop -
   // clientHeight 為 0，一定小於這個值，預設視為貼底。
   var NEAR_BOTTOM_PX = 6;
-  var TRUNCATED_TEXT = "更早的輸出未顯示";
-  var GONE_TEXT = "pane 已不存在";
-  // 請求本身失敗（fetch reject，例如網路中斷）時顯示的固定中文說明——這種情況沒有回應本體
-  // 可以解析出 `error` 欄位（brief「精確值」：fetch reject 也算失敗，原因顯示一段固定的中文
+  // 介面文字經字典（i18n.js，ui-language task 2.1；鍵見 output.*，繁中值與改動前逐字相同）。
+  var t = window.cockpitI18n.t;
+  var tMsg = window.cockpitI18n.tMsg;
+  var TRUNCATED_TEXT = t("output.truncated");
+  var GONE_TEXT = t("output.gone");
+  // 請求本身失敗（fetch reject，例如網路中斷）時顯示的固定說明——這種情況沒有回應本體
+  // 可以解析出 `error` 欄位（brief「精確值」：fetch reject 也算失敗，原因顯示一段固定的
   // 說明）。
-  var NETWORK_ERROR_TEXT = "無法連線到伺服器，正在重試";
+  var NETWORK_ERROR_TEXT = t("output.networkError");
   // 前端逾時（跟上面的「請求本身失敗」分開一個字串：這是頁面自己放棄等待，不是連線層面的
-  // reject，原因不同，顯示的說明也應該不同）。
-  var TIMEOUT_REASON_TEXT = "請求逾時（超過 6 秒沒有回應），正在重試";
+  // reject，原因不同，顯示的說明也應該不同）。秒數取自 REQUEST_TIMEOUT_MS，不在字典裡寫死。
+  var TIMEOUT_REASON_TEXT = t("output.timeout", { seconds: REQUEST_TIMEOUT_MS / 1000 });
   // 空狀態文案（direction-01-visual task 4.1；design D7 逐字）：不提位置（760–1199 與 <760 時
-  // runtime 清單不在右側），直接用畫面上的按鈕名稱。
-  var EMPTY_TEXT = "還沒選 pane。點 runtime 清單裡的任一列，或按 Factory Floor 列首的「看輸出」。";
+  // runtime 清單不在右側），直接用畫面上的按鈕名稱（「看輸出」取自 render.row.viewOutput，不重複寫）。
+  var EMPTY_TEXT = t("output.empty", { viewOutput: t("render.row.viewOutput") });
 
   function seg(value) {
     return encodeURIComponent(value);
@@ -230,7 +233,7 @@
     // --warn 同一組語彙）：預設隱藏，setStale() 切換。
     staleLabelEl = document.createElement("span");
     staleLabelEl.className = "output-stale-label";
-    staleLabelEl.textContent = "過期";
+    staleLabelEl.textContent = t("output.stale");
     staleLabelEl.hidden = true;
     titleGroup.appendChild(staleLabelEl);
 
@@ -239,7 +242,7 @@
     closeButton = document.createElement("button");
     closeButton.type = "button";
     closeButton.className = "action-button output-close";
-    closeButton.textContent = "取消選取"; // live-output delta spec「取消選取」（原「關閉」）
+    closeButton.textContent = t("output.deselect"); // live-output delta spec「取消選取」（原「關閉」）
     closeButton.addEventListener("click", handleDeselectClick);
     header.appendChild(closeButton);
 
@@ -547,13 +550,13 @@
       try {
         var payload = JSON.parse(bodyText);
         if (payload && typeof payload.error === "string") {
-          return payload.error;
+          return tMsg(payload, payload.error);
         }
       } catch (e) {
         // 本體不是合法 JSON：退回顯示狀態碼。
       }
     }
-    return "HTTP " + status;
+    return t("output.http", { status: status });
   }
 
   function markStaleWithReason(reason) {

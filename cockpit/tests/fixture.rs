@@ -69,6 +69,10 @@ fn fixture_projected_state_deserializes() {
         project.warnings[0], "task docs-1 的 stage \"Draft\" 已不在 stages，退回起始 stage",
         "warning 內容應該跟畫面驗收腳本斷言的字串一致"
     );
+    // ui-language task 3.2：`warning_msgs` 與 `warnings` 等長，且帶代碼與參數。
+    assert_eq!(project.warning_msgs.len(), project.warnings.len());
+    assert_eq!(project.warning_msgs[0].code, "task_stage_reset");
+    assert_eq!(project.warning_msgs[0].params["task"], "docs-1");
     // task 5.2 fix round 1（Codex review：驗收證據不足）：原本只有 be／docs／ops 三條
     // workstream，覆蓋不到 bound(override)／unbound 兩種綁定結果；補 qa（bound + override）、
     // release（unbound），讓 fixture 覆蓋 state-projection spec 「Project 投影」列的五種
@@ -208,4 +212,34 @@ fn fixture_projected_state_deserializes() {
         unmarked >= 10,
         "fixture 至少要有 10 個 mark 為 none 的 task（實際 {unmarked}）"
     );
+}
+
+/// ui-language task 3.2：沒有任何 `*_msg` 欄位的舊形狀 fixture 仍能反序列化（`#[serde(default)]`）。
+#[test]
+fn fixture_without_message_code_fields_still_deserializes() {
+    fn strip(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for key in [
+                    "reason_msg",
+                    "protocol_warning_msg",
+                    "warning_msgs",
+                    "detail_msg",
+                ] {
+                    map.remove(key);
+                }
+                map.values_mut().for_each(strip);
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    let mut value: serde_json::Value = serde_json::from_str(FIXTURE).expect("fixture 是合法 JSON");
+    strip(&mut value);
+    assert!(!value.to_string().contains("_msg"), "前置：新欄位都已移除");
+
+    let state: ProjectedState = serde_json::from_value(value).expect("舊形狀應該能反序列化");
+    let project = &state.projects[0];
+    assert_eq!(project.warnings.len(), 1);
+    assert!(project.warning_msgs.is_empty(), "缺欄位取預設空陣列");
 }

@@ -42,6 +42,12 @@
 (function () {
   "use strict";
 
+  // 介面文字一律經字典（i18n.js，ui-language task 2.1；key 命名見該檔檔頭）：t(key, params) 具名佔位符、
+  // tn(key, n, params) 依數量選 .one／.other。i18n.js 是 index.html 第一個載入的腳本，這裡載入時就拿得到。
+  var t = window.cockpitI18n.t;
+  var tn = window.cockpitI18n.tn;
+  var tMsg = window.cockpitI18n.tMsg;
+
   var KNOWN_STATUSES = ["working", "blocked", "done", "idle", "unknown"];
 
   function statusClass(status) {
@@ -118,8 +124,10 @@
   // 這是即時資料。renderRuntimeLamp() 與 window.onChannel 都呼叫這個函式產生同一份文字，兩條
   // 路徑不會對不齊（沿用 I2 的「模組層級狀態＋兩處讀同一份」設計）。
   function lampTitle(runtimeId, connState, channelState) {
-    var base = "cockpit → HERDR runtime " + runtimeId + "：" + connState;
-    return channelState === "connected" ? base : base + "（最後已知）";
+    return t(channelState === "connected" ? "render.lamp.title" : "render.lamp.titleStale", {
+      runtime: runtimeId,
+      state: connState,
+    });
   }
 
   // I2（使用者決定，direction-01-visual task 2.3 fix round 1；顏色依 Codex fix round 1
@@ -156,7 +164,7 @@
 
     // I2：「最後已知」一律輸出，預設由 CSS 隱藏（topbar 的 data-channel-state="connected"
     // 時），通道非 connected 時才顯示——見上方函式註解。
-    lamp.appendChild(el("span", "runtime-lamp-stale", "最後已知"));
+    lamp.appendChild(el("span", "runtime-lamp-stale", t("render.lamp.stale")));
 
     var stateEl = el("span", "runtime-lamp-state", connState);
     // design D11：狀態文字一律用無襯線，不套等寬——跟 .runtime-lamp-id 刻意不同字體。
@@ -190,6 +198,7 @@
     }
     topbar.appendChild(lamps);
     topbar.appendChild(renderNotifyBell());
+    topbar.appendChild(renderLangToggle());
 
     return topbar;
   }
@@ -207,7 +216,7 @@
     var bell = el("button", "notify-bell");
     bell.type = "button";
     bell.setAttribute("data-action", "notify-settings");
-    bell.setAttribute("aria-label", "通知設定");
+    bell.setAttribute("aria-label", t("render.notify.label"));
     bell.setAttribute("aria-controls", "notify-panel");
     // aria-expanded 依面板目前是否開著（修正波，3.5 採納項）：面板狀態在 notify.js，這裡每次重畫照實
     // 讀回，所以面板開著時重畫出來的新鈴鐺仍是 true；開關面板（不觸發重畫）時由 notify.js 直接改
@@ -217,7 +226,7 @@
       typeof window.cockpitNotify.isOpen === "function" &&
       window.cockpitNotify.isOpen();
     bell.setAttribute("aria-expanded", open ? "true" : "false");
-    bell.title = "通知設定";
+    bell.title = t("render.notify.label");
 
     var svg = document.createElementNS(SVG_NS, "svg");
     svg.setAttribute("viewBox", "0 0 16 16");
@@ -243,6 +252,27 @@
     return bell;
   }
 
+  // 語言切換按鈕（spec ui-language「語言切換按鈕」；design D3）：鈴鐺旁，比照鈴鐺每次重畫都重建，
+  // 帶 `data-action="toggle-language"`（焦點還原只認 data-action 元素）；按下由 actions.js 呼叫
+  // `cockpitI18n.setLang(另一種語言)`＝寫 cockpit.lang 並重新載入頁面，所以這裡不存任何狀態。
+  // 文字、lang 與可及名稱都是「按下後會變成的那種語言」的樣子，由字典提供（render.lang.*：繁中字典
+  // 放 EN／en／Switch to English，英文字典放 中文／zh-Hant／切換為繁體中文——兩份值刻意各用目標語言寫，
+  // 不隨介面語言翻譯）。localStorage 不可用（`cockpitI18n.canPersist` 為 false，載入時偵測一次）時
+  // 選擇存不下來，按鈕停用並以 title 說明原因。
+  function renderLangToggle() {
+    var i18n = window.cockpitI18n;
+    var button = el("button", "lang-toggle", i18n.t("render.lang.text"));
+    button.type = "button";
+    button.setAttribute("data-action", "toggle-language");
+    button.setAttribute("lang", i18n.t("render.lang.code"));
+    button.setAttribute("aria-label", i18n.t("render.lang.aria"));
+    if (!i18n.canPersist) {
+      button.disabled = true;
+      button.title = i18n.t("render.lang.needsStorage");
+    }
+    return button;
+  }
+
   // runtime 卡標題列右側的連線狀態：符號（跟頂列燈號、底列通道共用 .conn-symbol 的三種形狀，
   // design D4「連線」列）＋狀態文字，顏色依狀態（style.css .runtime-conn-*）。
   // ui-fixes task 4.3（spec cockpit-dashboard「畫面整頁重畫」通道斷線段落、design D2）：通道不是
@@ -255,7 +285,7 @@
     var dot = el("span", "conn-symbol");
     dot.setAttribute("aria-hidden", "true");
     wrap.appendChild(dot);
-    wrap.appendChild(el("span", "runtime-conn-stale", "最後已知"));
+    wrap.appendChild(el("span", "runtime-conn-stale", t("render.lamp.stale")));
     wrap.appendChild(el("span", "connection-state", state));
     return wrap;
   }
@@ -277,7 +307,7 @@
       item("protocol", String(connection.protocol));
       item("last snapshot", connection.last_snapshot_at);
     } else if (connection.state === "disconnected") {
-      item("reason", connection.reason);
+      item("reason", tMsg(connection.reason_msg, connection.reason));
       item("retry in", connection.retry_in_secs + "s");
     }
     box.appendChild(list);
@@ -286,7 +316,9 @@
       connection.protocol_warning !== null &&
       connection.protocol_warning !== undefined
     ) {
-      box.appendChild(el("div", "protocol-warning", connection.protocol_warning));
+      box.appendChild(
+        el("div", "protocol-warning", tMsg(connection.protocol_warning_msg, connection.protocol_warning))
+      );
     }
     return box;
   }
@@ -378,8 +410,8 @@
     // 幾乎同色，也沒有說明），改用一個文字標記，放在 DOM 文字裡、不用 CSS content。`.focused`
     // class 照舊保留。
     if (pane.focused) {
-      var focusMark = el("span", "pane-herdr-focus", "作用中");
-      focusMark.title = "HERDR 目前聚焦的 pane";
+      var focusMark = el("span", "pane-herdr-focus", t("render.pane.focus"));
+      focusMark.title = t("render.pane.focusTitle");
       row.appendChild(focusMark);
     }
 
@@ -387,7 +419,7 @@
     if (rebinding && runtime.connection.state === "connected" && !pane.exited) {
       row.classList.add("bind-target");
       row.appendChild(
-        actionButton("綁定到這裡", { action: "bind-here", runtime: runtime.id, pane: pane.id })
+        actionButton(t("render.pane.bindHere"), { action: "bind-here", runtime: runtime.id, pane: pane.id })
       );
     }
 
@@ -540,7 +572,14 @@
   // （不是符號單獨表達），滿足「凡是以顏色表達的狀態都必須同時以文字呈現」的一般原則，也讓
   // 「有 N 則 warning」這件事本身可以只讀文字判斷、不必只靠顏色。
   function renderWarningCount(count) {
-    return el("span", "project-item-warnings", "警告 " + count);
+    return el("span", "project-item-warnings", tn("render.warning.count", count));
+  }
+
+  // 非 bound 狀態的單段文字（.ff-binding-text 單行省略，style.css）：英文比繁中長，欄寬不夠時會被截斷，
+  // 全文同時放在外層 .ff-binding 的 title（同一個字典字串），滑鼠停在上面看得到。
+  function appendBindingText(wrap, text) {
+    wrap.title = text;
+    wrap.appendChild(el("span", "ff-binding-text", text));
   }
 
   function renderBindingSummary(binding) {
@@ -561,32 +600,30 @@
         boundText.appendChild(el("span", "ff-binding-pane", binding.pane_id));
         wrap.appendChild(boundText);
         if (binding.source === "override") {
-          wrap.appendChild(el("span", "ff-binding-badge", "改綁"));
+          wrap.appendChild(el("span", "ff-binding-badge", t("render.binding.rebound")));
         }
         break;
       case "unbound":
-        wrap.appendChild(el("span", "ff-binding-text", "未綁定"));
+        appendBindingText(wrap, t("render.binding.unbound"));
         break;
       case "ambiguous":
-        wrap.appendChild(
-          el("span", "ff-binding-text", "歧義（" + binding.candidates.length + "）")
-        );
+        appendBindingText(wrap, tn("render.binding.ambiguous", binding.candidates.length));
         break;
       case "runtime_disconnected":
-        wrap.appendChild(el("span", "ff-binding-text", "runtime 未連線"));
+        appendBindingText(wrap, t("render.binding.runtimeDisconnected"));
         // ui-fixes task 4.4（spec「Factory Floor」；design D3）：覆蓋造成的斷線（source 為
         // override）同樣顯示「改綁」徽章，自動綁定的斷線（auto）沒有；徽章樣式沿用 bound 的。
         if (binding.source === "override") {
-          wrap.appendChild(el("span", "ff-binding-badge", "改綁"));
+          wrap.appendChild(el("span", "ff-binding-badge", t("render.binding.rebound")));
         }
         break;
       case "none":
-        wrap.appendChild(el("span", "ff-binding-text", "無綁定"));
+        appendBindingText(wrap, t("render.binding.none"));
         break;
       default:
         // 防禦：未知的 binding.state 不該發生（投影只會輸出這五種之一），但沿用整份檔案
         // 「未知值不壞畫面」的原則，顯示原字串而不是丟例外。
-        wrap.appendChild(el("span", "ff-binding-text", String(binding.state)));
+        appendBindingText(wrap, String(binding.state));
     }
     return wrap;
   }
@@ -603,15 +640,15 @@
     }
     if (task.mark === "none") {
       if (task.stage !== project.stages[0]) {
-        add("退回", "retreat");
+        add(t("render.task.back"), "retreat");
       }
       if (task.stage !== project.stages[project.stages.length - 1]) {
-        add("推進", "advance");
+        add(t("render.task.advance"), "advance");
       }
       add("Completed", "complete");
       add("Failed", "fail");
     } else {
-      add("清除標記", "clear");
+      add(t("render.task.clearMark"), "clear");
     }
     return actions;
   }
@@ -655,7 +692,7 @@
     // 完全由投影的 activity_undeclared 決定（整頁重畫不丟狀態）；只有 true 才畫，其他值
     // （false、欄位缺漏）一律不顯示。警示色靜態文字，沒有動畫（style.css .ff-undeclared）。
     if (workstream.activity_undeclared === true) {
-      header.appendChild(el("span", "ff-undeclared", "工作中・未宣告 task"));
+      header.appendChild(el("span", "ff-undeclared", t("render.row.undeclared")));
     }
 
     // 列首操作：「改綁」一律有；binding.source 為 override 時另有「取消改綁」（spec「畫面操作」）。
@@ -680,7 +717,7 @@
     // 碰撞。
     if (workstream.binding.state === "bound") {
       actions.appendChild(
-        actionButton("看輸出", {
+        actionButton(t("render.row.viewOutput"), {
           action: "select-bound-pane",
           runtime: workstream.binding.runtime,
           pane: workstream.binding.pane_id,
@@ -690,11 +727,11 @@
       );
     }
     actions.appendChild(
-      actionButton("改綁", { action: "rebind", project: project.id, workstream: workstream.id })
+      actionButton(t("render.row.rebind"), { action: "rebind", project: project.id, workstream: workstream.id })
     );
     if (workstream.binding.source === "override") {
       actions.appendChild(
-        actionButton("取消改綁", {
+        actionButton(t("render.row.undoRebind"), {
           action: "override-clear",
           project: project.id,
           workstream: workstream.id,
@@ -803,7 +840,9 @@
     if (project.warnings.length > 0) {
       var warnings = el("ul", "project-warnings");
       for (var i = 0; i < project.warnings.length; i += 1) {
-        warnings.appendChild(el("li", "project-warning", project.warnings[i]));
+        // warning_msgs 與 warnings 等長同順序；舊投影沒有這個欄位或比較短時，該筆退回原文。
+        var warningMsg = Array.isArray(project.warning_msgs) ? project.warning_msgs[i] : null;
+        warnings.appendChild(el("li", "project-warning", tMsg(warningMsg, project.warnings[i])));
       }
       header.appendChild(warnings);
     }
@@ -902,14 +941,14 @@
     if (typeof at !== "string") {
       return orDash(at);
     }
-    var t = at.indexOf("T");
-    return t === -1 ? at : at.slice(t + 1);
+    var tIdx = at.indexOf("T");
+    return tIdx === -1 ? at : at.slice(tIdx + 1);
   }
 
   function renderRecentEvents(events) {
     var section = el("div", "recent-events");
     section.setAttribute("data-region", "events");
-    section.appendChild(el("h2", "recent-events-title", "最近事件"));
+    section.appendChild(el("h2", "recent-events-title", t("index.events.title")));
 
     var list = el("ul", "recent-events-list");
     var limited = events.slice(0, 50);
@@ -924,7 +963,7 @@
       item.appendChild(el("span", "event-runtime", event.runtime));
       item.appendChild(el("span", "event-kind", event.kind));
       item.appendChild(el("span", "event-subject", eventSubject(event)));
-      item.appendChild(el("span", "event-detail", event.detail));
+      item.appendChild(el("span", "event-detail", tMsg(event.detail_msg, event.detail)));
       list.appendChild(item);
     }
     section.appendChild(list);
@@ -954,10 +993,14 @@
       el(
         "span",
         "action-banner-text",
-        "改綁模式：為 " + projectName + " / " + workstreamName + " 選一個 pane，按該列的「綁定到這裡」"
+        t("render.rebind.banner", {
+          project: projectName,
+          workstream: workstreamName,
+          bindHere: t("render.pane.bindHere"),
+        })
       )
     );
-    banner.appendChild(actionButton("取消", { action: "rebind-cancel" }));
+    banner.appendChild(actionButton(t("render.rebind.cancel"), { action: "rebind-cancel" }));
     return banner;
   }
 
@@ -972,7 +1015,7 @@
     symbol.setAttribute("aria-hidden", "true");
     banner.appendChild(symbol);
     banner.appendChild(el("span", "action-banner-text", message));
-    banner.appendChild(actionButton("關閉", { action: "error-dismiss" }));
+    banner.appendChild(actionButton(t("render.error.close"), { action: "error-dismiss" }));
     return banner;
   }
 
@@ -1000,19 +1043,16 @@
   // [[project]]、需要重啟）留給那一則；左欄這則 fix round 1 之前重複了幾乎一樣的句子（兩段
   // 上下或左右相鄰時讀起來像同一句話說兩次，「在這裡看到」也沒有受詞），設計審核 M4 建議改成
   // 只講狀態，這裡採用：左欄只寫「沒有 Project」，不再重複 Factory Floor 那句的說明。
-  var PROJECTS_EMPTY_TEXT = "沒有 Project";
+  // （字串在字典 render.projects.empty；繁中值逐字不變。）
   // design D11「沒有 Project 的空狀態文案」逐字：「在 cockpit.toml 加入 [[project]] 區段即可
-  // 在這裡看到 Factory Floor，加入後需要重啟 cockpit」。
-  var FLOOR_EMPTY_TEXT =
-    "在 cockpit.toml 加入 [[project]] 區段即可在這裡" +
-    "看到 Factory Floor，加入後需要重啟 cockpit";
+  // 在這裡看到 Factory Floor，加入後需要重啟 cockpit」（字典 render.floor.empty 的繁中值）。
 
   function renderProjectsEmptyState() {
-    return el("div", "projects-empty-state", PROJECTS_EMPTY_TEXT);
+    return el("div", "projects-empty-state", t("render.projects.empty"));
   }
 
   function renderFloorEmptyState() {
-    return el("div", "floor-empty-state", FLOOR_EMPTY_TEXT);
+    return el("div", "floor-empty-state", t("render.floor.empty"));
   }
 
   // 左欄一個 Project 項目（spec「Project 切換」；design D6；direction-01-visual task 3.1）：
@@ -1112,10 +1152,10 @@
   // latestChannelState（只由 window.onChannel 寫入），不再假設「有 repaint 就代表已連線」。
   function renderChannelIndicator() {
     var wrap = el("span", "statusbar-channel");
-    wrap.appendChild(el("span", "statusbar-channel-label", "cockpit 服務"));
+    wrap.appendChild(el("span", "statusbar-channel-label", t("index.channel.label")));
     // M4（設計審核，2.3 fix round 1）：說明這是「瀏覽器到 cockpit 服務」這一段連線，跟頂列的
     // runtime 燈號（cockpit 到 HERDR）區分開。
-    wrap.title = "瀏覽器 → cockpit 服務：" + latestChannelState;
+    wrap.title = t("index.channel.title", { state: latestChannelState });
 
     var badge = el("span", "channel-status " + connStateClass("channel-", latestChannelState));
     badge.id = "channel-status";
@@ -1245,8 +1285,8 @@
       var runtime = state.runtimes[r];
       for (var w = 0; w < runtime.workspaces.length; w += 1) {
         var workspace = runtime.workspaces[w];
-        for (var t = 0; t < workspace.tabs.length; t += 1) {
-          var tab = workspace.tabs[t];
+        for (var ti = 0; ti < workspace.tabs.length; ti += 1) {
+          var tab = workspace.tabs[ti];
           for (var p = 0; p < tab.panes.length; p += 1) {
             var cwd = tab.panes[p].cwd;
             panes.push({ runtime: runtime.id, paneId: tab.panes[p].id, cwd: typeof cwd === "string" ? cwd : null });
@@ -1652,7 +1692,7 @@
     // （wrap.title 在 renderChannelIndicator() 設，見上方）。
     var wrap = badge.closest(".statusbar-channel");
     if (wrap) {
-      wrap.title = "瀏覽器 → cockpit 服務：" + status;
+      wrap.title = t("index.channel.title", { state: status });
     }
   };
 })();

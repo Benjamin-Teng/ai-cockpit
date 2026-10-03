@@ -238,7 +238,7 @@ async function scenarioGridAndCoverage() {
     const dump = spawnSync(
       CHROME,
       [
-        '--headless=new',
+        '--headless=new', '--lang=zh-TW',
         '--disable-gpu',
         '--no-first-run',
         '--virtual-time-budget=4000',
@@ -281,7 +281,7 @@ async function scenarioGridAndCoverage() {
       colorChrome = spawnTracked(
         CHROME,
         [
-          '--headless=new',
+          '--headless=new', '--lang=zh-TW',
           '--disable-gpu',
           '--no-first-run',
           `--remote-debugging-port=${colorCdpPort}`,
@@ -523,7 +523,7 @@ async function scenarioGridAndCoverage() {
     const shot = spawnSync(
       CHROME,
       [
-        '--headless=new',
+        '--headless=new', '--lang=zh-TW',
         '--disable-gpu',
         '--no-first-run',
         '--virtual-time-budget=4000',
@@ -604,6 +604,7 @@ const HARNESS_HTML = `<!doctype html>
 </head>
 <body>
 <div id="app"></div>
+<script src="/app/i18n.js"></script>
 <script src="/app/render.js"></script>
 </body></html>`;
 
@@ -655,6 +656,12 @@ async function scenarioUnknownStatus() {
       res.end(HARNESS_HTML);
       return;
     }
+    // ui-language task 2.1：render.js 經 window.cockpitI18n 取字串，harness 要先載入 i18n.js（同 index.html 的順序）。
+    if (req.url === '/app/i18n.js') {
+      res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
+      res.end(fs.readFileSync(path.join(path.dirname(RENDER_JS_PATH), 'i18n.js'), 'utf8'));
+      return;
+    }
     if (req.url === '/app/render.js') {
       res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
       res.end(fs.readFileSync(RENDER_JS_PATH, 'utf8'));
@@ -679,7 +686,7 @@ async function scenarioUnknownStatus() {
     chrome = spawnTracked(
       CHROME,
       [
-        '--headless=new',
+        '--headless=new', '--lang=zh-TW',
         '--disable-gpu',
         '--no-first-run',
         `--remote-debugging-port=${CDP_PORT}`,
