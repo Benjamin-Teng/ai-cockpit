@@ -21,11 +21,18 @@ cockpit-git = { path = "../cockpit-git" }
 include_dir = "0.7.4"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# auto-update task 1.2（design D3、D6）：下載 `SHA256SUMS.txt` 與安裝檔後計算 SHA-256 比對；純 Rust 實作、無系統相依。
+sha2 = "0.11.0"
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time"] }
 toml = "1.1.6"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+# auto-update task 1.2（design D3、D6）：啟動器用的同步 HTTP client（查 GitHub `releases/latest`、下載資產）。
+# 預設 feature（`rustls` + `gzip`）的 TLS 後端就是 rustls（ring 加密、內建 webpki-roots 根憑證），
+# 不帶入 native-tls／openssl，所以用預設值、不另指定 feature。預設 `Agent` 會讀 `ALL_PROXY`／`HTTPS_PROXY`／
+# `HTTP_PROXY` 環境變數；不讀 Windows 系統代理（那要 `win-system-proxy` feature，本 change 不啟用）。
+ureq = "3.4.2"
 
 [dev-dependencies]
 # live-output fix round 1（R11）：`cockpit/tests/output_endpoint.rs` 的 `FakeOutputRuntime`

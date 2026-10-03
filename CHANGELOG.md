@@ -4,6 +4,21 @@ All notable changes to AI Agent Cockpit are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Automatic updates for the installer version.** When you open Cockpit from the shortcut and it
+  is not already running, it checks GitHub for a newer stable release, at most once every 24
+  hours, and asks before doing anything. If you agree, it downloads the installer, verifies its
+  SHA-256 against the release's `SHA256SUMS.txt`, closes, updates and reopens itself. The
+  download does not go through a browser, so SmartScreen's prompt usually appears only at the
+  first install. If the download or the verification fails, Cockpit shows an error and opens the
+  version you already have. The check sends one request to `api.github.com`; set `COCKPIT_NO_UPDATE_CHECK=1` to
+  turn it off. The zip, `install-desktop.ps1` installs and source builds are not updated
+  automatically. Anyone on v0.1.0 has to install the new version by hand once, because v0.1.0 has
+  no updater.
+
 ## [0.1.0] - 2026-10-03
 
 First public release. Windows x64 only; HERDR must already be installed.

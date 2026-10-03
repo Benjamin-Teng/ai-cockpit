@@ -129,6 +129,18 @@ jobs:
           }
           [IO.File]::WriteAllText((Join-Path $PWD 'SHA256SUMS.txt'), (($lines -join "`n") + "`n"))
           Get-Content SHA256SUMS.txt
+          # 已發出的啟動器只接受這個格式（spec release-distribution「自動更新客戶端契約」；auto-update design D12）：
+          # 讀回位元組斷言無 BOM、無 CR、以 LF 結尾，每行為 64 位小寫十六進位、兩個空白、檔名（-cnotmatch 區分大小寫）。
+          $bytes = [IO.File]::ReadAllBytes((Join-Path $PWD 'SHA256SUMS.txt'))
+          if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+            throw 'SHA256SUMS.txt starts with a UTF-8 BOM'
+          }
+          if ($bytes -contains 13) { throw 'SHA256SUMS.txt contains CR' }
+          $text = [Text.Encoding]::UTF8.GetString($bytes)
+          if (-not $text.EndsWith("`n")) { throw 'SHA256SUMS.txt does not end with LF' }
+          $bad = @($text.Substring(0, $text.Length - 1).Split("`n") | Where-Object { $_ -cnotmatch '^[0-9a-f]{64}  [^ *].*$' })
+          if ($bad.Count -gt 0) { throw "SHA256SUMS.txt has malformed lines: $($bad -join ' | ')" }
+          'SHA256SUMS.txt format OK'
 
       - uses: actions/upload-artifact@v7.0.1
         with:
@@ -169,7 +181,19 @@ jobs:
 
       - name: Verify checksums
         working-directory: dist
-        run: sha256sum -c SHA256SUMS.txt
+        # 格式斷言同 build 的 Checksums（spec release-distribution「自動更新客戶端契約」）：發布前對下載回來的檔再驗一次。
+        run: |
+          if [ "$(head -c 3 SHA256SUMS.txt | od -An -tx1 | tr -d ' \n')" = "efbbbf" ]; then
+            echo "::error::SHA256SUMS.txt starts with a UTF-8 BOM"; exit 1
+          fi
+          if [ "$(tr -dc '\r' < SHA256SUMS.txt | wc -c)" -ne 0 ]; then echo "::error::SHA256SUMS.txt contains CR"; exit 1; fi
+          if [ "$(tail -c 1 SHA256SUMS.txt | od -An -tx1 | tr -d ' \n')" != "0a" ]; then
+            echo "::error::SHA256SUMS.txt does not end with LF"; exit 1
+          fi
+          if LC_ALL=C grep -vnE '^[0-9a-f]{64}  [^ *].*$' SHA256SUMS.txt; then
+            echo "::error::SHA256SUMS.txt has malformed lines (listed above)"; exit 1
+          fi
+          sha256sum -c SHA256SUMS.txt
 
       # 只比對 "## [X.Y.Z]" 前綴；預發布 tag 用去掉後綴的版本（design D9）。「正式版標題不得是 Unreleased」在 build 的
       # Resolve version 就檢查過了。

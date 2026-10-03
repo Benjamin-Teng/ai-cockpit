@@ -139,6 +139,34 @@ pub enum LaunchText<'a> {
     BackendStatusFailed { detail: &'a str },
     /// 後端在逾時內沒有就緒。
     BackendNotReady { secs: u64, url: &'a str },
+    /// 詢問是否更新（是／否訊息框；auto-update spec「詢問使用者」）。
+    UpdatePrompt {
+        new_version: &'a str,
+        current_version: &'a str,
+    },
+    /// 更新失敗：下載（雜湊檔或安裝檔）失敗、逾時或超過大小上限；`detail` 是原因。
+    UpdateDownloadFailed {
+        new_version: &'a str,
+        current_version: &'a str,
+        detail: &'a str,
+    },
+    /// 更新失敗：`SHA256SUMS.txt` 找不到安裝檔那一行或格式不對；`detail` 是原因。
+    UpdateChecksumFailed {
+        new_version: &'a str,
+        current_version: &'a str,
+        detail: &'a str,
+    },
+    /// 更新失敗：安裝檔的 SHA-256 與 `SHA256SUMS.txt` 不符（檔案已刪除、不會執行）。
+    UpdateHashMismatch {
+        new_version: &'a str,
+        current_version: &'a str,
+    },
+    /// 更新失敗：無法啟動下載好的安裝檔；`detail` 是原因。
+    UpdateLaunchFailed {
+        new_version: &'a str,
+        current_version: &'a str,
+        detail: &'a str,
+    },
 }
 
 /// 依語言產生訊息文字；動態參數照原文代入。
@@ -262,6 +290,116 @@ pub fn text(lang: LaunchLang, text: LaunchText<'_>) -> String {
         (BackendNotReady { secs, url }, En) => {
             format!("The Cockpit backend was not ready within {secs} seconds ({url}).")
         }
+        (
+            UpdatePrompt {
+                new_version,
+                current_version,
+            },
+            Zh,
+        ) => format!(
+            "AI Agent Cockpit 有新版本 {new_version}（目前版本 {current_version}）。\n\n\
+             要現在更新嗎？更新時 Cockpit 會先關閉，安裝完成後自動重新開啟。"
+        ),
+        (
+            UpdatePrompt {
+                new_version,
+                current_version,
+            },
+            En,
+        ) => format!(
+            "A new version of AI Agent Cockpit is available: {new_version} (current version: \
+             {current_version}).\n\n\
+             Update now? Cockpit will close during the update and reopen automatically when the \
+             installation finishes."
+        ),
+        (
+            UpdateDownloadFailed {
+                new_version,
+                current_version,
+                detail,
+            },
+            Zh,
+        ) => format!(
+            "無法更新到版本 {new_version}：下載失敗（{detail}）。\n\n\
+             將繼續使用目前版本 {current_version}。"
+        ),
+        (
+            UpdateDownloadFailed {
+                new_version,
+                current_version,
+                detail,
+            },
+            En,
+        ) => format!(
+            "Cannot update to version {new_version}: the download failed ({detail}).\n\n\
+             Cockpit will keep using the current version {current_version}."
+        ),
+        (
+            UpdateChecksumFailed {
+                new_version,
+                current_version,
+                detail,
+            },
+            Zh,
+        ) => format!(
+            "無法更新到版本 {new_version}：無法從 SHA256SUMS.txt 取得安裝檔的雜湊值（{detail}）。\n\n\
+             將繼續使用目前版本 {current_version}。"
+        ),
+        (
+            UpdateChecksumFailed {
+                new_version,
+                current_version,
+                detail,
+            },
+            En,
+        ) => format!(
+            "Cannot update to version {new_version}: could not get the installer's checksum from \
+             SHA256SUMS.txt ({detail}).\n\n\
+             Cockpit will keep using the current version {current_version}."
+        ),
+        (
+            UpdateHashMismatch {
+                new_version,
+                current_version,
+            },
+            Zh,
+        ) => format!(
+            "無法更新到版本 {new_version}：下載的安裝檔與 SHA256SUMS.txt 的雜湊值不符，\
+             已刪除該檔案且不會執行。\n\n將繼續使用目前版本 {current_version}。"
+        ),
+        (
+            UpdateHashMismatch {
+                new_version,
+                current_version,
+            },
+            En,
+        ) => format!(
+            "Cannot update to version {new_version}: the downloaded installer does not match the \
+             checksum in SHA256SUMS.txt. It was deleted and will not be run.\n\n\
+             Cockpit will keep using the current version {current_version}."
+        ),
+        (
+            UpdateLaunchFailed {
+                new_version,
+                current_version,
+                detail,
+            },
+            Zh,
+        ) => format!(
+            "無法更新到版本 {new_version}：無法啟動安裝檔（{detail}）。\n\n\
+             將繼續使用目前版本 {current_version}。"
+        ),
+        (
+            UpdateLaunchFailed {
+                new_version,
+                current_version,
+                detail,
+            },
+            En,
+        ) => format!(
+            "Cannot update to version {new_version}: failed to start the installer ({detail}).\n\n\
+             Cockpit will keep using the current version {current_version}."
+        ),
     }
 }
 
@@ -1365,6 +1503,51 @@ mod tests {
                 "Cockpit 後端在 15 秒內沒有就緒（http://127.0.0.1:7770/）。",
                 "The Cockpit backend was not ready within 15 seconds (http://127.0.0.1:7770/).",
             ),
+            (
+                UpdatePrompt {
+                    new_version: "0.2.0",
+                    current_version: "0.1.1",
+                },
+                "AI Agent Cockpit 有新版本 0.2.0（目前版本 0.1.1）。\n\n\
+                 要現在更新嗎？更新時 Cockpit 會先關閉，安裝完成後自動重新開啟。",
+                "A new version of AI Agent Cockpit is available: 0.2.0 (current version: 0.1.1).\n\n\
+                 Update now? Cockpit will close during the update and reopen automatically when the installation finishes.",
+            ),
+            (
+                UpdateDownloadFailed {
+                    new_version: "0.2.0",
+                    current_version: "0.1.1",
+                    detail: "timed out",
+                },
+                "無法更新到版本 0.2.0：下載失敗（timed out）。\n\n將繼續使用目前版本 0.1.1。",
+                "Cannot update to version 0.2.0: the download failed (timed out).\n\nCockpit will keep using the current version 0.1.1.",
+            ),
+            (
+                UpdateChecksumFailed {
+                    new_version: "0.2.0",
+                    current_version: "0.1.1",
+                    detail: "SHA256SUMS.txt has no entry for a.exe",
+                },
+                "無法更新到版本 0.2.0：無法從 SHA256SUMS.txt 取得安裝檔的雜湊值（SHA256SUMS.txt has no entry for a.exe）。\n\n將繼續使用目前版本 0.1.1。",
+                "Cannot update to version 0.2.0: could not get the installer's checksum from SHA256SUMS.txt (SHA256SUMS.txt has no entry for a.exe).\n\nCockpit will keep using the current version 0.1.1.",
+            ),
+            (
+                UpdateHashMismatch {
+                    new_version: "0.2.0",
+                    current_version: "0.1.1",
+                },
+                "無法更新到版本 0.2.0：下載的安裝檔與 SHA256SUMS.txt 的雜湊值不符，已刪除該檔案且不會執行。\n\n將繼續使用目前版本 0.1.1。",
+                "Cannot update to version 0.2.0: the downloaded installer does not match the checksum in SHA256SUMS.txt. It was deleted and will not be run.\n\nCockpit will keep using the current version 0.1.1.",
+            ),
+            (
+                UpdateLaunchFailed {
+                    new_version: "0.2.0",
+                    current_version: "0.1.1",
+                    detail: "d",
+                },
+                "無法更新到版本 0.2.0：無法啟動安裝檔（d）。\n\n將繼續使用目前版本 0.1.1。",
+                "Cannot update to version 0.2.0: failed to start the installer (d).\n\nCockpit will keep using the current version 0.1.1.",
+            ),
         ]
     }
 
@@ -1404,11 +1587,78 @@ mod tests {
                 | BackendSpawnFailed { .. }
                 | BackendExitedEarly { .. }
                 | BackendStatusFailed { .. }
-                | BackendNotReady { .. } => {}
+                | BackendNotReady { .. }
+                | UpdatePrompt { .. }
+                | UpdateDownloadFailed { .. }
+                | UpdateChecksumFailed { .. }
+                | UpdateHashMismatch { .. }
+                | UpdateLaunchFailed { .. } => {}
             }
         }
-        // 30 個變體各一筆；數字不一致代表上面的 match 與表對不上。
-        assert_eq!(table.len(), 30);
+        // 35 個變體各一筆；數字不一致代表上面的 match 與表對不上。
+        assert_eq!(table.len(), 35);
+    }
+
+    /// 自動更新訊息（auto-update task 2.6）：詢問框含新舊版本號與「先關閉、裝完自動重開」說明；
+    /// 失敗類訊息含新舊版本號與「將繼續使用目前版本」。兩種語言各驗一次，版本號用不易巧合的值。
+    #[test]
+    fn update_texts_carry_versions_and_the_keep_current_notice() {
+        let (new_version, current_version) = ("7.8.9", "1.2.3");
+        let prompt = LaunchText::UpdatePrompt {
+            new_version,
+            current_version,
+        };
+        for (lang, closes_then_reopens) in [
+            (
+                LaunchLang::Zh,
+                "更新時 Cockpit 會先關閉，安裝完成後自動重新開啟",
+            ),
+            (
+                LaunchLang::En,
+                "Cockpit will close during the update and reopen automatically when the installation finishes",
+            ),
+        ] {
+            let msg = text(lang, prompt);
+            assert!(msg.contains(new_version), "{lang:?}: {msg}");
+            assert!(msg.contains(current_version), "{lang:?}: {msg}");
+            assert!(msg.contains(closes_then_reopens), "{lang:?}: {msg}");
+        }
+
+        let failures: [LaunchText<'static>; 4] = [
+            LaunchText::UpdateDownloadFailed {
+                new_version,
+                current_version,
+                detail: "REASON",
+            },
+            LaunchText::UpdateChecksumFailed {
+                new_version,
+                current_version,
+                detail: "REASON",
+            },
+            LaunchText::UpdateHashMismatch {
+                new_version,
+                current_version,
+            },
+            LaunchText::UpdateLaunchFailed {
+                new_version,
+                current_version,
+                detail: "REASON",
+            },
+        ];
+        for failure in failures {
+            for (lang, keep) in [
+                (LaunchLang::Zh, "將繼續使用目前版本"),
+                (LaunchLang::En, "keep using the current version"),
+            ] {
+                let msg = text(lang, failure);
+                assert!(msg.contains(new_version), "{failure:?} {lang:?}: {msg}");
+                assert!(msg.contains(current_version), "{failure:?} {lang:?}: {msg}");
+                assert!(msg.contains(keep), "{failure:?} {lang:?}: {msg}");
+                if !matches!(failure, LaunchText::UpdateHashMismatch { .. }) {
+                    assert!(msg.contains("REASON"), "{failure:?} {lang:?}: {msg}");
+                }
+            }
+        }
     }
 
     fn has_cjk(text: &str) -> bool {

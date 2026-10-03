@@ -40,7 +40,7 @@ Cockpit 是旁觀者：不能在 pane 裡打字、不能對 agent 下指令，�
 - 儀表板只聽 loopback（預設 `127.0.0.1:7770`）。所有會回傳或改動你資料的端點，包括即時狀態
   （`/api/state` 與 `/ws`），都會檢查 `Host` 與 `Origin` 標頭，你瀏覽器裡開著的其他網頁讀不到儀表板。
 - 進度只在你按下按鈕、或 agent 自己回報時才會改變。Cockpit 不寫你的 repo，也不寫 HERDR；它自己的
-  檔案是 `cockpit.state.json`，用桌面啟動器時另有 `cockpit.log`。
+  檔案是 `cockpit.state.json`，用桌面啟動器時另有 `cockpit.log` 與 `cockpit.update.json`（上次檢查更新的時間與結果）。
 
 ## 開始使用
 
@@ -62,6 +62,23 @@ Cockpit 是旁觀者：不能在 pane 裡打字、不能對 agent 下指令，�
   `cockpit.toml` 連同旁邊的 `cockpit.state.json`（Factory Floor 的進度）一起移到 `%LOCALAPPDATA%\ai-cockpit`。
   Cockpit 在設定檔旁邊找狀態檔，只搬設定檔會從空白看板開始。設定檔裡的 `[state] path` 若是相對路徑，
   請改成絕對路徑或把那個檔案一起搬。最後刪掉舊的 `%LOCALAPPDATA%\ai-cockpit\bin` 資料夾。
+
+#### 更新
+
+- **自動更新，僅限安裝檔版。** 用安裝檔安裝的話，從捷徑開啟 Cockpit、且後端當時沒在執行，就會去
+  GitHub 查有沒有較新的正式版，每 24 小時最多查一次。有新版會先詢問你。選「是」，Cockpit 會下載安裝檔、
+  用該 release 的 `SHA256SUMS.txt` 驗證、關閉、更新，然後自動重新開啟；下載或驗證失敗時會顯示錯誤，
+  並開啟你現有的版本。選「否」，下次檢查時會再問。預發布版不會被提供。
+- **SmartScreen 提示通常只在第一次安裝出現。** 這個提示跟著瀏覽器加在檔案上的「從網路下載」標記走。
+  更新是 Cockpit 自己下載、不經過瀏覽器，檔案沒有這個標記。
+- **會連網。** 每次檢查向 `api.github.com` 發一個請求。設定環境變數 `COCKPIT_NO_UPDATE_CHECK=1`
+  可以完全關閉檢查。
+- **不會自動更新的情況：** zip 版、用 `install-desktop.ps1` 安裝的、從原始碼建置的。請到
+  [Releases 頁面](https://github.com/Benjamin-Teng/ai-cockpit/releases)手動下載新版。
+- **從 v0.1.0 升級？** 這個預發布版沒有更新器，需要手動安裝一次新版，之後就會自動更新。
+- **公司網路？** 網路若走系統代理或會檢查 TLS，Cockpit 可能連不到 GitHub。它找代理只讀
+  `HTTPS_PROXY` 這類環境變數，也不使用 Windows 的憑證存放區。這時檢查會失敗而且不顯示任何訊息，
+  Cockpit 照常開啟；請到 Releases 頁面手動更新。
 
 ### 從原始碼建置
 

@@ -46,7 +46,7 @@ Cockpit is an observer. It cannot type into a pane, prompt an agent or stop HERD
   and `Origin` headers, so other web pages open in your browser cannot read the dashboard.
 - Progress changes only when you click or when an agent reports it. Cockpit writes nothing to
   your repos or to HERDR. Its own files are `cockpit.state.json` and, with the desktop launcher,
-  `cockpit.log`.
+  `cockpit.log` and `cockpit.update.json` (the time and result of the last update check).
 
 ## Get started
 
@@ -75,6 +75,29 @@ programs if you would rather not install.
   Factory Floor progress. Cockpit looks for the state file next to the config file, so moving only
   the config starts you from an empty board. If your config sets a relative `[state] path`, make it
   absolute or move that file too. Then delete the old `%LOCALAPPDATA%\ai-cockpit\bin` folder.
+
+#### Updates
+
+- **Automatic, installer only.** If you installed with the setup file, opening Cockpit from the
+  shortcut while it is not already running checks GitHub for a newer stable release, at most once
+  every 24 hours. If there is one, Cockpit asks first. Say yes and it downloads the installer,
+  verifies it against the release's `SHA256SUMS.txt`, closes, updates and reopens by itself. If the
+  download or the verification fails, Cockpit shows an error and opens the version you already have.
+  Say no and it asks again at the next check. A pre-release is never offered.
+- **The SmartScreen prompt usually appears only at the first install.** The prompt follows the
+  "downloaded from the internet" mark that browsers put on files. Cockpit downloads the update
+  itself, not through a browser, so the update carries no such mark.
+- **It uses the network.** Each check sends one request to `api.github.com`. Set the environment
+  variable `COCKPIT_NO_UPDATE_CHECK=1` to turn the check off completely.
+- **Not updated automatically:** the zip, an `install-desktop.ps1` install and a build from
+  source. Download a new version by hand from the
+  [Releases page](https://github.com/Benjamin-Teng/ai-cockpit/releases).
+- **Coming from v0.1.0?** That pre-release has no updater, so install the new version by hand
+  once. Updates are automatic after that.
+- **On a company network?** If your network goes through a system proxy or inspects TLS, Cockpit
+  may not reach GitHub. It reads only the `HTTPS_PROXY` family of environment variables for a
+  proxy and does not use the Windows certificate store. The check then fails without any message
+  and Cockpit opens as usual; update by hand from the Releases page.
 
 ### Build from source
 

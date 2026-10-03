@@ -6,6 +6,7 @@
   順序見 change release-packaging 的 design D6。會在執行者的帳號下安裝與解除安裝 AI Agent Cockpit、
   建立與刪除捷徑、啟動 cockpit.exe 佔用 127.0.0.1:7770，所以只在用完即丟的環境（GitHub Actions runner）跑：
   沒有 CI 環境變數時拒跑，除非明確加 -AllowOnThisMachine。
+  更新模式的兩個情境（5a、5b）見 change auto-update 的 design D10。
 
   每項檢查印 PASS 或 FAIL（含期望值與實際值）；任一 FAIL 以結束碼 1 結束。
 
@@ -43,6 +44,18 @@ $StartMenuLnk = Join-Path ([Environment]::GetFolderPath('Programs')) "$AppName.l
 $DesktopLnk = Join-Path ([Environment]::GetFolderPath('Desktop')) "$AppName.lnk"
 $AppFiles = @('cockpit.exe', 'cockpit-launch.exe', 'cockpit.example.toml', 'LICENSE.txt')
 New-Item -ItemType Directory -Force $LogDir | Out-Null
+
+# 更新模式會由安裝檔重新啟動 cockpit-launch.exe，它繼承本腳本的環境變數（design D10）：
+# - COCKPIT_BROWSER：假瀏覽器，不在 runner 上開真的 Chrome／Edge。選 whoami.exe：每台 Windows 都在 System32，
+#   收到不認得的 --app=<網址> 引數時印錯誤訊息並以 1 立即結束，不讀標準輸入、不開視窗（啟動器不等瀏覽器、不看結束碼）。
+# - COCKPIT_LAUNCH_DIALOG_FILE：啟動器的訊息改寫入這個檔、不跳框；結束時有內容即 FAIL。
+# - COCKPIT_NO_UPDATE_CHECK：重新啟動的啟動器不對外查詢更新。
+$FakeBrowser = Join-Path $env:SystemRoot 'System32\whoami.exe'
+$DialogFile = Join-Path $LogDir 'launch-dialog.txt'
+Remove-Item -Force -ErrorAction SilentlyContinue $DialogFile
+$env:COCKPIT_BROWSER = $FakeBrowser
+$env:COCKPIT_LAUNCH_DIALOG_FILE = $DialogFile
+$env:COCKPIT_NO_UPDATE_CHECK = '1'
 
 $script:Failures = 0
 
@@ -88,11 +101,99 @@ function Wait-Removed([int] $TimeoutSec = 60) {
     }
 }
 
-# Inno log 裡複製檔案的紀錄（每個 [Files] 項目一段 "-- File entry --"）。
+# Inno log 中某段標記的出現次數；log 不存在回 -1。複製檔案每個 [Files] 項目一段 "-- File entry --"，
+# 執行 [Run] 項目每筆一段 "-- Run entry --"（Inno 6.7.1 Setup.Install.pas、Setup.MainFunc.pas）。
+function Count-LogMarker([string] $Log, [string] $Marker) {
+    if (-not (Test-Path $Log -PathType Leaf)) { return -1 }
+    return @(Select-String -Path $Log -SimpleMatch $Marker).Count
+}
+
 function Count-FileEntries([string] $LogName) {
-    $log = Join-Path $LogDir "$LogName.log"
-    if (-not (Test-Path $log)) { return -1 }
-    return @(Select-String -Path $log -SimpleMatch '-- File entry --').Count
+    return (Count-LogMarker (Join-Path $LogDir "$LogName.log") '-- File entry --')
+}
+
+# 以啟動器交棒的同一組參數（cockpit::update::installer_args，design D8）啟動安裝檔，不等待；呼叫端用 Wait-Setup 收結束碼。
+# ArgumentList 對含空白的引數整個加雙引號（"/LOG=C:\a b\setup.log"），與啟動器用的 Rust Command::arg 相同。
+# 不用 Start-Process -Wait：它等整個程序樹，會連安裝檔重新啟動的後端一起等。
+function Start-UpdateSetup([string] $Log) {
+    $psi = [Diagnostics.ProcessStartInfo]::new($Setup)
+    foreach ($arg in '/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCANCEL', '/COCKPITUPDATE=1', "/LOG=$Log") {
+        $psi.ArgumentList.Add($arg)
+    }
+    $psi.UseShellExecute = $false
+    return [Diagnostics.Process]::Start($psi)
+}
+
+# 等安裝檔結束並回傳結束碼；逾時（代表卡住，例如訊息框沒被抑制）就結束整個程序樹並回傳說明文字，讓檢查報 FAIL。
+function Wait-Setup([Diagnostics.Process] $Process, [int] $TimeoutSec = 120) {
+    if (-not $Process.WaitForExit($TimeoutSec * 1000)) {
+        $Process.Kill($true)
+        return "still running after $TimeoutSec s (killed)"
+    }
+    return $Process.ExitCode
+}
+
+# 更新模式等候迴圈寫入 log 的那一行（ai-cockpit.iss 的 PrepareToInstall）：回傳 "<秒數>,<狀態>"，沒有該行回 'missing'。
+function Get-UpdateWait([string] $Log) {
+    if (-not (Test-Path $Log -PathType Leaf)) { return 'missing' }
+    $m = Select-String -Path $Log -Pattern 'Update mode: waited (\d+) s for Cockpit to exit, state (\d+)' |
+        Select-Object -First 1
+    if (-not $m) { return 'missing' }
+    return "$($m.Matches[0].Groups[1].Value),$($m.Matches[0].Groups[2].Value)"
+}
+
+# 以資料目錄為工作目錄背景啟動已安裝的 cockpit.exe（與第 3 步相同），等到 /api/state 回應為 Cockpit。
+function Start-InstalledServer([string] $Name) {
+    $proc = Start-Process -FilePath (Join-Path $AppDir 'cockpit.exe') -WorkingDirectory $DataDir -PassThru `
+        -WindowStyle Hidden -RedirectStandardOutput (Join-Path $LogDir "$Name.out") `
+        -RedirectStandardError (Join-Path $LogDir "$Name.err")
+    Check "$Name serves /api/state" $true (Wait-CockpitState 30)
+    return $proc
+}
+
+# 127.0.0.1:7770/api/state 是否回應 Cockpit：JSON 物件且有 version 與 runtimes（與啟動器 launch::classify_response 相同）。
+function Test-CockpitState {
+    try {
+        $state = Invoke-RestMethod -Uri 'http://127.0.0.1:7770/api/state' -TimeoutSec 2
+    } catch {
+        return $false
+    }
+    if ($state -isnot [pscustomobject]) { return $false }
+    $names = @($state.PSObject.Properties.Name)
+    return ($names -contains 'version') -and ($names -contains 'runtimes')
+}
+
+function Wait-CockpitState([int] $TimeoutSec) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-CockpitState) { return $true }
+        Start-Sleep -Milliseconds 500
+    }
+    return $false
+}
+
+# 程式目錄裡的 cockpit.exe／cockpit-launch.exe 程序（依完整路徑比對，不碰其他同名程式）。
+function Get-InstalledCockpitProcesses {
+    $prefix = $AppDir.TrimEnd('\') + '\'
+    return @(Get-CockpitProcesses | Where-Object { $_.Path -and $_.Path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) })
+}
+
+function Stop-InstalledCockpit {
+    foreach ($proc in Get-InstalledCockpitProcesses) {
+        Write-Host "      stopping $($proc.Path) (pid $($proc.Id))"
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        $proc.WaitForExit(10000) | Out-Null
+    }
+}
+
+# 刪掉資料目錄中不在 $Keep 裡的項目（更新情境的後端寫的 cockpit.log 等），還原第 6 步「資料目錄是空的」的前提。
+function Reset-DataDir([string[]] $Keep) {
+    foreach ($item in @(Get-ChildItem -Force $DataDir)) {
+        if ($Keep -notcontains $item.Name) {
+            Write-Host "      removing $($item.FullName)"
+            Remove-Item -Recurse -Force $item.FullName
+        }
+    }
 }
 
 function Get-Shortcut([string] $Path) {
@@ -166,6 +267,8 @@ Check 'install log records copied files' $true ((Count-FileEntries 'install-1') 
 foreach ($f in $AppFiles) {
     Check "installs $f" $true (Test-Path (Join-Path $AppDir $f) -PathType Leaf)
 }
+# 已發出的啟動器以程式目錄有 unins000.exe 判定「由安裝檔安裝」（spec release-distribution「自動更新客戶端契約」第 4 項）。
+Check 'installs unins000.exe (auto-update client contract)' $true (Test-Path (Join-Path $AppDir 'unins000.exe') -PathType Leaf)
 Check 'data directory exists' $true (Test-Path $DataDir -PathType Container)
 Check-Shortcut 'Start menu' $StartMenuLnk
 Check-Shortcut 'Desktop' $DesktopLnk
@@ -223,6 +326,94 @@ Check 'update exit code' 0 (Invoke-Silent $Setup 'install-update')
 Check 'update keeps program directory' ($AppDir.TrimEnd('\') + '\') (Get-ItemProperty $UninstallKey).InstallLocation
 Check 'update keeps a single uninstall entry' 1 (Count-UninstallEntries)
 
+# 5a、5b 用啟動器交棒的同一組參數（/SILENT…/COCKPITUPDATE=1），log 放在含空白的目錄：啟動器的 %TEMP% 可能含空白
+# （使用者名稱），/LOG= 的傳法要在這裡實測過。
+$updateLogDir = Join-Path $LogDir 'update log dir'
+New-Item -ItemType Directory -Force $updateLogDir | Out-Null
+$dataKeep = @(Get-ChildItem -Force $DataDir | ForEach-Object { $_.Name })
+
+Step '5a. Update mode waits for Cockpit to exit, installs, and relaunches'
+$waitLog = Join-Path $updateLogDir 'setup.log'
+$server = Start-InstalledServer 'cockpit-update-wait'
+$updateSetup = Start-UpdateSetup $waitLog
+try {
+    # 計時器：5 秒後停掉執行中的 cockpit.exe；安裝檔要在這段期間等候，而不是像非更新模式那樣立即以 7 結束。
+    Start-Sleep -Seconds 5
+    Check 'update-mode setup is still waiting after 5 s' $false $updateSetup.HasExited
+    Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+    $server.WaitForExit()
+    Check 'update-mode setup exit code' 0 (Wait-Setup $updateSetup)
+    Write-Host "      update-mode log: $waitLog"
+    Check 'update-mode log written to the path with spaces' $true (Test-Path $waitLog -PathType Leaf)
+    $waited = Get-UpdateWait $waitLog
+    Check 'update-mode setup waited, then saw Cockpit exit (state 0)' $true `
+        ($waited -match '^(\d+),0$' -and [int]$Matches[1] -ge 1 -and [int]$Matches[1] -le 30)
+    Write-Host "      waited,state: $waited"
+    Check 'update-mode log records copied files' $true ((Count-LogMarker $waitLog '-- File entry --') -gt 0)
+    Check 'update-mode log records the relaunch entry' 1 (Count-LogMarker $waitLog '-- Run entry --')
+    # 重新啟動的啟動器拉起了後端：本腳本起的 cockpit.exe 已停掉，7770 上的 Cockpit 只能是它啟動的。
+    Check 'relaunched launcher started the backend (/api/state is Cockpit within 30 s)' $true (Wait-CockpitState 30)
+    $owner = @(Get-NetTCPConnection -LocalPort 7770 -State Listen -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique)
+    $ownerPath = ($owner | ForEach-Object { (Get-Process -Id $_ -ErrorAction SilentlyContinue).Path }) -join ','
+    Check 'port 7770 is owned by the installed cockpit.exe' (Join-Path $AppDir 'cockpit.exe') $ownerPath
+    # 啟動器以工作目錄決定 cockpit.log 的位置（沒有 cockpit.toml 時寫在工作目錄）。
+    Check 'relaunched launcher ran in the data directory (cockpit.log there)' $true `
+        (Test-Path (Join-Path $DataDir 'cockpit.log') -PathType Leaf)
+    # 啟動器拉起後端、開完（假）瀏覽器就該自行結束，不能卡住。
+    $deadline = (Get-Date).AddSeconds(15)
+    while (@(Get-InstalledCockpitProcesses | Where-Object Name -eq 'cockpit-launch').Count -gt 0 -and
+        (Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 200
+    }
+    Check 'relaunched launcher exits on its own within 15 s' 0 `
+        @(Get-InstalledCockpitProcesses | Where-Object Name -eq 'cockpit-launch').Count
+} finally {
+    if (-not $updateSetup.HasExited) { $updateSetup.Kill($true) }
+    Stop-InstalledCockpit
+}
+Reset-DataDir $dataKeep
+
+Step '5b. Update mode gives up after 30 s while Cockpit keeps running'
+$timeoutLog = Join-Path $updateLogDir 'setup-timeout.log'
+$before = Get-FileHashes
+$server = Start-InstalledServer 'cockpit-update-timeout'
+$clock = [Diagnostics.Stopwatch]::StartNew()
+$updateSetup = Start-UpdateSetup $timeoutLog
+try {
+    # 等候期間與結束後 3 秒輪詢程式目錄的 cockpit-launch.exe；權威證據是 log 沒有 [Run] 紀錄，輪詢是補充。
+    $launchSeen = 0
+    $deadline = (Get-Date).AddSeconds(120)
+    while (-not $updateSetup.HasExited -and (Get-Date) -lt $deadline) {
+        $launchSeen += @(Get-InstalledCockpitProcesses | Where-Object Name -eq 'cockpit-launch').Count
+        Start-Sleep -Milliseconds 200
+    }
+    $code = Wait-Setup $updateSetup 1
+    $elapsed = $clock.Elapsed.TotalSeconds
+    $settle = (Get-Date).AddSeconds(3)
+    while ((Get-Date) -lt $settle) {
+        $launchSeen += @(Get-InstalledCockpitProcesses | Where-Object Name -eq 'cockpit-launch').Count
+        Start-Sleep -Milliseconds 200
+    }
+    Write-Host "      update-mode log: $timeoutLog"
+    Write-Host ("      update-mode setup took {0:N1} s" -f $elapsed)
+    # /SILENT /SUPPRESSMSGBOXES 遇到 PrepareToInstall 中止時不卡在訊息框（卡住會被 Wait-Setup 判逾時）。
+    Check 'update-mode setup while running exits with 7 (cannot proceed)' 7 $code
+    Check 'update-mode setup waited at least 30 s' $true ($elapsed -ge 30)
+    $waited = Get-UpdateWait $timeoutLog
+    Write-Host "      waited,state: $waited"
+    Check 'update-mode setup waited 30 s and Cockpit was still running (state 1)' '30,1' $waited
+    Check 'update-mode setup while running copies no files' 0 (Count-LogMarker $timeoutLog '-- File entry --')
+    Check 'update-mode setup while running runs no [Run] entry' 0 (Count-LogMarker $timeoutLog '-- Run entry --')
+    Check 'update-mode setup while running starts no cockpit-launch.exe' 0 $launchSeen
+    Check 'update-mode setup while running leaves files in place' $before (Get-FileHashes)
+    Check 'update-mode setup while running leaves cockpit.exe running' $false $server.HasExited
+} finally {
+    if (-not $updateSetup.HasExited) { $updateSetup.Kill($true) }
+    Stop-InstalledCockpit
+}
+Reset-DataDir $dataKeep
+
 Step '6. Uninstall with an empty data directory'
 Check 'data directory is empty' 0 @(Get-ChildItem -Force $DataDir).Count
 Check 'uninstall exit code' 0 (Invoke-Uninstall 'uninstall-empty-data')
@@ -258,6 +449,13 @@ foreach ($exe in 'cockpit.exe', 'cockpit-launch.exe') {
         Check "zip $exe matches installed copy" $installed[$exe] (Get-FileHash $zipped -Algorithm SHA256).Hash
     }
 }
+
+Step 'Cleanup: no Cockpit left running, no launcher messages'
+# 停掉本腳本起的程序，不留給 workflow 後續步驟（也避免它們握著 step 的輸出管線）。
+Stop-InstalledCockpit
+Check 'no cockpit process left running' 0 @(Get-CockpitProcesses).Count
+$dialog = if (Test-Path $DialogFile) { "$(Get-Content -Raw $DialogFile)".Trim() } else { '' }
+Check 'launcher showed no message (COCKPIT_LAUNCH_DIALOG_FILE is empty)' '' $dialog
 
 Write-Host ''
 if ($script:Failures -gt 0) {

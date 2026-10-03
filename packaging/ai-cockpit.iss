@@ -1,5 +1,6 @@
 ﻿; AI Agent Cockpit 安裝精靈（Inno Setup 6）。規格：openspec release-distribution「Windows 安裝檔」「解除安裝」；
 ; 取捨見 change release-packaging 的 design D1、D2、D7。
+; 更新模式（/COCKPITUPDATE=1，啟動器自動更新交棒時帶）：change auto-update 的 design D8、D9。
 ;
 ; 由 .github/workflows/release.yml 編譯：
 ;   iscc -dAppVersion=0.1.0 -dStageDir=<staging 目錄> -dOutputDir=<輸出目錄> packaging\ai-cockpit.iss
@@ -81,6 +82,9 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\cockpit-launch.exe"; WorkingD
 [Run]
 ; WorkingDir 不可省略：預設是程式目錄，會讀不到資料目錄的 cockpit.toml，cockpit.log 也會留在程式目錄。
 Filename: "{app}\cockpit-launch.exe"; WorkingDir: "{#DataDir}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
+; 更新模式：裝完重新啟動啟動器（不帶引數）。啟動器交棒時一定帶靜默參數；一般靜默安裝沒有 /COCKPITUPDATE=1，
+; Check 不成立，仍不啟動任何程式。
+Filename: "{app}\cockpit-launch.exe"; WorkingDir: "{#DataDir}"; Flags: nowait skipifnotsilent; Check: IsUpdateMode
 
 [Code]
 // 程式目錄（Dir）中的 cockpit.exe 或 cockpit-launch.exe 是否正在執行。
@@ -129,13 +133,31 @@ begin
     Result := CustomMessage('CockpitRunningUnknown');
 end;
 
-// 安裝：在複製任何檔案前檢查；回傳非空字串即中止（靜默模式以非 0 結束）。
+// 更新模式：命令列帶 /COCKPITUPDATE=1（啟動器交棒時帶，design D8、D9）。
+function IsUpdateMode(): Boolean;
+begin
+  Result := ExpandConstant('{param:COCKPITUPDATE|0}') = '1';
+end;
+
+// 安裝：在複製任何檔案前檢查；回傳非空字串即中止（靜默模式以結束碼 7 結束）。
+// 更新模式先等啟動器與後端自行結束：每秒重查一次，最多等 30 秒，仍在執行或無法確認才中止。
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
-  State: Integer;
+  State, Waited: Integer;
 begin
   Result := '';
   State := CockpitRunState(ExpandConstant('{app}'));
+  if IsUpdateMode() then
+  begin
+    Waited := 0;
+    while (State <> 0) and (Waited < 30) do
+    begin
+      Sleep(1000);
+      Waited := Waited + 1;
+      State := CockpitRunState(ExpandConstant('{app}'));
+    end;
+    Log('Update mode: waited ' + IntToStr(Waited) + ' s for Cockpit to exit, state ' + IntToStr(State));
+  end;
   if State <> 0 then
     Result := RunningMessage(State);
 end;

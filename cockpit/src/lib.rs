@@ -11,4 +11,5 @@ pub mod progress;
 pub mod progress_service;
 pub mod runtimes;
 pub mod source_check;
+pub mod update;
 pub mod vendor;
