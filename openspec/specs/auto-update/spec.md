@@ -1,6 +1,7 @@
 # auto-update Specification
 
 ## Purpose
+
 定義已安裝的 Cockpit 如何從 GitHub Releases 取得新版：啟動器在啟動後端前檢查最新正式版、詢問使用者、下載並驗證安裝檔，
 再交給安裝檔的更新模式完成替換與重新啟動，讓 SmartScreen 警告只出現在首次安裝。
 
