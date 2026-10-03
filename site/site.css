@@ -95,6 +95,21 @@ section.block.alt { background: var(--bg-base); }
 html[lang^="zh"] .block h2 { letter-spacing: 0; }
 .block .intro { margin: 0; color: var(--text-dim); max-width: 40em; }
 
+/* 下載區塊：版本列、按鈕、需求與 SmartScreen 說明（沿用 .ctas / .btn / .list 的樣式） */
+.dl-version { margin: 18px 0 0; font: 13px var(--font-mono); display: flex; gap: 14px; }
+.dl-version b { color: var(--accent); font-weight: 600; }
+.dl-version time { color: var(--text-dim); }
+.dl-version[hidden] { display: none; }
+.dl-ctas { margin-top: 22px; }
+.list.dl-info { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.dl-reqs { margin: 0; padding-left: 18px; color: var(--text-dim); font-size: 15px; }
+.list .dl-reqs li { border-left: 0; padding-left: 2px; margin-top: 4px; overflow-wrap: anywhere; }
+.list .dl-reqs li::marker { color: var(--accent); }
+.dl-reqs a, #download .note a { color: var(--text); text-underline-offset: 3px; }
+.list p b { color: var(--text); font-weight: 600; }
+#download .note { margin-top: 24px; }
+#download .note + .note { margin-top: 10px; }
+
 .feature { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: clamp(20px, 4vw, 48px); align-items: center; margin-top: clamp(40px, 6vw, 64px); }
 .feature.wide { grid-template-columns: 1fr; gap: 24px; }
 .feature:nth-of-type(even) .shot { order: -1; }

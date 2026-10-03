@@ -1,7 +1,8 @@
 # 交接：下一段任務
 
-> **建立日期**：2026-10-03　|　**上一段做完的事**：change `ws-source-check`（m1）與 change `ui-language`（介面可切中英、後端訊息代碼、
-> 啟動器跟隨 Windows 語言）；審查由 Opus 5.5 擔任（本專案視同 Codex）。v0.1.0 打包與發布由另一個 session「打包發佈與版本管理」負責。
+> **建立日期**：2026-10-03　|　**上一段做完的事**：change `release-packaging`（Inno Setup 安裝檔＋zip、推 tag 發 GitHub Release、
+> 宣傳頁下載區塊、MIT LICENSE、CHANGELOG、`rust-toolchain.toml` 釘 1.97.1）；同日稍早 change `ws-source-check`（m1）與
+> change `ui-language`（介面可切中英、後端訊息代碼、啟動器跟隨 Windows 語言）。審查由 Opus 5.5 擔任（本專案視同 Codex）。
 > 2026-10-02：change 11 `desktop-launch-notify`（啟動器、關窗即結束、桌面通知）。
 > 同日稍早：change 9 去識別化並改寫 git 歷史、repo 公開、change 10 Live Output 色彩微調。
 > 同日最後：宣傳頁（GitHub Pages）與 README 中英雙語（非 OpenSpec change，文件與靜態頁）。
@@ -18,7 +19,10 @@
 2. repo **已公開** `https://github.com/Benjamin-Teng/ai-cockpit`；**每次推送前**跑 `node docs/research/2026-10-02/deid-check.js --history`（0 命中才推）；
    **歷史不再改寫**。
 3. 審查：本專案 Opus 5.5 subagent 審查**視同 Codex**（memory 有）。
-4. **使用者 2026-10-03 排定的三件事**：① m1 來源檢查——完成（archive `2026-10-03-ws-source-check`）；② 介面語言可選中英——完成（archive `2026-10-03-ui-language`，含 SDD ledger）；③ 發布 v0.1.0——由另一個 session「打包發佈與版本管理」在分支 `release-packaging`（獨立 worktree `D:\projects\ai-cockpit-release`）負責：Inno Setup 安裝精靈＋zip、推 `vX.Y.Z` tag 觸發 GitHub Actions、MIT LICENSE、CHANGELOG、`rust-toolchain.toml` 釘 1.97.1；它等 ui-language 併回 main 的通知後 rebase、改 README 下載段落、打 `v0.1.0`。**Tauri：使用者 2026-10-03 再次確認不包**，有常駐／系統匣需求才重評。
+4. **使用者 2026-10-03 排定的三件事**：① m1 來源檢查——完成（archive `2026-10-03-ws-source-check`）；② 介面語言可選中英——完成（archive `2026-10-03-ui-language`，含 SDD ledger）；③ 發布 v0.1.0——change `release-packaging`（`openspec status --change release-packaging` 看進度；發版做法見第 1 節「發版」）。**Tauri：使用者 2026-10-03 再次確認不包**，有常駐／系統匣需求才重評。
+5. **發新版只要三步**：改 `cockpit/Cargo.toml` 的 `version`（tag 版本必須等於它，否則 workflow 失敗）並跑 `cargo check`，連同更新後的
+   `Cargo.lock` 一起提交（workflow 用 `--locked`，lock 過期就失敗）→ `CHANGELOG.md` 加 `## [X.Y.Z] - YYYY-MM-DD` 段落（正式版標題不得是
+   `Unreleased`，build 一開始就檢查）→ 推 `vX.Y.Z` tag。宣傳頁的版本號與下載按鈕會自動跟上，不用改網頁。
 
 ## 1. 現在的狀態
 
@@ -33,6 +37,21 @@
     多視窗設定同步。**task failed／completed 目前只由人工標記產生**（agent 不能標記），所以這兩類幾乎只在另一個視窗標記時才會出現。
 - **介面語言**（規格 `openspec/specs/ui-language/`）：字典 `cockpit/assets/app/i18n.js`（`t`／`tn`／`tMsg`，繁中與英文兩份、鍵與佔位符必須一致）；語言規則同宣傳頁，手動選擇存 `localStorage` 的 `cockpit.lang`，頂列切換鈕重新載入、其他視窗跟著換。後端訊息：錯誤本體 `{error, code, params}`、投影 `reason_msg`／`protocol_warning_msg`／`warning_msgs`／事件 `detail_msg`，代碼由 `cockpit-core` 的 `Message` 目錄產生（新增訊息**一律加變體**，對帳測試會擋缺字典鍵）；繁中介面顯示原文、英文套 `msg.*` 範本。代碼清單在 `cockpit/README.md`「介面語言」。啟動器依 `GetUserDefaultUILanguage`。驗收 `docs/research/2026-10-03/i18n-check.js`（第 5 段會重拍 15 張英文截圖並覆寫已提交的 PNG，重拍後必跑 deid-check 並逐張看圖）。**既有驗收腳本都帶 `--lang=zh-TW`**，不依賴機器時區。
 - **宣傳頁與 README**：`site/`（靜態頁，`.github/workflows/pages.yml` 在 `site/**` 有變動推上 `main` 時發布到 `https://benjamin-teng.github.io/ai-cockpit/`；Pages 來源已設為 GitHub Actions）。主視覺是 Signal Grid 點陣動畫（使用者 2026-10-02 從三個原型選定）。語言：`index.html` head 腳本決定——手動選過照 `localStorage` 的 `cockpit.site.lang`；否則第一順位瀏覽器語言符合 `zh`／`zh-Hant`／`zh-Hans`（可帶 TW／HK／MO／CN）或時區在台港澳中就用繁中；繁中字串在 `site/i18n.js`，鍵與 `index.html` 的 `data-i18n` 一對一。根目錄 `README.md`（英文）與 `README.zh-TW.md` 頂端互相連結；橫幅 `docs/assets/readme-banner.svg` 由 `node docs/assets/gen-readme-banner.js` 產生（改橫幅改產生器再重跑）。`site/img/` 的兩張截圖是 `docs/research/` 既有去識別化截圖的複本。
+- **發版**（change `release-packaging`；規格 `openspec/specs/release-distribution/`）：
+  - `.github/workflows/release.yml`：推 `vX.Y.Z` tag → Windows runner 跑 fmt／clippy／test → `cargo build --release -p cockpit --bins` → zip 與
+    `iscc packaging/ai-cockpit.iss`（Inno Setup 6.7.1，runner 預裝）→ `packaging/smoke-test.ps1` 真的安裝、啟動、執行中阻擋（安裝結束碼 7、
+    解除安裝 1）、覆蓋更新、解除安裝、zip 核對 → `SHA256SUMS.txt` → 草稿 release 上傳三個檔、確認齊全後公開為最新版。
+  - **演練**：推 `vX.Y.Z-rc.N`（版本取去掉後綴者）跑同一流程，停在**不公開的預發布草稿**；看完 `gh release delete vX.Y.Z-rc.N --yes --cleanup-tag`
+    （在 repo 目錄內執行會連遠端與本機 tag 一起刪，2026-10-03 實測；在 repo 外執行未實測，事後以 `git tag -l` 確認）。`gh workflow run release.yml --ref main` 只建置不發布。
+  - **正式 tag 失敗的收拾**（不會產生公開的半成品）：release job 在建草稿之後失敗 → `gh release delete vX.Y.Z --yes`（只刪草稿，**不要**
+    `--cleanup-tag`）後在 Actions 頁面 Re-run failed jobs（build 產物沿用）；只有 Publish 失敗 → `gh release edit vX.Y.Z --draft=false --latest`。
+  - 安裝檔：per-user、免管理員，程式在 `%LOCALAPPDATA%\Programs\AI Agent Cockpit\`，捷徑工作目錄＝資料目錄 `%LOCALAPPDATA%\ai-cockpit\`
+    （`cockpit.toml` 放這裡；解除安裝保留）。Cockpit 執行中時安裝與解除安裝都只提示、不強制結束。英文／繁中依系統語言（繁中語言檔
+    `packaging/ChineseTraditional.isl` 取自 Inno 原始碼 `is-6_7_1`，Inno 換主版本時一起換）。**未做程式碼簽章**，SmartScreen 會擋第一次執行。
+  - 宣傳頁 `#download` 在瀏覽時向 `api.github.com/.../releases/latest` 取版本與兩個資產網址；取不到就連 Releases 頁。驗收
+    `docs/research/2026-10-03/download-section-check.js`（每次重跑會覆寫兩張截圖，沒改外觀就 `git checkout` 還原）。
+  - **安裝檔不能在本機測**：本機沒有 Inno Setup，`smoke-test.ps1` 沒有 `CI` 環境變數會拒跑（它會動到使用者自己的安裝與捷徑）。
+- **工具鏈**：`rust-toolchain.toml` 釘 Rust 1.97.1（含 clippy、rustfmt）。升版＝改這個檔、修新 lint、跑完整 gate，一個 commit。
 - **去識別化**：`docs/research/2026-10-02/deid-check.js`（用法 `deid-check.md`）＋本機詞表 `.deid-terms`（repo 根、不進 git，換機器要重建）。保留 `quant-dev`、`shioaji`。
 - **可用指令**（repo 根目錄）：
   - 全 gate：`cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test --workspace && cargo test -p cockpit --example ui_preview && markdownlint-cli2 "**/*.md" && openspec validate --all`
@@ -45,8 +64,9 @@
     `docs/research/2026-10-01/progress-check.js`、`ui-fixes-check.js`、`docs/research/2026-10-02/output-color-check.js`；本段新增
     `docs/research/2026-10-02/notify-check.js`、`idle-exit-check.js`。`factory-floor-check.js` 跑完 `git checkout -- docs/research/2026-09-16/task-5.2-scenario-d.png`。
   - 測啟動器時一律設 `COCKPIT_LAUNCH_DIALOG_FILE`（訊息框改寫檔）與指向假瀏覽器的 `COCKPIT_BROWSER`，避免在使用者桌面開真視窗。
-- **測試數字**（2026-10-02，當場跑為準）：workspace 1198 passed／0 failed／13 ignored；ui_preview 61；12 支既有腳本＋notify-check（190／62）＋idle-exit-check 全 PASS；
-  markdownlint 0 issues；`openspec validate --all` 21 passed；deid-check 0 命中。
+- **測試數字**（2026-10-03 `release-packaging` rebase 到 `ui-language` 之後，當場跑為準）：workspace 1238 passed／0 failed／13 ignored；ui_preview 62；
+  `download-section-check.js` 54 PASS；release 演練冒煙測試 64 PASS；markdownlint 0 issues；`openspec validate --all` 23 passed；deid-check 0 命中。
+  驗收腳本清單與 `ui-language` 的 `i18n-check.js` 數字見該 change 的 archive。
 
 ## 2. 立刻要做：等使用者回饋
 
@@ -56,6 +76,14 @@
 ## 3. 這一段踩過的坑
 
 （**不會報錯的錯誤**加粗。）
+
+- **CI 用未釘版本的 Rust 比本機新，新 clippy lint 讓 `-D warnings` 只在 CI 失敗**（本機 1.97.1 綠、runner 1.98.1 紅）→ 已釘 `rust-toolchain.toml`；CI 出現本機跑不出的
+  lint 先比 `rustc -V`（memory 有）。
+- Inno Pascal Script：`Variant` 不能直接當字串函式的引數或 `for` 的邊界（編譯期 `Type mismatch`）→ 先指派給 `String`／`Integer` 變數。
+- **Inno 會還原內嵌檔案的時間戳**：同一個安裝檔覆寫後修改時間不變，「沒有覆寫」不能看時間戳 → 看結束碼與 log 的 `-- File entry --`（冒煙測試有對照組）。
+- runner 上 `iscc` 是 choco 的 shim，`(Get-Command iscc).Source` 不是 Inno 目錄 → 從登錄 `Inno Setup 6_is1` 的 `InstallLocation` 取。
+- PowerShell `Set-StrictMode -Version Latest`：函式回傳空陣列會被展開成 `$null`，`(F).Count` 丟例外 → 寫 `@(F).Count`。
+- `workflow_dispatch` 只能觸發預設分支上已存在的 workflow 檔；併回 main 前的演練改用 rc tag。
 
 - **Windows 上 spawn 的長命子程序會繼承呼叫端交給父程序的 stdout pipe**：擷取輸出的呼叫端卡到孫程序結束 → 啟動器在 spawn 前清掉自身標準 handle 的繼承旗標（memory 有）。
 - **PowerShell 5.1：呼叫端導向錯誤串流時，原生程式的 stderr 變成終止錯誤；32 位元 PS 讀 64 位元程序的 Path 為空**（memory 有）。
@@ -77,7 +105,9 @@ change 10 與更早仍有效的坑：本檔前一版第 3 節（`git log -2 --fo
 | 啟動器模式下關窗後 agent 回報遺失（change 11 整支審查 I1） | **Claude 依授權維持「關窗即結束」並文件化**；**待使用者裁決**（替代：後端常駐＋系統匣，或 agent 端回報失敗重試） |
 | 通知的真機確認（change 11 task 4.2） | **待使用者操作** |
 | change 11 其他細節（archive ledger 全部 `Ruling:`） | **Claude 依授權裁決**，使用者可推翻 |
-| 是否加 LICENSE | 未決；使用者沒提，維持現狀。README 與宣傳頁刻意不提授權 |
+| 授權 | **MIT**（使用者 2026-10-03 決定，`LICENSE`） |
+| 程式碼簽章、自動更新、Windows 以外的安裝檔 | **不做**（change `release-packaging` 非目標）；SmartScreen 警告以宣傳頁與 README 說明 |
+| 從 `install-desktop.ps1` 改用安裝檔 | 安裝檔會取代同名桌面捷徑（不帶 `--config`）；使用者要把 `cockpit.toml` 連同旁邊的 `cockpit.state.json` 移到 `%LOCALAPPDATA%\ai-cockpit\`（狀態檔預設跟著設定檔目錄，只搬設定檔會**無聲地從空白看板開始**），再刪舊 `bin\`（README 有寫） |
 | 延後：change 11 的 m5（`cockpit.log` 每次覆寫）、m6（啟動器與安裝腳本缺 repo 內回歸驗收）、3.6 M6（HTML 預覽 iframe 內點擊不關面板）、2.6 其餘小項；change 8 與更早的延後項（見前一版本檔第 4 節） | **延後** |
 | m1 殘留：外站網頁以 no-cors 定期請求 `GET /` 仍可延長 `--exit-when-idle` 期限（讀不到資料） | **已接受**（archive `2026-10-03-ws-source-check` design Risks） |
 | `real_attach` 測試（`#[ignore]`）已補回填埠，但尚未在有 HERDR 的機器上實跑 | 下次真機測試時跑一次 |
@@ -108,3 +138,4 @@ change 10 與更早仍有效的坑：本檔前一版第 3 節（`git log -2 --fo
 | 37 | 2026-10-02 | 宣傳頁（GitHub Pages）、README 中英雙語與生成藝術橫幅；Opus 審查兩輪 |
 | 38 | 2026-10-03 | change `ws-source-check`（m1）：`/api/state`、`/ws` 來源檢查，`listen` 收緊為 `127.0.0.1`／`::1`、埠不得為 80，`GET /` 防嵌入；Opus 審查兩輪 |
 | 39 | 2026-10-03 | change `ui-language`（介面中英切換、後端訊息代碼、啟動器語言）SDD 完成，Opus 兩段階段審查＋整支審查；Tauri 確認不包；release 交給打包 session |
+| 40 | 2026-10-03 | change `release-packaging`：Inno Setup 安裝檔＋zip、release workflow（rc 演練三輪後全綠、版本不一致演練如預期失敗）、宣傳頁下載區塊、MIT、CHANGELOG、釘 Rust 1.97.1 |

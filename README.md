@@ -50,9 +50,35 @@ Cockpit is an observer. It cannot type into a pane, prompt an agent or stop HERD
 
 ## Get started
 
-Cockpit is built from source with Rust (edition 2024). Windows is the tested platform, and
-HERDR inside WSL is supported. The desktop launcher needs Chrome or Edge. The git views need
-`git` on `PATH`. Cockpit has been tested with HERDR 0.9.0-preview on Windows and HERDR 0.8.2 in WSL.
+Windows is the tested platform, and HERDR inside WSL is supported. The desktop launcher needs
+Chrome or Edge. The git views need `git` on `PATH`. Cockpit has been tested with HERDR
+0.9.0-preview on Windows and HERDR 0.8.2 in WSL.
+
+### Install (Windows x64)
+
+Download `ai-cockpit-<version>-x64-setup.exe` from the
+[latest release](https://github.com/Benjamin-Teng/ai-cockpit/releases/latest) and run it. It installs
+for your account only, without admin rights, under `%LOCALAPPDATA%\Programs\AI Agent Cockpit`, and
+adds an **AI Agent Cockpit** shortcut to the Start menu and, if you keep the option, the desktop.
+Uninstall it from Windows **Settings > Apps**. The zip in the same release holds the same two
+programs if you would rather not install.
+
+- **First run.** The installer is not code-signed yet, so Windows SmartScreen may say
+  "Windows protected your PC". Choose **More info**, then **Run anyway**. To check the download
+  first, compare its hash with `SHA256SUMS.txt` from the same release.
+- **Config.** The shortcut runs Cockpit in `%LOCALAPPDATA%\ai-cockpit`. Put your `cockpit.toml`
+  there (start from `cockpit.example.toml` in the install folder). Without it Cockpit runs with
+  zero configuration. Uninstalling keeps this folder.
+- **Coming from `install-desktop.ps1`?** The installer replaces the desktop shortcut of the same
+  name, and the new one does not pass `--config`. Move your `cockpit.toml` into
+  `%LOCALAPPDATA%\ai-cockpit` together with the `cockpit.state.json` next to it, which holds your
+  Factory Floor progress. Cockpit looks for the state file next to the config file, so moving only
+  the config starts you from an empty board. If your config sets a relative `[state] path`, make it
+  absolute or move that file too. Then delete the old `%LOCALAPPDATA%\ai-cockpit\bin` folder.
+
+### Build from source
+
+Building needs Rust (edition 2024).
 
 ```bash
 git clone https://github.com/Benjamin-Teng/ai-cockpit.git
@@ -72,7 +98,7 @@ Copy-Item cockpit.example.toml cockpit.toml
 cargo run -p cockpit
 ```
 
-### Desktop shortcut (Windows, optional)
+#### Desktop shortcut (Windows, optional)
 
 ```powershell
 pwsh scripts/install-desktop.ps1
@@ -83,7 +109,7 @@ This builds a release, installs it under `%LOCALAPPDATA%\ai-cockpit\bin` and put
 10 seconds after you close its last window, so progress reports sent after that are lost.
 Minimize the window instead of closing it while agents are working.
 
-### No HERDR yet?
+#### No HERDR yet?
 
 ```bash
 cargo run -p cockpit --example ui_preview

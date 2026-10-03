@@ -36,6 +36,43 @@
     apply(current);
   });
 
+  // ---------------- 下載區塊：向 GitHub 取最新正式 release ----------------
+  // 任何一步失敗都保留 HTML 預設的 Releases 頁連結、版本列維持隱藏，只在主控台留紀錄。
+  // 版本列沒有 data-i18n（避免和上面的 data-en 原文快取互相覆寫），日期固定 YYYY-MM-DD，不隨語言變。
+  function loadRelease() {
+    var setup = document.getElementById('dl-setup'), zip = document.getElementById('dl-zip'), bar = document.getElementById('dl-version');
+    if (!setup || !zip || !bar || typeof fetch !== 'function') return;
+    function pick(assets, suffix) {
+      for (var i = 0; i < assets.length; i++) {
+        var a = assets[i];
+        if (a && typeof a.name === 'string' && a.name.slice(-suffix.length) === suffix && typeof a.browser_download_url === 'string' && a.browser_download_url) return a.browser_download_url;
+      }
+      return null;
+    }
+    fetch('https://api.github.com/repos/Benjamin-Teng/ai-cockpit/releases/latest', { headers: { Accept: 'application/vnd.github+json' } })
+      .then(function (res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      })
+      .then(function (rel) {
+        if (!rel || typeof rel.tag_name !== 'string' || !rel.tag_name || !Array.isArray(rel.assets)) throw new Error('unexpected release JSON');
+        var when = new Date(rel.published_at);
+        if (typeof rel.published_at !== 'string' || isNaN(when.getTime())) throw new Error('bad published_at');
+        var setupUrl = pick(rel.assets, '-x64-setup.exe'), zipUrl = pick(rel.assets, '-x64.zip');
+        if (!setupUrl || !zipUrl) throw new Error('release assets not found');
+        // 全部確認過才一起替換，不留下只換一半的狀態
+        setup.href = setupUrl; zip.href = zipUrl;
+        // 版本號與日期分兩段（亮／淡），以間距分隔，不用符號串接。
+        bar.replaceChildren();
+        var tag = document.createElement('b'); tag.textContent = rel.tag_name;
+        var date = document.createElement('time'); date.dateTime = rel.published_at; date.textContent = when.toISOString().slice(0, 10);
+        bar.append(tag, date);
+        bar.hidden = false;
+      })
+      .catch(function (e) { console.warn('[download] latest release unavailable, keeping the Releases page link:', e && e.message ? e.message : e); });
+  }
+  try { loadRelease(); } catch (e) { console.warn('[download] ', e); }
+
   // ---------------- 主視覺：四條工作流的點陣訊號 ----------------
   var C = { line: '#294258', dim: '#a3b7c9', accent: '#63d5e8', ok: '#39d5ac', warn: '#e9bc73' };
   var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;

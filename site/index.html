@@ -46,6 +46,7 @@
     <a class="brand" href="#top"><span class="brand-mark" aria-hidden="true"></span>AI Agent Cockpit</a>
     <nav class="nav-links" aria-label="Page">
       <a class="hide-sm" href="#features" data-i18n="nav.features">Features</a>
+      <a class="hide-sm" href="#download" data-i18n="nav.download">Download</a>
       <a class="hide-sm" href="#start" data-i18n="nav.start">Get started</a>
       <a href="https://github.com/Benjamin-Teng/ai-cockpit">GitHub</a>
       <button type="button" class="lang-toggle" id="lang-toggle" lang="zh-Hant" aria-label="切換為繁體中文">中文</button>
@@ -60,7 +61,8 @@
         <h1 class="enter" data-i18n="hero.h1">See your whole agent pipeline, signal by signal.</h1>
         <p class="lede enter d1" data-i18n="hero.lede">Cockpit turns HERDR panes into a live factory floor: which workstream each agent drives, which stage it reached, and which one is waiting on you.</p>
         <div class="ctas enter d2">
-          <a class="btn primary" href="#start" data-i18n="cta.start">Get started</a>
+          <a class="btn primary" href="#download" data-i18n="cta.download">Download</a>
+          <a class="btn" href="#start" data-i18n="cta.start">Build from source</a>
           <a class="btn" href="https://github.com/Benjamin-Teng/ai-cockpit" data-i18n="cta.github">View on GitHub</a>
         </div>
       </div>
@@ -135,10 +137,38 @@ events.subscribe</code></pre>
     </div>
   </section>
 
-  <section class="block alt" id="start">
+  <section class="block alt" id="download">
+    <div class="wrap">
+      <h2 data-i18n="dl.h2">Download</h2>
+      <p class="intro" data-i18n="dl.intro">Install Cockpit on Windows with a regular installer, or unzip the portable build. No Rust toolchain needed.</p>
+      <p class="dl-version" id="dl-version" hidden></p>
+      <div class="ctas dl-ctas">
+        <a class="btn primary" id="dl-setup" href="https://github.com/Benjamin-Teng/ai-cockpit/releases/latest" data-i18n="dl.setup">Download installer (.exe)</a>
+        <a class="btn" id="dl-zip" href="https://github.com/Benjamin-Teng/ai-cockpit/releases/latest" data-i18n="dl.zip">Download zip</a>
+      </div>
+      <ul class="list dl-info">
+        <li>
+          <h3 data-i18n="dl.req.h3">System requirements</h3>
+          <ul class="dl-reqs">
+            <li data-i18n="dl.req1">Windows 10 or 11, x64.</li>
+            <li data-i18n="dl.req2"><a href="https://herdr.dev">HERDR</a> installed first. Cockpit only watches it.</li>
+            <li data-i18n="dl.req3">Chrome or Edge, for the desktop launcher that opens Cockpit in its own window.</li>
+          </ul>
+        </li>
+        <li>
+          <h3 data-i18n="dl.ss.h3">First run: Windows SmartScreen</h3>
+          <p data-i18n="dl.ss.p">The installer is not code-signed yet, so the first time you run it Windows may show &ldquo;Windows protected your PC&rdquo;. Choose <b>More info</b>, then <b>Run anyway</b>. To check the file first, compare its hash with <code>SHA256SUMS.txt</code> from the same release.</p>
+        </li>
+      </ul>
+      <p class="note" data-i18n="dl.after">When started from its shortcut, Cockpit reads <code>%LOCALAPPDATA%\ai-cockpit\cockpit.toml</code>. Without that file it runs with zero configuration.</p>
+      <p class="note" data-i18n="dl.src">Prefer to build it yourself? <a href="#start">Build from source</a>.</p>
+    </div>
+  </section>
+
+  <section class="block" id="start">
     <div class="wrap">
       <h2 data-i18n="s.h2">Get started</h2>
-      <p class="intro" data-i18n="s.intro">Cockpit is built from source with Rust. Windows is the tested platform, and HERDR inside WSL is supported.</p>
+      <p class="intro" data-i18n="s.intro">Or build Cockpit from source with Rust. Windows is the tested platform, and HERDR inside WSL is supported.</p>
       <ol class="steps">
         <li><div>
           <h3 data-i18n="s1.h3">Build and run</h3>
@@ -159,7 +189,7 @@ cargo run -p cockpit</code></pre>
           <p data-i18n="s3.p">Optional. Builds a release, installs it under <code>%LOCALAPPDATA%\ai-cockpit\bin</code> and puts an AI Agent Cockpit shortcut on your desktop.</p>
         </div></li>
       </ol>
-      <p class="note" data-i18n="s.note">No HERDR yet? <code>cargo run -p cockpit --example ui_preview</code> opens the dashboard with sample data. The dashboard's labels are mostly in Traditional Chinese.</p>
+      <p class="note" data-i18n="s.note">No HERDR yet? <code>cargo run -p cockpit --example ui_preview</code> opens the dashboard with sample data. The dashboard switches between English and Traditional Chinese.</p>
     </div>
   </section>
 </main>

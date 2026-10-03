@@ -44,9 +44,28 @@ Cockpit 是旁觀者：不能在 pane 裡打字、不能對 agent 下指令，�
 
 ## 開始使用
 
-Cockpit 用 Rust（edition 2024）從原始碼建置。測試過的平台是 Windows，也支援 WSL 裡的
-HERDR。桌面啟動器需要 Chrome 或 Edge；git 相關畫面需要 `PATH` 上有 `git`。測試過的版本是 Windows 的 HERDR 0.9.0-preview 與 WSL 的
-HERDR 0.8.2。
+測試過的平台是 Windows，也支援 WSL 裡的 HERDR。桌面啟動器需要 Chrome 或 Edge；git 相關畫面需要
+`PATH` 上有 `git`。測試過的版本是 Windows 的 HERDR 0.9.0-preview 與 WSL 的 HERDR 0.8.2。
+
+### 安裝（Windows x64）
+
+從[最新版 release](https://github.com/Benjamin-Teng/ai-cockpit/releases/latest) 下載
+`ai-cockpit-<版本>-x64-setup.exe` 並執行。它只裝給你這個帳號、不需要管理員權限，裝在
+`%LOCALAPPDATA%\Programs\AI Agent Cockpit`，並在開始功能表與桌面（可取消勾選）放 **AI Agent Cockpit**
+捷徑。要移除就到 Windows「**設定 > 應用程式**」解除安裝。不想安裝的話，同一個 release 的 zip 裡是同樣的兩個程式。
+
+- **第一次執行**：安裝檔尚未做程式碼簽章，Windows SmartScreen 可能顯示「Windows 已保護您的電腦」，
+  按「**其他資訊**」再按「**仍要執行**」。想先確認檔案，可拿同一個 release 附的 `SHA256SUMS.txt` 核對雜湊值。
+- **設定檔**：捷徑以 `%LOCALAPPDATA%\ai-cockpit` 為工作目錄執行 Cockpit，把 `cockpit.toml` 放在這裡
+  （可從安裝資料夾裡的 `cockpit.example.toml` 開始改）；沒有就以零設定執行。解除安裝會保留這個資料夾。
+- **原本用 `install-desktop.ps1` 裝過？** 安裝檔會取代桌面上同名的捷徑，新捷徑不帶 `--config`。請把
+  `cockpit.toml` 連同旁邊的 `cockpit.state.json`（Factory Floor 的進度）一起移到 `%LOCALAPPDATA%\ai-cockpit`。
+  Cockpit 在設定檔旁邊找狀態檔，只搬設定檔會從空白看板開始。設定檔裡的 `[state] path` 若是相對路徑，
+  請改成絕對路徑或把那個檔案一起搬。最後刪掉舊的 `%LOCALAPPDATA%\ai-cockpit\bin` 資料夾。
+
+### 從原始碼建置
+
+需要 Rust（edition 2024）。
 
 ```bash
 git clone https://github.com/Benjamin-Teng/ai-cockpit.git
@@ -65,7 +84,7 @@ Copy-Item cockpit.example.toml cockpit.toml
 cargo run -p cockpit
 ```
 
-### 桌面捷徑（Windows，可略過）
+#### 桌面捷徑（Windows，可略過）
 
 ```powershell
 pwsh scripts/install-desktop.ps1
@@ -75,7 +94,7 @@ pwsh scripts/install-desktop.ps1
 **AI Agent Cockpit** 捷徑。這個模式下，關掉最後一個視窗約 10 秒後 Cockpit 就會結束，之後
 送來的進度回報會遺失。agent 還在工作時，請把視窗最小化而不是關掉。
 
-### 還沒有 HERDR？
+#### 還沒有 HERDR？
 
 ```bash
 cargo run -p cockpit --example ui_preview

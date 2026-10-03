@@ -1,0 +1,7 @@
+# 本機、GitHub Actions 與所有 session 用同一版 Rust：未釘版本時 CI 會用 runner 預裝的較新 stable，
+# 新 clippy lint 在 -D warnings 下讓 CI 失敗而本機全綠（change release-packaging design D5）。
+# 升版是有意識的一個 commit：改這裡、修新 lint、跑完整 gate。
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

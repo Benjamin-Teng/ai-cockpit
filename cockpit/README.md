@@ -588,6 +588,10 @@ pwsh scripts/install-desktop.ps1
 powershell -ExecutionPolicy Bypass -File scripts\install-desktop.ps1 -Config D:\work\cockpit.toml
 ```
 
+這是從原始碼安裝的路線；不想建置的使用者改用 release 附的 Inno Setup 安裝檔（`packaging/ai-cockpit.iss`，
+裝到 `%LOCALAPPDATA%\Programs\AI Agent Cockpit\`，捷徑工作目錄同樣是 `%LOCALAPPDATA%\ai-cockpit\`；規格見
+`openspec` 的 `release-distribution`）。兩者的桌面捷徑同名，後裝的會取代先裝的。
+
 腳本以正式版建置 `cockpit` 套件的兩個執行檔，複製到安裝目錄，並在桌面建立「AI Agent Cockpit」捷徑
 （目標為安裝目錄的 `cockpit-launch.exe`）。重複執行即為更新。參數：
 

@@ -1,0 +1,220 @@
+# 發版：推 vX.Y.Z（或 vX.Y.Z-rc.N 演練）tag 時跑品質 gate、建置、打包、冒煙測試並建 GitHub Release；
+# 手動觸發只建置與測試，不建 release。
+# 規格：openspec release-distribution「推版本 tag 時發布 release」；做法：change release-packaging design D3–D6。
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      # 安裝 rust-toolchain.toml 釘的版本（不用 runner 預裝的 stable，design D5）。
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install --no-self-update
+
+      # 只供追溯。PATH 上的 iscc 是 choco 的 shim，Inno 的實際目錄從登錄取。
+      - name: Toolchain versions
+        continue-on-error: true
+        run: |
+          rustc -V
+          cargo -V
+          "iscc on PATH: $((Get-Command iscc).Source)"
+          $key = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1'
+          $inno = (Get-ItemProperty $key).InstallLocation
+          "Inno Setup: $inno $((Get-ItemProperty $key).DisplayVersion)"
+          Get-ChildItem (Join-Path $inno 'Languages') | ForEach-Object Name
+
+      # tag 去掉 v 與預發布後綴後必須等於 cockpit crate 版本（design D3）；手動觸發時取 crate 版本。
+      - name: Resolve version
+        id: version
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          $meta = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "cargo metadata failed with $LASTEXITCODE" }
+          $crate = ($meta.packages | Where-Object name -eq 'cockpit').version
+          if ($env:EVENT -eq 'push' -and $env:REF_TYPE -eq 'tag') {
+            if (-not ($env:REF_NAME -match '^v(\d+\.\d+\.\d+)(-[0-9A-Za-z.-]+)?$')) {
+              throw "Tag '$env:REF_NAME' is not vX.Y.Z or vX.Y.Z-<prerelease>"
+            }
+            $version = $Matches[1]
+            $prerelease = [bool]$Matches[2]
+            if ($version -ne $crate) {
+              throw "Tag $env:REF_NAME (version $version) does not match the cockpit crate version $crate"
+            }
+            # 正式版的 CHANGELOG 標題不得還是 Unreleased：在建置前就失敗，不必等 release job（design D9）。
+            if (-not $prerelease) {
+              $heading = Select-String -Path CHANGELOG.md -SimpleMatch "## [$version]" | Select-Object -First 1
+              if (-not $heading) { throw "CHANGELOG.md has no '## [$version]' section" }
+              if ($heading.Line -match 'Unreleased') { throw "CHANGELOG.md heading for $version still says Unreleased: $($heading.Line)" }
+            }
+          } else {
+            $version = $crate
+            $prerelease = $false
+          }
+          "version $version, prerelease $prerelease"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "prerelease=$($prerelease.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+
+      - uses: Swatinem/rust-cache@v2.9.2
+
+      - name: Format
+        run: cargo fmt --check
+
+      # --locked：發布的執行檔必須用 repo 提交的 Cargo.lock 建置，lock 過期就失敗而不是在 runner 上自行更新。
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --locked --workspace
+
+      - name: Build
+        run: cargo build --locked --release -p cockpit --bins
+
+      - name: Package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP 'stage'
+          $dist = Join-Path $env:GITHUB_WORKSPACE 'dist'
+          New-Item -ItemType Directory -Force $stage, $dist | Out-Null
+          Copy-Item target/release/cockpit.exe, target/release/cockpit-launch.exe, cockpit.example.toml $stage
+          Copy-Item LICENSE (Join-Path $stage 'LICENSE.txt')
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath (Join-Path $dist "ai-cockpit-$env:VERSION-x64.zip")
+          iscc "-dAppVersion=$env:VERSION" "-dStageDir=$stage" "-dOutputDir=$dist" packaging/ai-cockpit.iss
+          if ($LASTEXITCODE -ne 0) { throw "iscc failed with $LASTEXITCODE" }
+          Get-ChildItem $dist | Format-Table Name, Length
+
+      - name: Smoke test
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: >-
+          ./packaging/smoke-test.ps1
+          -Setup "dist/ai-cockpit-$env:VERSION-x64-setup.exe"
+          -Zip "dist/ai-cockpit-$env:VERSION-x64.zip"
+          -Version $env:VERSION
+          -LogDir (Join-Path $env:RUNNER_TEMP 'smoke')
+
+      # 換行用 LF，讓 Linux／macOS 的 sha256sum -c 也能直接核對。
+      - name: Checksums
+        working-directory: dist
+        run: |
+          $lines = Get-ChildItem -File | Sort-Object Name | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          }
+          [IO.File]::WriteAllText((Join-Path $PWD 'SHA256SUMS.txt'), (($lines -join "`n") + "`n"))
+          Get-Content SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: release-${{ steps.version.outputs.version }}
+          path: dist/
+          if-no-files-found: error
+
+      - if: failure()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: smoke-logs
+          path: ${{ runner.temp }}/smoke/
+          if-no-files-found: ignore
+
+  release:
+    needs: build
+    # 手動觸發即使選了 tag 當 ref 也不建 release（spec：手動觸發只產出建置產物）。
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    # GH_TOKEN 只給用到 gh 的三個 step，checkout 與 download-artifact 拿不到。
+    env:
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.build.outputs.version }}
+      PRERELEASE: ${{ needs.build.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: release-${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: Verify checksums
+        working-directory: dist
+        run: sha256sum -c SHA256SUMS.txt
+
+      # 只比對 "## [X.Y.Z]" 前綴；預發布 tag 用去掉後綴的版本（design D9）。「正式版標題不得是 Unreleased」在 build 的
+      # Resolve version 就檢查過了。
+      - name: Release notes
+        run: |
+          awk -v ver="$VERSION" '
+            index($0, "## [" ver "]") == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::CHANGELOG.md has no '## [$VERSION]' section"
+            exit 1
+          fi
+          cat notes.md
+
+      # 重跑時若已有同 tag 的 release（含上次留下的草稿），停下來由人刪掉再重跑，避免出現兩筆。
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          existing=$(gh release list --limit 100 --json tagName --jq "[.[] | select(.tagName == \"$TAG\")] | length")
+          if [ "$existing" != "0" ]; then
+            echo "::error::a release for $TAG already exists; delete it (gh release delete $TAG) before re-running"
+            exit 1
+          fi
+          flags=(--draft --verify-tag --title "$TAG" --notes-file notes.md)
+          if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
+          gh release create "$TAG" dist/* "${flags[@]}"
+
+      - name: Verify assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          expected="SHA256SUMS.txt ai-cockpit-$VERSION-x64-setup.exe ai-cockpit-$VERSION-x64.zip"
+          actual=$(gh release view "$TAG" --json assets --jq '[.assets[].name] | sort | join(" ")')
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::release assets: expected [$expected], got [$actual]"
+            exit 1
+          fi
+          echo "assets: $actual"
+
+      # 預發布 tag 停在草稿，人工檢查後刪除（design D4）。
+      - name: Publish
+        if: needs.build.outputs.prerelease != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$TAG" --draft=false --latest
