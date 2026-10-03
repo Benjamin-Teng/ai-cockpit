@@ -1,6 +1,7 @@
 # 交接：下一段任務
 
-> **建立日期**：2026-10-03　|　**上一段做完的事**：change `release-packaging`（Inno Setup 安裝檔＋zip、推 tag 發 GitHub Release、
+> **建立日期**：2026-10-03　|　**上一段做完的事**：change `auto-update`（啟動器自動更新、安裝檔更新模式；另一個 session ai-cockpit-05 實作）
+> 與 v0.1.1 發版；稍早 change `release-packaging`（Inno Setup 安裝檔＋zip、推 tag 發 GitHub Release、
 > 宣傳頁下載區塊、MIT LICENSE、CHANGELOG、`rust-toolchain.toml` 釘 1.97.1）；同日稍早 change `ws-source-check`（m1）與
 > change `ui-language`（介面可切中英、後端訊息代碼、啟動器跟隨 Windows 語言）。審查由 Opus 5.5 擔任（本專案視同 Codex）。
 > 2026-10-02：change 11 `desktop-launch-notify`（啟動器、關窗即結束、桌面通知）。
@@ -20,9 +21,14 @@
    **歷史不再改寫**。
 3. 審查：本專案 Opus 5.5 subagent 審查**視同 Codex**（memory 有）。
 4. **使用者 2026-10-03 排定的三件事**：① m1 來源檢查——完成（archive `2026-10-03-ws-source-check`）；② 介面語言可選中英——完成（archive `2026-10-03-ui-language`，含 SDD ledger）；③ 發布 v0.1.0——2026-10-03 公開後，**使用者同日改標為預發布（不刪）**：它沒有自動更新；自動更新由另一個 session（ai-cockpit-05）開 change 實作，做完以 **v0.1.1** 正式發布。在那之前沒有「最新版」，宣傳頁下載按鈕退回 Releases 頁（`https://github.com/Benjamin-Teng/ai-cockpit/releases/tag/v0.1.0`）（archive `2026-10-03-release-packaging`；發版做法見第 1 節「發版」）。**Tauri：使用者 2026-10-03 再次確認不包**，有常駐／系統匣需求才重評。
-5. **發新版只要三步**：改 `cockpit/Cargo.toml` 的 `version`（tag 版本必須等於它，否則 workflow 失敗）並跑 `cargo check`，連同更新後的
-   `Cargo.lock` 一起提交（workflow 用 `--locked`，lock 過期就失敗）→ `CHANGELOG.md` 加 `## [X.Y.Z] - YYYY-MM-DD` 段落（正式版標題不得是
-   `Unreleased`，build 一開始就檢查）→ 推 `vX.Y.Z` tag。宣傳頁的版本號與下載按鈕會自動跟上，不用改網頁。
+5. **發新版**：改 `cockpit/Cargo.toml` 的 `version`（tag 版本必須等於它，否則 workflow 失敗）、跑 `cargo update -p webpki-roots`（內建根憑證
+   跟上，archive `2026-10-03-auto-update` design Risks）與 `cargo check`，連同更新後的 `Cargo.lock` 一起提交（workflow 用 `--locked`）→
+   `CHANGELOG.md` 把 `## [Unreleased]` 改成 `## [X.Y.Z] - YYYY-MM-DD`（rc 演練可先寫 `- Unreleased`；正式版不得是，build 一開始就檢查）→
+   先推 `vX.Y.Z-rc.N` 演練 → 推 `vX.Y.Z` tag。宣傳頁與已安裝客戶端的自動更新都只看「最新正式版」，不用改網頁。
+6. **凍結契約（改了已安裝的客戶端就全部無法自動更新）**：資產名稱 `ai-cockpit-<X.Y.Z>-x64-setup.exe`／`-x64.zip`／`SHA256SUMS.txt`、
+   `SHA256SUMS.txt` 格式（64 位小寫 hex＋兩空白＋檔名、LF、無 BOM）、安裝檔參數
+   `/SILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /COCKPITUPDATE=1 /LOG=`、程式目錄的 `unins000.exe`。規格
+   `openspec/specs/release-distribution/`「自動更新客戶端契約」。
 
 ## 1. 現在的狀態
 
@@ -51,6 +57,12 @@
   - 宣傳頁 `#download` 在瀏覽時向 `api.github.com/.../releases/latest` 取版本與兩個資產網址；取不到就連 Releases 頁。驗收
     `docs/research/2026-10-03/download-section-check.js`（每次重跑會覆寫兩張截圖，沒改外觀就 `git checkout` 還原）。
   - **安裝檔不能在本機測**：本機沒有 Inno Setup，`smoke-test.ps1` 沒有 `CI` 環境變數會拒跑（它會動到使用者自己的安裝與捷徑）。
+- **自動更新**（archive `2026-10-03-auto-update`；規格 `openspec/specs/auto-update/`，另改 `desktop-launch`、`release-distribution`）：只有
+  安裝檔版本會更新；從捷徑啟動且 Cockpit 沒在跑時，最多每 24 小時查一次 `releases/latest`（404＝沒有正式版，不提示），問過使用者才下載
+  安裝檔、以 `SHA256SUMS.txt` 驗證、結束自己後以 `/COCKPITUPDATE=1` 靜默安裝，`.iss` 在更新模式等程序結束最多 30 秒、裝完重新啟動。
+  `COCKPIT_NO_UPDATE_CHECK=1` 關閉；`COCKPIT_UPDATE_API_URL`／`COCKPIT_UPDATE_DOWNLOAD_BASE` 只供測試。冒煙測試 88 項（含更新模式 5a／5b）。
+  **CI 驗不到、要真機**：端到端更新（假伺服器提供較新版本）與一般使用者帳號啟動安裝檔不提權。已知延後：更新模式逾時不會重新開啟舊版；
+  安裝檔要等下次冷啟動才清掉。
 - **工具鏈**：`rust-toolchain.toml` 釘 Rust 1.97.1（含 clippy、rustfmt）。升版＝改這個檔、修新 lint、跑完整 gate，一個 commit。
 - **去識別化**：`docs/research/2026-10-02/deid-check.js`（用法 `deid-check.md`）＋本機詞表 `.deid-terms`（repo 根、不進 git，換機器要重建）。保留 `quant-dev`、`shioaji`。
 - **可用指令**（repo 根目錄）：
@@ -106,7 +118,7 @@ change 10 與更早仍有效的坑：本檔前一版第 3 節（`git log -2 --fo
 | 通知的真機確認（change 11 task 4.2） | **待使用者操作** |
 | change 11 其他細節（archive ledger 全部 `Ruling:`） | **Claude 依授權裁決**，使用者可推翻 |
 | 授權 | **MIT**（使用者 2026-10-03 決定，`LICENSE`） |
-| 程式碼簽章、自動更新、Windows 以外的安裝檔 | **不做**（change `release-packaging` 非目標）；SmartScreen 警告以宣傳頁與 README 說明 |
+| 程式碼簽章、Windows 以外的安裝檔 | **不做**（change `release-packaging` 非目標）；SmartScreen 警告以宣傳頁與 README 說明。自動更新**已做**（change `auto-update`），讓警告只出現在第一次安裝 |
 | 從 `install-desktop.ps1` 改用安裝檔 | 安裝檔會取代同名桌面捷徑（不帶 `--config`）；使用者要把 `cockpit.toml` 連同旁邊的 `cockpit.state.json` 移到 `%LOCALAPPDATA%\ai-cockpit\`（狀態檔預設跟著設定檔目錄，只搬設定檔會**無聲地從空白看板開始**），再刪舊 `bin\`（README 有寫） |
 | 延後：change 11 的 m5（`cockpit.log` 每次覆寫）、m6（啟動器與安裝腳本缺 repo 內回歸驗收）、3.6 M6（HTML 預覽 iframe 內點擊不關面板）、2.6 其餘小項；change 8 與更早的延後項（見前一版本檔第 4 節） | **延後** |
 | m1 殘留：外站網頁以 no-cors 定期請求 `GET /` 仍可延長 `--exit-when-idle` 期限（讀不到資料） | **已接受**（archive `2026-10-03-ws-source-check` design Risks） |
@@ -139,3 +151,4 @@ change 10 與更早仍有效的坑：本檔前一版第 3 節（`git log -2 --fo
 | 38 | 2026-10-03 | change `ws-source-check`（m1）：`/api/state`、`/ws` 來源檢查，`listen` 收緊為 `127.0.0.1`／`::1`、埠不得為 80，`GET /` 防嵌入；Opus 審查兩輪 |
 | 39 | 2026-10-03 | change `ui-language`（介面中英切換、後端訊息代碼、啟動器語言）SDD 完成，Opus 兩段階段審查＋整支審查；Tauri 確認不包；release 交給打包 session |
 | 40 | 2026-10-03 | change `release-packaging`：Inno Setup 安裝檔＋zip、release workflow（rc 演練三輪後全綠、版本不一致演練如預期失敗）、宣傳頁下載區塊、MIT、CHANGELOG、釘 Rust 1.97.1 |
+| 41 | 2026-10-03 | change `auto-update`（ai-cockpit-05 實作）併回並 archive；v0.1.0 改標預發布；v0.1.1 發版準備（版本、CHANGELOG、凍結契約） |
