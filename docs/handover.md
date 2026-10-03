@@ -19,7 +19,7 @@
 2. repo **已公開** `https://github.com/Benjamin-Teng/ai-cockpit`；**每次推送前**跑 `node docs/research/2026-10-02/deid-check.js --history`（0 命中才推）；
    **歷史不再改寫**。
 3. 審查：本專案 Opus 5.5 subagent 審查**視同 Codex**（memory 有）。
-4. **使用者 2026-10-03 排定的三件事**：① m1 來源檢查——完成（archive `2026-10-03-ws-source-check`）；② 介面語言可選中英——完成（archive `2026-10-03-ui-language`，含 SDD ledger）；③ 發布 v0.1.0——**完成**，2026-10-03 公開 `https://github.com/Benjamin-Teng/ai-cockpit/releases/tag/v0.1.0`（archive `2026-10-03-release-packaging`；發版做法見第 1 節「發版」）。**Tauri：使用者 2026-10-03 再次確認不包**，有常駐／系統匣需求才重評。
+4. **使用者 2026-10-03 排定的三件事**：① m1 來源檢查——完成（archive `2026-10-03-ws-source-check`）；② 介面語言可選中英——完成（archive `2026-10-03-ui-language`，含 SDD ledger）；③ 發布 v0.1.0——2026-10-03 公開後，**使用者同日改標為預發布（不刪）**：它沒有自動更新；自動更新由另一個 session（ai-cockpit-05）開 change 實作，做完以 **v0.1.1** 正式發布。在那之前沒有「最新版」，宣傳頁下載按鈕退回 Releases 頁（`https://github.com/Benjamin-Teng/ai-cockpit/releases/tag/v0.1.0`）（archive `2026-10-03-release-packaging`；發版做法見第 1 節「發版」）。**Tauri：使用者 2026-10-03 再次確認不包**，有常駐／系統匣需求才重評。
 5. **發新版只要三步**：改 `cockpit/Cargo.toml` 的 `version`（tag 版本必須等於它，否則 workflow 失敗）並跑 `cargo check`，連同更新後的
    `Cargo.lock` 一起提交（workflow 用 `--locked`，lock 過期就失敗）→ `CHANGELOG.md` 加 `## [X.Y.Z] - YYYY-MM-DD` 段落（正式版標題不得是
    `Unreleased`，build 一開始就檢查）→ 推 `vX.Y.Z` tag。宣傳頁的版本號與下載按鈕會自動跟上，不用改網頁。
