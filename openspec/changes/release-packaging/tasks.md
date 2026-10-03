@@ -59,9 +59,9 @@
 
 ## 6. 發布 v0.1.0
 
-- [ ] 6.1 使用者同意後 squash 併回 main 並推送，確認 Pages 部署成功、宣傳頁在尚無 release 時下載按鈕連到 Releases 頁；驗收＝
+- [x] 6.1 使用者同意後 squash 併回 main 並推送，確認 Pages 部署成功、宣傳頁在尚無 release 時下載按鈕連到 Releases 頁；驗收＝
   `gh run list --workflow pages.yml` 最新一筆成功
-- [ ] 6.2 在 main 手動觸發 release workflow（`gh workflow run release.yml --ref main`）；驗收＝build job 成功、產物可下載、
+- [x] 6.2 在 main 手動觸發 release workflow（`gh workflow run release.yml --ref main`）；驗收＝build job 成功、產物可下載、
   `gh release list` 沒有新增 release
 - [ ] 6.3 `CHANGELOG.md` 填上發布日期並提交，推 tag `v0.1.0`；驗收＝`gh release view v0.1.0` 為公開最新版、三個資產齊全，
   宣傳頁顯示 `v0.1.0` 與日期、下載按鈕下載到的安裝檔 SHA-256 與 `SHA256SUMS.txt` 相符
