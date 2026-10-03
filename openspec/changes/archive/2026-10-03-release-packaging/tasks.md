@@ -63,6 +63,6 @@
   `gh run list --workflow pages.yml` 最新一筆成功
 - [x] 6.2 在 main 手動觸發 release workflow（`gh workflow run release.yml --ref main`）；驗收＝build job 成功、產物可下載、
   `gh release list` 沒有新增 release
-- [ ] 6.3 `CHANGELOG.md` 填上發布日期並提交，推 tag `v0.1.0`；驗收＝`gh release view v0.1.0` 為公開最新版、三個資產齊全，
+- [x] 6.3 `CHANGELOG.md` 填上發布日期並提交，推 tag `v0.1.0`；驗收＝`gh release view v0.1.0` 為公開最新版、三個資產齊全，
   宣傳頁顯示 `v0.1.0` 與日期、下載按鈕下載到的安裝檔 SHA-256 與 `SHA256SUMS.txt` 相符
-- [ ] 6.4 archive 本 change（`/opsx:archive`）
+- [x] 6.4 archive 本 change（`/opsx:archive`）

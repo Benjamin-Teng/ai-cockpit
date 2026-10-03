@@ -19,7 +19,7 @@
 2. repo **已公開** `https://github.com/Benjamin-Teng/ai-cockpit`；**每次推送前**跑 `node docs/research/2026-10-02/deid-check.js --history`（0 命中才推）；
    **歷史不再改寫**。
 3. 審查：本專案 Opus 5.5 subagent 審查**視同 Codex**（memory 有）。
-4. **使用者 2026-10-03 排定的三件事**：① m1 來源檢查——完成（archive `2026-10-03-ws-source-check`）；② 介面語言可選中英——完成（archive `2026-10-03-ui-language`，含 SDD ledger）；③ 發布 v0.1.0——change `release-packaging`（`openspec status --change release-packaging` 看進度；發版做法見第 1 節「發版」）。**Tauri：使用者 2026-10-03 再次確認不包**，有常駐／系統匣需求才重評。
+4. **使用者 2026-10-03 排定的三件事**：① m1 來源檢查——完成（archive `2026-10-03-ws-source-check`）；② 介面語言可選中英——完成（archive `2026-10-03-ui-language`，含 SDD ledger）；③ 發布 v0.1.0——**完成**，2026-10-03 公開 `https://github.com/Benjamin-Teng/ai-cockpit/releases/tag/v0.1.0`（archive `2026-10-03-release-packaging`；發版做法見第 1 節「發版」）。**Tauri：使用者 2026-10-03 再次確認不包**，有常駐／系統匣需求才重評。
 5. **發新版只要三步**：改 `cockpit/Cargo.toml` 的 `version`（tag 版本必須等於它，否則 workflow 失敗）並跑 `cargo check`，連同更新後的
    `Cargo.lock` 一起提交（workflow 用 `--locked`，lock 過期就失敗）→ `CHANGELOG.md` 加 `## [X.Y.Z] - YYYY-MM-DD` 段落（正式版標題不得是
    `Unreleased`，build 一開始就檢查）→ 推 `vX.Y.Z` tag。宣傳頁的版本號與下載按鈕會自動跟上，不用改網頁。
@@ -37,7 +37,7 @@
     多視窗設定同步。**task failed／completed 目前只由人工標記產生**（agent 不能標記），所以這兩類幾乎只在另一個視窗標記時才會出現。
 - **介面語言**（規格 `openspec/specs/ui-language/`）：字典 `cockpit/assets/app/i18n.js`（`t`／`tn`／`tMsg`，繁中與英文兩份、鍵與佔位符必須一致）；語言規則同宣傳頁，手動選擇存 `localStorage` 的 `cockpit.lang`，頂列切換鈕重新載入、其他視窗跟著換。後端訊息：錯誤本體 `{error, code, params}`、投影 `reason_msg`／`protocol_warning_msg`／`warning_msgs`／事件 `detail_msg`，代碼由 `cockpit-core` 的 `Message` 目錄產生（新增訊息**一律加變體**，對帳測試會擋缺字典鍵）；繁中介面顯示原文、英文套 `msg.*` 範本。代碼清單在 `cockpit/README.md`「介面語言」。啟動器依 `GetUserDefaultUILanguage`。驗收 `docs/research/2026-10-03/i18n-check.js`（第 5 段會重拍 15 張英文截圖並覆寫已提交的 PNG，重拍後必跑 deid-check 並逐張看圖）。**既有驗收腳本都帶 `--lang=zh-TW`**，不依賴機器時區。
 - **宣傳頁與 README**：`site/`（靜態頁，`.github/workflows/pages.yml` 在 `site/**` 有變動推上 `main` 時發布到 `https://benjamin-teng.github.io/ai-cockpit/`；Pages 來源已設為 GitHub Actions）。主視覺是 Signal Grid 點陣動畫（使用者 2026-10-02 從三個原型選定）。語言：`index.html` head 腳本決定——手動選過照 `localStorage` 的 `cockpit.site.lang`；否則第一順位瀏覽器語言符合 `zh`／`zh-Hant`／`zh-Hans`（可帶 TW／HK／MO／CN）或時區在台港澳中就用繁中；繁中字串在 `site/i18n.js`，鍵與 `index.html` 的 `data-i18n` 一對一。根目錄 `README.md`（英文）與 `README.zh-TW.md` 頂端互相連結；橫幅 `docs/assets/readme-banner.svg` 由 `node docs/assets/gen-readme-banner.js` 產生（改橫幅改產生器再重跑）。`site/img/` 的兩張截圖是 `docs/research/` 既有去識別化截圖的複本。
-- **發版**（change `release-packaging`；規格 `openspec/specs/release-distribution/`）：
+- **發版**（archive `2026-10-03-release-packaging`；規格 `openspec/specs/release-distribution/`）：
   - `.github/workflows/release.yml`：推 `vX.Y.Z` tag → Windows runner 跑 fmt／clippy／test → `cargo build --release -p cockpit --bins` → zip 與
     `iscc packaging/ai-cockpit.iss`（Inno Setup 6.7.1，runner 預裝）→ `packaging/smoke-test.ps1` 真的安裝、啟動、執行中阻擋（安裝結束碼 7、
     解除安裝 1）、覆蓋更新、解除安裝、zip 核對 → `SHA256SUMS.txt` → 草稿 release 上傳三個檔、確認齊全後公開為最新版。
