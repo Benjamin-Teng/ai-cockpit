@@ -19,6 +19,9 @@ cargo test --workspace
 markdownlint-cli2 "**/*.md"    # 在 repo 根執行
 ```
 
+推送任何分支或對 `main` 開 PR 時，GitHub Actions 的 `.github/workflows/ci.yml` 會跑同一組 gate，另加
+`cargo test -p cockpit --example ui_preview` 與 `openspec validate --all`。本機綠不等於 CI 綠，推送後看結果。
+
 ## 給 review 用的零寫入指令
 
 Codex adversarial review 跑在唯讀沙箱，cargo 的 build、clippy、test 都要寫 `target/`，

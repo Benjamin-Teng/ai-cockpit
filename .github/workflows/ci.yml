@@ -1,0 +1,67 @@
+# 持續整合：推送任何分支或對 main 開 PR 時跑品質 gate（與 AGENTS.md「品質 gate」相同）。
+# 發版（推 vX.Y.Z tag）在 release.yml，宣傳頁在 pages.yml；tag 推送不觸發本 workflow。
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+# 同一分支或同一 PR 的新 run 取消舊 run；main 上的 run 一律跑完，不互相取消。
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  rust:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      # 安裝 rust-toolchain.toml 釘的版本，與本機及 release.yml 一致。
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install --no-self-update
+
+      - uses: Swatinem/rust-cache@v2.9.2
+
+      - name: Format
+        run: cargo fmt --check
+
+      # --locked：Cargo.lock 過期就失敗，與 release.yml 相同，避免 tag 推上去才發現。
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --locked --workspace
+
+      - name: Test ui_preview example
+        run: cargo test --locked -p cockpit --example ui_preview
+
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      # 版本與本機一致；升版時兩邊一起改。
+      - name: Markdown lint
+        run: npx --yes markdownlint-cli2@0.23.2 "**/*.md"
+
+      - name: OpenSpec validate
+        run: npx --yes @fission-ai/openspec@1.12.0 validate --all --no-interactive
