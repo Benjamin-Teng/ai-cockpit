@@ -34,7 +34,7 @@
 //       用 `Page.addScriptToEvaluateOnNewDocument` 在 render.js 賦值 `window.onState` 之前
 //       裝一個攔截器，讓第一次真正呼叫延遲約 1.2 秒，證明延遲期間舊條件
 //       （`.runtime-cards` 存在）會被靜態占位騙過而提早成立、新條件（`waitForFirstProjection`：
-//       頂列出現 `[data-runtime]` 節點且 `#version` 等於 `/api/state` 的 version）不會，且新
+//       頂列出現 `[data-runtime]` 節點且 `#version` 的 data-state-version 等於 `/api/state` 的 version）不會，且新
 //       條件最終真的等到延遲結束才通過（量測耗時 ≥900ms）。
 //   S6：命令列段落代號驗證自我測試（task 5.4 final review／Codex F4）：parseSegmentArg() 對合法、
 //       拼錯、大小寫不符、空字串與只有逗號的參數各驗一次，並實際用拼錯的代號與空字串跑一次本檔，
@@ -72,7 +72,7 @@
 //   P1：dashboard/切換Project＋dashboard/選取跨重畫保留＋dashboard/鍵盤切換與焦點保留＋
 //       dashboard/切換Project不清除錯誤也不離開改綁模式＋dashboard/各狀態數量＋dashboard/沒有
 //       Project＋dashboard/兩個Project（task 3.1；fix round 1／F2：「選取跨重畫保留」「鍵盤
-//       切換與焦點保留」改成觀察 #version 真的變化至少兩次、每次變化後立刻斷言，不是固定
+//       切換與焦點保留」改成觀察 #version 的 data-state-version 真的變化至少兩次、每次變化後立刻斷言，不是固定
 //       sleep）。
 //   R1：dashboard/兩個runtime的畫面（task 2.3／3.3；子斷言標 topbar／statusbar／runtimes，
 //       Ruling R4；fix round 1／F7 初版：topbar 逐一斷言 win／wsl 的 id、狀態文字與對應 token
@@ -831,7 +831,7 @@ async function stopPreview(preview, label) {
 //
 // 新判準改成兩個條件同時成立：(a) 頂列出現至少一個 `[data-runtime]` 燈號節點（direction-01
 // -visual task 2.3；`renderRuntimeLamp()` 只在 `renderState()` 真的跑過一次才會畫出，靜態
-// 占位的 `.topbar-runtimes` 是空 div）；(b) `#version` 的文字精確等於當下 `/api/state` 回傳
+// 占位的 `.topbar-runtimes` 是空 div）；(b) `#version` 的 data-state-version 精確等於當下 `/api/state` 回傳
 // 的 version（加上 `v` 前綴）——靜態占位的 `#version` 是空字串，不可能等於任何合法 version。
 // 兩者都只有真投影畫過才會成立，任一項單獨都不夠（例如 (a) 沒有 (b) 理論上可能是上一輪投影的
 // 殘留 DOM，雖然目前實作不會發生，但雙重條件比單一條件更保守）。
@@ -842,14 +842,14 @@ async function stopPreview(preview, label) {
 // 都用「幾乎同一時刻」fetch 到的 /api/state 版本去跟頁面比對，把這個競態視窗縮到最小。
 async function waitForFirstProjection(cdp, previewPort, label) {
   const finalLabel =
-    label || '第一份真投影已畫出（topbar 出現 [data-runtime] 節點且 #version 等於 /api/state 的 version，不是靜態占位）';
+    label || '第一份真投影已畫出（topbar 出現 [data-runtime] 節點且 #version 的 data-state-version 等於 /api/state 的 version，不是靜態占位）';
   const timeoutMs = 5000;
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const pageState = await cdp.eval(`(() => {
       var lamp = document.querySelector('[data-region="topbar"] [data-runtime]');
       var v = document.getElementById('version');
-      return { hasLamp: !!lamp, versionText: v ? v.textContent.trim() : null };
+      return { hasLamp: !!lamp, versionText: v ? (v.hasAttribute('data-state-version') ? 'v' + v.getAttribute('data-state-version') : '') : null };
     })()`);
     if (pageState.hasLamp && pageState.versionText) {
       let expected = null;
@@ -896,12 +896,12 @@ async function injectState(cdp, state, options) {
   })()`);
 }
 
-// fix round 1／Codex F2：用「真的觀察到 #version 變化」取代固定 sleep 來證明「這段時間內發生
+// fix round 1／Codex F2：用「真的觀察到 #version 的 data-state-version 變化」取代固定 sleep 來證明「這段時間內發生
 // 了幾次重畫」，並在每次觀察到變化時立刻呼叫 perRepaintCheck()（內部自己 check()）——不是只在
 // 等待結束後看最後一眼。P1 的「選取跨重畫保留」「鍵盤切換與焦點保留」共用這個實作。
 async function waitForRepaintsAssertingEachTime(cdp, minRepaints, timeoutMs, perRepaintCheck, summaryLabel) {
   const readVersion = () =>
-    cdp.eval("(() => { var v = document.getElementById('version'); return v ? v.textContent : null; })()");
+    cdp.eval("(() => { var v = document.getElementById('version'); return v ? (v.hasAttribute('data-state-version') ? 'v' + v.getAttribute('data-state-version') : '') : null; })()");
   let lastVersion = await readVersion();
   let repaints = 0;
   const start = Date.now();
@@ -916,7 +916,7 @@ async function waitForRepaintsAssertingEachTime(cdp, minRepaints, timeoutMs, per
   }
   check(
     repaints >= minRepaints,
-    `${summaryLabel}：應該在 ${timeoutMs} ms 內觀察到至少 ${minRepaints} 次重畫（#version 變化）（實際觀察到 ${repaints} 次）`
+    `${summaryLabel}：應該在 ${timeoutMs} ms 內觀察到至少 ${minRepaints} 次重畫（#version 的 data-state-version 變化）（實際觀察到 ${repaints} 次）`
   );
   return repaints;
 }
@@ -1642,7 +1642,7 @@ async function partSelfTestInjection() {
     // /ws 訊息抵達前就已經在畫面上，不能拿來當「真投影已經畫出」的判準；`.runtime-cards` 同樣
     // 是靜態占位的一部分（Ruling R22／Codex C2，2.3 fix round 1：`<div class="runtime-cards">`
     // 是空殼、頁面一載入就存在，不是可靠訊號），一律改用 `waitForFirstProjection()`（頂列出現
-    // `[data-runtime]` 節點且 `#version` 等於 `/api/state` 的 version）。
+    // `[data-runtime]` 節點且 `#version` 的 data-state-version 等於 `/api/state` 的 version）。
     await waitForFirstProjection(cdp, preview.port);
 
     const marker = 'INJECT-MARKER-' + Date.now();
@@ -2083,7 +2083,7 @@ async function partSelfTestFirstProjectionWait() {
       return {
         oldConditionTrue: !!document.querySelector('.runtime-cards'),
         hasLamp: !!document.querySelector('[data-region="topbar"] [data-runtime]'),
-        versionText: v ? v.textContent : null,
+        versionText: v ? (v.hasAttribute('data-state-version') ? 'v' + v.getAttribute('data-state-version') : '') : null,
       };
     })()`);
     check(
@@ -4500,7 +4500,7 @@ async function partProjectSwitching() {
     }
 
     // --- 選取跨重畫保留（dashboard；此時推送間隔 100ms）---
-    // fix round 1／Codex F2：不是固定睡 3 秒才看最後一眼，改成觀察 #version 真的變化至少兩次
+    // fix round 1／Codex F2：不是固定睡 3 秒才看最後一眼，改成觀察 #version 的 data-state-version 真的變化至少兩次
     // （證明期間真的發生了規格要求的整頁重畫，不是伺服器剛好沒推送），每次變化後立刻斷言
     // Factory Floor 是否仍顯示 p。
     await waitForRepaintsAssertingEachTime(
@@ -4522,7 +4522,7 @@ async function partProjectSwitching() {
       return document.activeElement === n;
     })()`);
     if (focusable) {
-      // fix round 1／Codex F2：同上，觀察 #version 真的變化取代固定睡 2 秒，每次變化後立刻
+      // fix round 1／Codex F2：同上，觀察 #version 的 data-state-version 真的變化取代固定睡 2 秒，每次變化後立刻
       // 確認焦點仍在 cockpit 項目上。
       await waitForRepaintsAssertingEachTime(
         cdp,
@@ -5229,15 +5229,23 @@ async function partTwoRuntimes() {
       return {
         hasRegion: !!region,
         text: region ? region.textContent : null,
+        stateVersion: (function () { var v = document.getElementById('version'); return v ? v.getAttribute('data-state-version') : null; })(),
         channelStateText: (channelNode ? channelNode.textContent : (region ? region.textContent : '')).trim(),
         hasDedicatedChannelNode: !!channelNode,
       };
     })()`);
     check(statusbar.hasRegion === true, 'statusbar: 應該有 data-region="statusbar"（design D2；目前 version／channel 都在頂列，預期 FAIL）');
-    const versionRe = new RegExp('v' + expectedState.version + '(\\D|$)');
+    // 2026-10-05：底列改顯示程式版本（cockpit crate 版本，例如 v0.1.2），投影的遞增 version 改放 #version 的
+    // data-state-version 屬性。兩者分開斷言。
+    const appVersion = (fs.readFileSync(path.join(REPO, 'cockpit', 'Cargo.toml'), 'utf8').match(/^version = "([^"]+)"/m) || [])[1];
+    const versionRe = new RegExp('v' + String(appVersion).replace(/\./g, '\\.') + '(\\D|$)');
     check(
-      statusbar.hasRegion === true && statusbar.text !== null && versionRe.test(statusbar.text),
-      `statusbar: 應該顯示確切的 version（期望 v${expectedState.version}；statusbar 文字 ${JSON.stringify(statusbar.text)}）`
+      statusbar.hasRegion === true && statusbar.text !== null && !!appVersion && versionRe.test(statusbar.text),
+      `statusbar: 應該顯示程式版本（期望 v${appVersion}；statusbar 文字 ${JSON.stringify(statusbar.text)}）`
+    );
+    check(
+      statusbar.stateVersion === String(expectedState.version),
+      `statusbar: #version 的 data-state-version 應該等於投影 version（期望 ${expectedState.version}；實際 ${JSON.stringify(statusbar.stateVersion)}）`
     );
     check(
       statusbar.hasRegion === true && statusbar.channelStateText === 'connected',
@@ -10301,17 +10309,17 @@ async function partRepaintKeepsFileTab() {
     });
     ftNeed(!setup.error && setup.scrollTop > 0 && setup.content > 0, `[FT2] 前置：內容往下捲動並記下內容子節點（${JSON.stringify(setup)}）`);
     let repaints = 0;
-    let last = await cdp.eval("document.getElementById('version').textContent");
+    let last = await cdp.eval("document.getElementById('version').getAttribute('data-state-version')");
     const start = Date.now();
     while (Date.now() - start < 3000) {
       await sleep(100);
-      const v = await cdp.eval("document.getElementById('version').textContent");
+      const v = await cdp.eval("document.getElementById('version').getAttribute('data-state-version')");
       if (v !== last) {
         repaints += 1;
         last = v;
       }
     }
-    check(repaints >= 10, `[FT2] 3 秒內真的發生了多次整頁重畫（#version 變化 ${repaints} 次）`);
+    check(repaints >= 10, `[FT2] 3 秒內真的發生了多次整頁重畫（#version 的 data-state-version 變化 ${repaints} 次）`);
     const after = await runFn(cdp, () => window.ft2Compare(null));
     check(after.review && after.tablist && after.tabs, `[FT2] 分頁區、分頁列與各分頁的 DOM 節點沒有被換掉（${JSON.stringify(after)}）`);
     check(after.panel && after.viewer && after.content, `[FT2] 檔案內容（tabpanel、檢視器與其下 ${after.contentNodes} 個內容節點）的 DOM 節點沒有被換掉`);

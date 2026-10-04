@@ -962,12 +962,12 @@ async function waitForFirstProjection(cdp, previewPort, label) {
   while (Date.now() - start < 8000) {
     const s = await cdp
       .eval(`(() => { const lamp = document.querySelector('[data-region="topbar"] [data-runtime]');
-        const v = document.getElementById('version'); return { lamp: !!lamp, v: v ? v.textContent.trim() : null }; })()`)
+        const v = document.getElementById('version'); return { lamp: !!lamp, v: v ? (v.hasAttribute('data-state-version') ? 'v' + v.getAttribute('data-state-version') : '') : null }; })()`)
       .catch(() => null);
     if (s && s.lamp && s.v) {
       const expected = await fetch(`http://127.0.0.1:${previewPort}/api/state`).then((r) => r.json()).catch(() => null);
       if (expected && s.v === `v${expected.version}`) {
-        check(true, label || '第一份真投影已畫出（頂列有 [data-runtime] 且 #version 等於 /api/state）');
+        check(true, label || '第一份真投影已畫出（頂列有 [data-runtime] 且 #version 的 data-state-version 等於 /api/state）');
         return true;
       }
     }
@@ -1655,19 +1655,19 @@ async function segRepaintKeepsTree() {
       need(!setup.error && setup.scrollTop > 0 && setup.focused, `前置：檔案樹捲到中段、焦點在檔案列上（${JSON.stringify(setup)}）`);
       const snap = await ctx.cdp.run(treeSnapshot, null);
       need(!snap.error, `前置：記下檔案樹、每一列與列內所有子孫節點、捲動容器（${JSON.stringify(snap)}）`);
-      const v0 = await ctx.cdp.run(() => document.getElementById('version').textContent);
+      const v0 = await ctx.cdp.run(() => document.getElementById('version').getAttribute('data-state-version'));
       let repaints = 0;
       let lastV = v0;
       const start = Date.now();
       while (Date.now() - start < 3000) {
         await sleep(100);
-        const v = await ctx.cdp.run(() => document.getElementById('version').textContent);
+        const v = await ctx.cdp.run(() => document.getElementById('version').getAttribute('data-state-version'));
         if (v !== lastV) {
           repaints += 1;
           lastV = v;
         }
       }
-      check(repaints >= 10, `3 秒內真的發生了多次整頁重畫（#version 變化 ${repaints} 次）`);
+      check(repaints >= 10, `3 秒內真的發生了多次整頁重畫（#version 的 data-state-version 變化 ${repaints} 次）`);
       const after = await ctx.cdp.run(treeCompare, null);
       const focus = await ctx.cdp.run(() => ({
         same: document.activeElement === window.__fcFocusTarget,

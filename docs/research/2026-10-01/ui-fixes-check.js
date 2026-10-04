@@ -202,7 +202,8 @@ async function stopChrome(handle, label) {
 // 共用讀取
 // ---------------------------------------------------------------------------
 
-const versionOf = "Number(document.getElementById('version').textContent.replace(/\\D/g, ''))";
+// 投影 version 讀 #version 的 data-state-version（2026-10-05 起文字改為程式版本，例如 v0.1.2）。
+const versionOf = "Number(document.getElementById('version').getAttribute('data-state-version'))";
 
 // 目前焦點元素：身分（dataset 的 JSON）、是否匹配 :focus-visible。
 const readFocus = `(() => {

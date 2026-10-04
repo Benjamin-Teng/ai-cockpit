@@ -93,10 +93,13 @@ async fn routes_return_200_with_expected_content_types() {
 
         if path == "/" {
             let body = body_bytes(response).await;
+            // 2026-10-05：送出前把程式版本占位字換成 cockpit crate 版本（底列顯示程式版本）。
+            let expected = include_str!("../assets/index.html")
+                .replace("__COCKPIT_VERSION__", env!("CARGO_PKG_VERSION"));
             assert_eq!(
                 body,
-                include_str!("../assets/index.html").as_bytes(),
-                "/ 的 body 應該等於內嵌的 index.html"
+                expected.as_bytes(),
+                "/ 的 body 應該等於內嵌的 index.html（版本占位字已換成 crate 版本）"
             );
         } else if path == "/icons/icon-192.png" || path == "/icons/icon-512.png" {
             let body = body_bytes(response).await;
@@ -982,5 +985,31 @@ async fn every_backend_message_code_has_a_msg_key_in_both_dictionaries() {
         codes.len() > 30,
         "代碼清單應該有 30 個以上（實際 {}）",
         codes.len()
+    );
+}
+
+/// 2026-10-05 使用者指示：底列改顯示程式版本。`GET /` 送出的 index.html 帶
+/// `<meta name="cockpit-version" content="<crate 版本>">`，且不殘留占位字。
+#[tokio::test]
+async fn index_carries_app_version() {
+    let (_handle, state) = new_app_state();
+    let request = Request::builder()
+        .uri("/")
+        .body(Body::empty())
+        .expect("request 建構不應該失敗");
+    let response = http::router(state)
+        .oneshot(request)
+        .await
+        .expect("oneshot 呼叫不應該失敗");
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = String::from_utf8(body_bytes(response).await).expect("body 應該是合法 UTF-8");
+    let meta = format!(
+        r#"<meta name="cockpit-version" content="{}" />"#,
+        env!("CARGO_PKG_VERSION")
+    );
+    assert!(html.contains(&meta), "index.html 應該帶 {meta}");
+    assert!(
+        !html.contains("__COCKPIT_VERSION__"),
+        "index.html 不應殘留版本占位字"
     );
 }

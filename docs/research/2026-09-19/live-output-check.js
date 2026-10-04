@@ -1013,7 +1013,7 @@ async function partFrequentRepaint() {
       window.__outputNode = document.getElementById('output');
       window.__oldSelectedRow = document.querySelector('.pane-row.selected');
       return {
-        version: Number(document.getElementById('version').textContent.slice(1)),
+        version: Number(document.getElementById('version').getAttribute('data-state-version')),
         scrollTop: document.querySelector('.output-text').scrollTop,
         markedOutput: !!window.__outputNode,
         markedRow: !!window.__oldSelectedRow,
@@ -1029,7 +1029,7 @@ async function partFrequentRepaint() {
     const after = await cdp.eval(`(() => {
       const row = document.querySelector('.pane-row[data-pane="wJ:p3"]');
       return {
-        version: Number(document.getElementById('version').textContent.slice(1)),
+        version: Number(document.getElementById('version').getAttribute('data-state-version')),
         scrollTop: document.querySelector('.output-text').scrollTop,
         sameOutputNode: document.getElementById('output') === window.__outputNode,
         oldRowGone: !document.contains(window.__oldSelectedRow),
@@ -2661,9 +2661,9 @@ async function partFocusPreservedAcrossRepaint() {
       ),
       'wJ:p1 的 pane 列可以取得焦點'
     );
-    const baselineVersion1 = await cdp.eval("Number(document.getElementById('version').textContent.slice(1))");
+    const baselineVersion1 = await cdp.eval("Number(document.getElementById('version').getAttribute('data-state-version'))");
     await cdp.waitFor(
-      `Number(document.getElementById('version').textContent.slice(1)) - ${baselineVersion1} >= 5`,
+      `Number(document.getElementById('version').getAttribute('data-state-version')) - ${baselineVersion1} >= 5`,
       5000,
       'focus 之後應該經過至少 5 次重畫（version 前進 ≥5）'
     );
@@ -2706,9 +2706,9 @@ async function partFocusPreservedAcrossRepaint() {
       await cdp.eval("document.activeElement === window.__oldNode2"),
       'wJ:p3 的 pane 列可以取得焦點'
     );
-    const baselineVersion2 = await cdp.eval("Number(document.getElementById('version').textContent.slice(1))");
+    const baselineVersion2 = await cdp.eval("Number(document.getElementById('version').getAttribute('data-state-version'))");
     await cdp.waitFor(
-      `Number(document.getElementById('version').textContent.slice(1)) - ${baselineVersion2} >= 5`,
+      `Number(document.getElementById('version').getAttribute('data-state-version')) - ${baselineVersion2} >= 5`,
       5000,
       'focus wJ:p3 之後應該經過至少 5 次重畫（version 前進 ≥5）'
     );
@@ -2788,9 +2788,9 @@ async function partFocusPreservedAcrossRepaint() {
       await cdp.eval("document.activeElement === window.__closeButtonRef"),
       '面板「取消選取」按鈕可以取得焦點'
     );
-    const baselineVersion3 = await cdp.eval("Number(document.getElementById('version').textContent.slice(1))");
+    const baselineVersion3 = await cdp.eval("Number(document.getElementById('version').getAttribute('data-state-version'))");
     await cdp.waitFor(
-      `Number(document.getElementById('version').textContent.slice(1)) - ${baselineVersion3} >= 5`,
+      `Number(document.getElementById('version').getAttribute('data-state-version')) - ${baselineVersion3} >= 5`,
       5000,
       '面板「取消選取」按鈕聚焦後應該經過至少 5 次重畫（version 前進 ≥5）'
     );
@@ -2875,9 +2875,9 @@ async function partFocusPreservedAcrossRepaint() {
       `目標應該已經整個捲出 .runtime-cards 容器的可視範圍外（實際 ${JSON.stringify(scrollSetup)}）`
     );
 
-    const baselineVersionF3 = await cdp.eval("Number(document.getElementById('version').textContent.slice(1))");
+    const baselineVersionF3 = await cdp.eval("Number(document.getElementById('version').getAttribute('data-state-version'))");
     await cdp.waitFor(
-      `Number(document.getElementById('version').textContent.slice(1)) - ${baselineVersionF3} >= 5`,
+      `Number(document.getElementById('version').getAttribute('data-state-version')) - ${baselineVersionF3} >= 5`,
       5000,
       '目標捲出容器可視範圍後應該再經過至少 5 次重畫（version 前進 ≥5）'
     );

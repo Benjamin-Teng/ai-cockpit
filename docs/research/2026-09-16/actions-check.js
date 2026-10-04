@@ -410,14 +410,14 @@ async function partPreview() {
     log('--- 情境「改綁模式跨重畫保留」---');
     await cdp.click('[data-action="rebind"][data-project="cockpit"][data-workstream="be"]');
     await cdp.waitFor("!!document.querySelector('.rebind-banner')", 2000, '進入改綁模式出現提示');
-    const v0 = await cdp.eval("Number(document.getElementById('version').textContent.slice(1))");
+    const v0 = await cdp.eval("Number(document.getElementById('version').getAttribute('data-state-version'))");
     await cdp.eval("window.__oldBanner = document.querySelector('.rebind-banner'); true");
     await cdp.waitFor(
-      `Number(document.getElementById('version').textContent.slice(1)) >= ${v0 + 2}`,
+      `Number(document.getElementById('version').getAttribute('data-state-version')) >= ${v0 + 2}`,
       3000,
       '改綁模式期間收到兩份新投影'
     );
-    const v1 = await cdp.eval("Number(document.getElementById('version').textContent.slice(1))");
+    const v1 = await cdp.eval("Number(document.getElementById('version').getAttribute('data-state-version'))");
     check(v1 >= v0 + 2, `期間至少重畫兩次（version ${v0} → ${v1}）`);
     check(
       await cdp.eval("!document.contains(window.__oldBanner)"),
@@ -524,7 +524,7 @@ async function partPreview() {
       cockpitTargets.length === 7,
       `cockpit 專案畫面上應該有 7 個「Completed」（實際 ${cockpitTargets.length}：${JSON.stringify(cockpitTargets)}）`
     );
-    const vBefore = await cdp.eval("Number(document.getElementById('version').textContent.slice(1))");
+    const vBefore = await cdp.eval("Number(document.getElementById('version').getAttribute('data-state-version'))");
     for (const [project, task] of cockpitTargets) {
       await cdp.click(`[data-action="complete"][data-project="${project}"][data-task="${task}"]`, 150);
     }
@@ -544,7 +544,7 @@ async function partPreview() {
     // p 的「Completed」從 3 個變 4 個、合計從 10 個變 11 個（仍涵蓋原本 10 個以上不同 task）。
     const chosen = cockpitTargets.concat(pTargets);
     check(chosen.length === 11, `合計應該連按 11 個不同 task（實際 ${chosen.length}）`);
-    const vAfter = await cdp.eval("Number(document.getElementById('version').textContent.slice(1))");
+    const vAfter = await cdp.eval("Number(document.getElementById('version').getAttribute('data-state-version'))");
     check(
       vAfter - vBefore >= 10,
       `連按期間持續重畫（version ${vBefore} → ${vAfter}，至少前進 10）`
@@ -740,7 +740,7 @@ async function partHarness() {
     );
     check(
       typeof afterTwo === 'string' && afterTwo.includes('已有標記'),
-      `再重畫兩次後錯誤訊息仍在（實際 ${JSON.stringify(afterTwo)}；version ${await cdp.eval("document.getElementById('version').textContent")}）`
+      `再重畫兩次後錯誤訊息仍在（實際 ${JSON.stringify(afterTwo)}；version ${await cdp.eval("document.getElementById('version').getAttribute('data-state-version')")}）`
     );
     await cdp.click('.error-banner [data-action="error-dismiss"]');
     await cdp.waitFor("!document.querySelector('.error-banner')", 2000, '按「關閉」後錯誤訊息消失');

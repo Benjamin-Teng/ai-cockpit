@@ -82,7 +82,7 @@ Direction 01 視覺語彙與三欄版面（含 Project 切換）。證據：設�
 「Project 切換」）；中上 Factory Floor（見「Factory Floor」）；右欄每個 runtime 一張卡（`id`、`endpoint`、連線
 狀態與原因或 protocol 警告、server 版本、最後 snapshot 時間），卡內依 workspace 分組（標籤、number、彙總狀態），
 每個 pane 一列（id、agent 名稱或 `shell`、agent 狀態、標題、cwd），卡片之下是最近事件；底列（通道狀態、
-`version`）。agent 狀態依「Direction 01 視覺語彙」以符號＋文字＋色彩呈現：`working` 用品牌強調色、`blocked`
+程式版本號，例如 `v0.1.2`，取自 `cockpit` crate 版本；投影的 `version` 不顯示）。agent 狀態依「Direction 01 視覺語彙」以符號＋文字＋色彩呈現：`working` 用品牌強調色、`blocked`
 用警示色、`idle` 用次要文字色、`done` 用主要文字色加品牌強調色的空心標記（**不得**使用成功色，避免被讀成
 task 完成）、`unknown` 與任何未知字串用次要文字色並顯示原字串、`exited` 加刪除線。連線狀態：`connected` 用
 成功色、`connecting` 用警示色、`disconnected` 用失敗色。可點的互動只有「畫面操作」所列的按鈕、「Project 切換」
@@ -113,7 +113,7 @@ task 完成）、`unknown` 與任何未知字串用次要文字色並顯示原�
 - **GIVEN** 服務提供一份含 `win`（connected）與 `wsl`（disconnected，附原因）的投影
 - **WHEN** 以瀏覽器開啟 `/`
 - **THEN** 頂列出現兩個連線燈號（`win` 為成功色、`wsl` 為失敗色，皆附文字）；右欄出現兩張卡，`wsl` 卡顯示原因；
-  每個 pane 一列且 agent 狀態的符號、文字與色彩對應狀態；底列顯示 version
+  每個 pane 一列且 agent 狀態的符號、文字與色彩對應狀態；底列顯示程式版本號（`v` 加 crate 版本）
 
 #### Scenario: done 不使用成功色
 

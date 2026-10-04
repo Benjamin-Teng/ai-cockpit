@@ -1174,16 +1174,26 @@
   }
 
   // 底列（design D2 data-region="statusbar"；direction-01-visual task 2.3）：通道狀態
-  // （design D4）＋ version（--fs-meta、--text-dim、等寬，design D10／D11：「version 用等寬
-  // --text-dim 顯示，不搶注意力」）。
+  // （design D4）＋ 程式版本（--fs-meta、--text-dim、等寬，design D10／D11：「version 用等寬
+  // --text-dim 顯示，不搶注意力」）。2026-10-05 使用者指示：底列改顯示程式版本（例如 v0.1.2），
+  // 投影的遞增 version 不再顯示、改放在同一節點的 data-state-version 屬性——驗收腳本以它判斷
+  // 「第一份投影已畫出」與「發生了重畫」。
+  var APP_VERSION = (function () {
+    var meta = document.querySelector('meta[name="cockpit-version"]');
+    var v = meta ? meta.getAttribute("content") || "" : "";
+    // 沒經過後端替換（直接開原始 index.html）時是占位字，當成沒有版本。
+    return /^__/.test(v) ? "" : v;
+  })();
+
   function renderStatusbarRegion(state) {
     var region = el("div", "region-statusbar");
     region.setAttribute("data-region", "statusbar");
 
     region.appendChild(renderChannelIndicator());
 
-    var version = el("span", "version", "v" + state.version);
+    var version = el("span", "version", APP_VERSION ? "v" + APP_VERSION : "");
     version.id = "version";
+    version.setAttribute("data-state-version", String(state.version));
     region.appendChild(version);
 
     return region;

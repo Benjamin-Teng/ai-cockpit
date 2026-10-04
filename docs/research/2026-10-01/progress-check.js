@@ -206,7 +206,8 @@ function checkNoAnimation(anims, label) {
   );
 }
 
-const versionOf = "Number(document.getElementById('version').textContent.replace(/\\D/g, ''))";
+// 投影 version 讀 #version 的 data-state-version（2026-10-05 起文字改為程式版本，例如 v0.1.2）。
+const versionOf = "Number(document.getElementById('version').getAttribute('data-state-version'))";
 
 // ---------------------------------------------------------------------------
 // A. ui_preview（100 ms 推送）

@@ -507,7 +507,8 @@ const LABELS = { blocked: 'agent blocked', done: 'agent done', failed: 'task fai
 const DEFAULTS = { blocked: true, done: false, failed: true, completed: false };
 const STORAGE_KEY = 'cockpit.notify.v1';
 
-const versionOf = "Number(document.getElementById('version').textContent.replace(/\\D/g, ''))";
+// 投影 version 讀 #version 的 data-state-version（2026-10-05 起文字改為程式版本，例如 v0.1.2）。
+const versionOf = "Number(document.getElementById('version').getAttribute('data-state-version'))";
 const moduleLoaded = "(typeof window.cockpitNotify === 'object' && window.cockpitNotify !== null && typeof window.cockpitNotify.observe === 'function')";
 
 // 面板：body 底下、#app 之外的 #notify-panel；「開啟」＝存在、沒有 hidden、有算出的尺寸。

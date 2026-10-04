@@ -92,8 +92,8 @@
 //! [`crate::vendor`] 模組文件。
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
 use std::sync::atomic::AtomicU16;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use axum::Router;
@@ -420,6 +420,8 @@ pub fn router(app: AppState) -> Router {
 /// （ws-source-check fix round 1）：外站網頁不能把儀表板以 iframe 嵌進去——否則 iframe 內的
 /// `channel.js` 以 Cockpit 自己的 origin 連 `/ws`、來源檢查合格，會讓 `--exit-when-idle` 的後端
 /// 永遠不閒置結束，也讓寫入按鈕可被點擊劫持。`GET /` 本身不做來源檢查（見 [`router`]）。
+///
+/// 送出的內容是 [`INDEX_HTML`]：內嵌檔中的程式版本占位字已換成本 crate 版本。
 async fn index(method: Method, State(app): State<AppState>) -> impl IntoResponse {
     if method == Method::GET {
         app.activity.record_request();
@@ -430,9 +432,15 @@ async fn index(method: Method, State(app): State<AppState>) -> impl IntoResponse
             (header::X_FRAME_OPTIONS, "DENY"),
             (header::CONTENT_SECURITY_POLICY, "frame-ancestors 'none'"),
         ],
-        include_str!("../assets/index.html"),
+        INDEX_HTML.as_str(),
     )
 }
+
+/// 內嵌的 `index.html`，`<meta name="cockpit-version">` 的占位字換成 `CARGO_PKG_VERSION`
+/// （2026-10-05 使用者指示：底列顯示程式版本；`render.js` 讀這個 meta）。只在第一次請求時算一次。
+static INDEX_HTML: LazyLock<String> = LazyLock::new(|| {
+    include_str!("../assets/index.html").replace("__COCKPIT_VERSION__", env!("CARGO_PKG_VERSION"))
+});
 
 /// `/app/<file>`：只認得這幾個檔名，查表命中就回對應內嵌內容，其餘 404——不是「任意檔名
 /// 都能讀」的通用靜態伺服（design D13 明確排除 `ServeDir`）。

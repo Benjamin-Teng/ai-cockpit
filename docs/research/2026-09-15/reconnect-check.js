@@ -104,10 +104,11 @@ async function main() {
     const cdp = new CDP(ws);
     await sleep(1500);
     const status = () => cdp.eval("(document.getElementById('channel-status')||{}).textContent");
-    const version = () => cdp.eval("(document.getElementById('version')||{}).textContent");
+    // 投影 version 讀 #version 的 data-state-version（2026-10-05 起文字改為程式版本，例如 v0.1.2）。
+    const version = () => cdp.eval("(function () { var v = document.getElementById('version'); return v ? v.getAttribute('data-state-version') : null; })()");
     const cards = () => cdp.eval("document.querySelectorAll('.runtime-card').length");
     const paneStatus = () => cdp.eval("(document.querySelector('.pane-row .status')||{}).textContent");
-    const validVersion = (v) => typeof v === 'string' && /^v\d+$/.test(v);
+    const validVersion = (v) => typeof v === 'string' && /^\d+$/.test(v);
 
     const s0 = await status(), v0 = await version(), c0 = await cards();
     log(`T0: status=${s0} version=${v0} cards=${c0}`);

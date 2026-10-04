@@ -4,6 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>AI Agent Cockpit</title>
+    <!-- 程式版本：後端 GET / 送出前把占位字換成 cockpit crate 版本，render.js 讀它顯示在底列。 -->
+    <meta name="cockpit-version" content="__COCKPIT_VERSION__" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/png" href="/icons/icon-192.png" />
     <link rel="stylesheet" href="/app/style.css" />
@@ -72,8 +74,8 @@
           <ul class="recent-events-list"></ul>
         </div>
         <!-- 底列（design D4「連線配色也適用底列通道狀態」；direction-01-visual task 2.3）：
-             通道狀態（channel.js 尚未連上前的初始外觀是 connecting）＋version（首份投影到達
-             前還沒有版本號，留空）。結構要跟 render.js 的 renderStatusbarRegion() 一致，讓
+             通道狀態（channel.js 尚未連上前的初始外觀是 connecting）＋程式版本（首份投影到達
+             前留空）。結構要跟 render.js 的 renderStatusbarRegion() 一致，讓
              window.onChannel 在第一份投影到達前就能正確更新 #channel-status。 -->
         <div class="region-statusbar" data-region="statusbar">
           <span class="statusbar-channel" title="瀏覽器 → cockpit 服務：connecting" data-i18n="index.channel.title" data-i18n-attr="title" data-i18n-params='{"state":"connecting"}'>

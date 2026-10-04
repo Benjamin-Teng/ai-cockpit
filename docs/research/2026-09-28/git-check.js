@@ -940,12 +940,12 @@ async function waitForFirstProjection(cdp, previewPort, label) {
   while (Date.now() - start < 8000) {
     const s = await cdp
       .eval(`(() => { const lamp = document.querySelector('[data-region="topbar"] [data-runtime]');
-        const v = document.getElementById('version'); return { lamp: !!lamp, v: v ? v.textContent.trim() : null }; })()`)
+        const v = document.getElementById('version'); return { lamp: !!lamp, v: v ? (v.hasAttribute('data-state-version') ? 'v' + v.getAttribute('data-state-version') : '') : null }; })()`)
       .catch(() => null);
     if (s && s.lamp && s.v) {
       const expected = await fetch(`http://127.0.0.1:${previewPort}/api/state`).then((r) => r.json()).catch(() => null);
       if (expected && s.v === `v${expected.version}`) {
-        check(true, label || '第一份真投影已畫出（頂列有 [data-runtime] 且 #version 等於 /api/state）');
+        check(true, label || '第一份真投影已畫出（頂列有 [data-runtime] 且 #version 的 data-state-version 等於 /api/state）');
         return true;
       }
     }
@@ -1326,19 +1326,19 @@ async function segRepaintKeepsChanges() {
       // 後，只要發生一次整頁重畫就會冒出來」（fix round 2 根因：render.js 用 `leftTab === "files"`
       // 誤判），把它當 need() 前置條件只會讓段落在還沒驗到「重畫幾次後」就提早中止，看不出後面
       // DOM／捲動／焦點是否也受影響；直接進下面「至少 3 次重畫」的迴圈，用 check() 驗最終狀態。
-      const v0 = await ctx.cdp.run(() => document.getElementById('version').textContent);
+      const v0 = await ctx.cdp.run(() => document.getElementById('version').getAttribute('data-state-version'));
       let repaints = 0;
       let lastV = v0;
       const start = Date.now();
       while (Date.now() - start < 5000 && repaints < 3) {
         await sleep(100);
-        const v = await ctx.cdp.run(() => document.getElementById('version').textContent);
+        const v = await ctx.cdp.run(() => document.getElementById('version').getAttribute('data-state-version'));
         if (v !== lastV) {
           repaints += 1;
           lastV = v;
         }
       }
-      need(repaints >= 3, `前置：期間至少發生 3 次整頁重畫（#version 變化 ${repaints} 次）`);
+      need(repaints >= 3, `前置：期間至少發生 3 次整頁重畫（#version 的 data-state-version 變化 ${repaints} 次）`);
 
       const projectsHiddenAfter = await ctx.cdp.run(() => window.__gc.projectsHidden());
       check(
@@ -2462,19 +2462,19 @@ async function segRepaintKeepsGraph() {
 
     // 同 segRepaintKeepsChanges()：不先驗「Project 是否隱藏」當前置條件，直接進「至少 3 次重畫」
     // 迴圈，最後用 check() 驗最終狀態（這個 bug 的表現正是「重畫後才冒出來」，見 fix round 2）。
-    const v0 = await ctx.cdp.run(() => document.getElementById('version').textContent);
+    const v0 = await ctx.cdp.run(() => document.getElementById('version').getAttribute('data-state-version'));
     let repaints = 0;
     let lastV = v0;
     const start = Date.now();
     while (Date.now() - start < 5000 && repaints < 3) {
       await sleep(100);
-      const v = await ctx.cdp.run(() => document.getElementById('version').textContent);
+      const v = await ctx.cdp.run(() => document.getElementById('version').getAttribute('data-state-version'));
       if (v !== lastV) {
         repaints += 1;
         lastV = v;
       }
     }
-    need(repaints >= 3, `前置：期間至少發生 3 次整頁重畫（#version 變化 ${repaints} 次）`);
+    need(repaints >= 3, `前置：期間至少發生 3 次整頁重畫（#version 的 data-state-version 變化 ${repaints} 次）`);
 
     const projectsHiddenAfter = await ctx.cdp.run(() => window.__gc.projectsHidden());
     check(projectsHiddenAfter === true, `重畫 ${repaints} 次後 Project 清單仍隱藏（實際 hidden=${projectsHiddenAfter}）`);

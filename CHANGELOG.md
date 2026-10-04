@@ -14,6 +14,9 @@ All notable changes to AI Agent Cockpit are listed here. The format follows
   blank Windows program icon.
 - **Program details.** `cockpit.exe` and `cockpit-launch.exe` now carry the product name
   "AI Agent Cockpit" and their version number, so Task Manager and the file properties show them.
+- **Version in the status bar.** The bottom-right corner of the dashboard now shows the Cockpit
+  version, for example `v0.1.2`. It used to show a counter of screen updates, which looked like a
+  version number.
 
 ## [0.1.1] - 2026-10-04
 
