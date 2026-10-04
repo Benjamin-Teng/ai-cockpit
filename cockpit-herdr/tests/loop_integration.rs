@@ -316,6 +316,30 @@ impl Harness {
             .collect()
     }
 
+    /// 輪詢用：已經收到第一行 request 的連線的 method 名稱，依連線建立順序。
+    ///
+    /// 假 HERDR 接受連線與收到第一行之間有空檔；[`Self::methods`] 遇到「已接受但還沒有行」的連線
+    /// 會 panic，輪詢剛好落在空檔就誤判失敗（CI 負載高時出現：v0.1.2 發版 build 的
+    /// `l_close_disconnects_then_reconnects_with_fresh_seed`「第 4 條連線應收到一行 request，實際: []」）。
+    /// 這裡略過還沒有行的連線，讓輪詢繼續等；最後的精確斷言仍用 [`Self::methods`]。
+    fn methods_received(&self) -> Vec<String> {
+        self.fake
+            .received()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, lines)| lines.first().map(|line| (i, line)))
+            .map(|(i, line)| {
+                let request: Value = serde_json::from_str(line).unwrap_or_else(|e| {
+                    panic!("第 {i} 條連線收到的行不是合法 JSON: {e}（{line}）")
+                });
+                request["method"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("request 應有 method 欄位，實際: {request}"))
+                    .to_string()
+            })
+            .collect()
+    }
+
     /// `session.snapshot` 總共被呼叫幾次。
     fn snapshot_calls(&self) -> usize {
         self.methods()
@@ -450,9 +474,10 @@ async fn wait_until(
         }
         assert!(
             Instant::now() < deadline,
-            "{what}——{timeout:?} 內未成立；連線狀態: {:?}，收到的 method: {:?}",
+            "{what}——{timeout:?} 內未成立；連線狀態: {:?}，已 accept {} 條連線，其中已收到 request 的 method: {:?}",
             harness.connection(),
-            harness.methods()
+            harness.fake.received().len(),
+            harness.methods_received()
         );
         tokio::time::sleep(POLL).await;
     }
@@ -618,7 +643,7 @@ async fn l_close_disconnects_then_reconnects_with_fresh_seed() {
         &harness,
         "退避之後應重新連上",
         RECONNECT_TIMEOUT,
-        |h| h.methods().len() >= 8,
+        |h| h.methods_received().len() >= 8,
     )
     .await;
 

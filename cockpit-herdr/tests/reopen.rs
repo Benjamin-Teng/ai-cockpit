@@ -238,17 +238,20 @@ fn pane_read_result(pane_id: &str, text: &str, truncated: bool) -> Value {
     })
 }
 
-/// 等到假 HERDR accept 到第 `count` 條連線；逾時即失敗。
+/// 等到假 HERDR accept 到第 `count` 條連線，且前 `count` 條都已收到第一行 request；逾時即失敗。
+///
+/// 假 HERDR 在 accept 時就登記連線，比收到第一行早；只看條數就回傳，呼叫端緊接著讀最新那條的
+/// 第一行（[`request_line`]）會落在空檔而 panic（同 loop_integration 的 `methods_received`）。
 async fn wait_for_connections(fake: &FakeHerdr, count: usize, what: &str) {
     let deadline = Instant::now() + TIMEOUT;
     loop {
         let received = fake.received();
-        if received.len() >= count {
+        if received.len() >= count && received[..count].iter().all(|lines| !lines.is_empty()) {
             return;
         }
         assert!(
             Instant::now() < deadline,
-            "{what}：應在 {TIMEOUT:?} 內看到第 {count} 條連線，實際: {received:?}"
+            "{what}：應在 {TIMEOUT:?} 內看到第 {count} 條連線並收到其 request，實際: {received:?}"
         );
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
@@ -308,10 +311,13 @@ async fn pane_created_reopens_s_with_new_list_and_closes_old_after_started() {
         fake.closed_connections()
     );
 
-    // 新 S 那條連線出現之前，舊 S 必須一直開著（spec：收到 `subscription_started` 才關舊 S）。
+    // 新 S 那條連線出現（且已收到它的 request）之前，舊 S 必須一直開著（spec：收到
+    // `subscription_started` 才關舊 S）。先判斷跳出條件再檢查關閉：舊 S 只會在新 S 的 request
+    // 被記錄之後才關，所以兩者的先後不會造成誤判；等到有行才跳出，下面讀第一行不會落在空檔。
     let deadline = Instant::now() + TIMEOUT;
     loop {
-        if fake.received().len() >= 4 {
+        let received = fake.received();
+        if received.len() >= 4 && !received[3].is_empty() {
             break;
         }
         assert!(
