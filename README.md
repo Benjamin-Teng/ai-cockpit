@@ -101,7 +101,8 @@ programs if you would rather not install.
 
 ### Build from source
 
-Building needs Rust (edition 2024).
+Building needs Rust (edition 2024). On Windows it also needs the Windows SDK, which comes with the
+Visual Studio C++ build tools that Rust uses: the build embeds the app icon with its `rc.exe`.
 
 ```bash
 git clone https://github.com/Benjamin-Teng/ai-cockpit.git

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<title>AI Agent Cockpit 圖示提案</title>
+<style>
+  :root {
+    --bg-deep: #091320; --bg-base: #101a2a; --surface: #142338; --line: #294258;
+    --text: #e5edf3; --text-dim: #a3b7c9;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 40px 48px; background: var(--bg-deep); color: var(--text);
+    font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft JhengHei UI", sans-serif;
+  }
+  h1 { margin: 0 0 6px; font-size: 26px; font-weight: 600; }
+  .lead { margin: 0 0 28px; color: var(--text-dim); font-size: 15px; max-width: 68ch; }
+  .row {
+    display: grid; grid-template-columns: 168px 300px 1fr; gap: 28px; align-items: center;
+    padding: 22px 0; border-top: 1px solid var(--line);
+  }
+  .hero { width: 168px; height: 168px; }
+  h2 { margin: 0 0 6px; font-size: 19px; font-weight: 600; }
+  .row p { margin: 0; color: var(--text-dim); font-size: 14px; line-height: 1.6; }
+  .trays { display: grid; gap: 10px; }
+  .tray { display: flex; align-items: center; gap: 22px; padding: 12px 18px; border-radius: 6px; }
+  .tray.dark { background: #1c1c1c; }
+  .tray.light { background: #f3f3f3; }
+  .tray img { display: block; }
+  .shortcut { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-left: auto; width: 84px; }
+  .shortcut span { font-size: 12px; line-height: 1.25; text-align: center; color: #fff; text-shadow: 0 1px 2px #000; }
+  .tray.light .shortcut span { color: #1a1a1a; text-shadow: none; }
+</style>
+</head>
+<body>
+<h1>AI Agent Cockpit 圖示提案</h1>
+<p class="lead">每列左邊是大圖，右邊是實際像素大小：48、32、24、16（工作列與檔案總管會用到的尺寸），上排深色工作列、下排淺色工作列，最右邊是桌面捷徑的樣子。</p>
+
+<div id="rows"></div>
+
+<script>
+  const concepts = [
+    ["a-signal-grid.svg", "A　訊號格", "宣傳頁的點陣加上介面面板的右下切角。九格是九個 agent，亮琥珀的那一格在等你。"],
+    ["b-horizon.svg", "B　姿態儀", "駕駛艙最有代表性的儀表。機身符號換成終端機提示字元 ›，用真實儀表慣用的琥珀色。"],
+    ["c-factory-floor.svg", "C　產線", "Factory Floor 的三條泳道：完成、執行中、卡住，各在不同階段，排成往右上的斜線。"],
+    ["d-split-panes.svg", "D　分割窗格", "HERDR 的多窗格：左邊在跑輸出，右上完成，右下卡住暫停。"],
+    ["e-reticle.svg", "E　準星", "HUD 四角框住一個游標方塊：鎖定正在工作的 agent。"],
+  ];
+  const sizes = [48, 32, 24, 16];
+  const rows = document.getElementById("rows");
+  for (const [file, name, desc] of concepts) {
+    const tray = (cls) => `<div class="tray ${cls}">${sizes.map((s) => `<img src="${file}" width="${s}" height="${s}" alt="">`).join("")}
+      <div class="shortcut"><img src="${file}" width="48" height="48" alt=""><span>AI Agent Cockpit</span></div></div>`;
+    rows.insertAdjacentHTML("beforeend", `<section class="row">
+      <img class="hero" src="${file}" alt="${name}">
+      <div><h2>${name}</h2><p>${desc}</p></div>
+      <div class="trays">${tray("dark")}${tray("light")}</div></section>`);
+  }
+</script>
+</body>
+</html>

@@ -284,6 +284,7 @@ function fakeInit() {
           body: o.body === undefined ? null : o.body,
           tag: o.tag === undefined ? null : o.tag,
           renotify: o.renotify === undefined ? null : o.renotify,
+          icon: o.icon === undefined ? null : o.icon,
           silent: o.silent === undefined ? null : o.silent,
           permission: cfg.permission,
           focused: !!cfg.focused,
@@ -892,6 +893,8 @@ async function partN(cdp, port) {
 
     const all = await cdp.eval(notifsExpr);
     check(all.length > 0 && all.every((r) => r.renotify === true), `N：所有通知都帶 renotify: true（共 ${all.length} 則）`);
+    // change app-icon task 4.2（design D6）：通知帶應用程式圖示。
+    check(all.length > 0 && all.every((r) => r.icon === '/icons/icon-192.png'), `N：所有通知都帶 icon: /icons/icon-192.png（共 ${all.length} 則）`);
     check(
       all.length > 0 && all.every((r) => /^cockpit:(blocked|done):[^/]+\/.+$/.test(r.tag) || /^cockpit:(failed|completed):[^/]+\/.+$/.test(r.tag) || r.tag === 'cockpit:summary'),
       `N：所有通知的 tag 符合 cockpit:<類別>:<runtime>/<pane>（實際 ${J(all.map((r) => r.tag))}）`

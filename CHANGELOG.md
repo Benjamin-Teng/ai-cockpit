@@ -4,6 +4,17 @@ All notable changes to AI Agent Cockpit are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **New app icon.** Cockpit now has its own icon, an attitude indicator with a prompt sign. It
+  appears on the desktop and Start menu shortcuts, the installer, the installed apps list, the
+  page icon of the Cockpit window and desktop notifications. Before, the shortcuts showed the
+  blank Windows program icon.
+- **Program details.** `cockpit.exe` and `cockpit-launch.exe` now carry the product name
+  "AI Agent Cockpit" and their version number, so Task Manager and the file properties show them.
+
 ## [0.1.1] - 2026-10-04
 
 ### Added

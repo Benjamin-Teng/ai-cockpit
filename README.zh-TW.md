@@ -82,7 +82,8 @@ Cockpit 是旁觀者：不能在 pane 裡打字、不能對 agent 下指令，�
 
 ### 從原始碼建置
 
-需要 Rust（edition 2024）。
+需要 Rust（edition 2024）。在 Windows 上還需要 Windows SDK，Rust 使用的 Visual Studio C++ 建置工具會一起裝；
+建置時用它的 `rc.exe` 把程式圖示嵌進執行檔。
 
 ```bash
 git clone https://github.com/Benjamin-Teng/ai-cockpit.git

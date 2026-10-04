@@ -208,6 +208,12 @@ function Check-Shortcut([string] $Label, [string] $Path) {
         Check "$Label shortcut target" (Join-Path $AppDir 'cockpit-launch.exe') $lnk.TargetPath
         Check "$Label shortcut working directory" $DataDir $lnk.WorkingDirectory
         Check "$Label shortcut arguments" '' $lnk.Arguments
+        # 捷徑沒有另外指定圖示，沿用目標 cockpit-launch.exe 內嵌的應用程式圖示（spec「捷徑顯示應用程式圖示」；
+        # change app-icon）。未指定時 IconLocation 為 ",0"（install-desktop.ps1 建的捷徑實測），也接受明確寫成目標本身。
+        $target = Join-Path $AppDir 'cockpit-launch.exe'
+        $iconFromTarget = ($lnk.IconLocation -eq ',0') -or ($lnk.IconLocation -ieq "$target,0")
+        if (-not $iconFromTarget) { Write-Host "      IconLocation: $($lnk.IconLocation)" }
+        Check "$Label shortcut icon comes from cockpit-launch.exe" $true $iconFromTarget
     }
 }
 
@@ -250,6 +256,57 @@ function Check-Removed([string] $Label) {
     Check "$Label keeps data directory" $true (Test-Path $DataDir -PathType Container)
 }
 
+# 應用程式圖示與版本資訊（spec release-distribution「應用程式圖示與版本資訊」；change app-icon design D5）。
+# 圖示數量：shell32 的 ExtractIconExW 以 nIconIndex = -1、兩個輸出皆 NULL 呼叫時回傳 RT_GROUP_ICON 數，錯誤回傳 UINT_MAX。
+# 只看數量分不出「我們的圖示」與 Inno 的預設圖示，所以另取 32 px 圖示和 packaging/icon/app.ico 逐像素比對
+# （Inno 的 SetupIconFile 把 .ico 各影像原樣寫進安裝檔，issrc is-6_7_1 Compiler.ExeUpdateFunc.pas UpdateIconsAndStyle）。
+# ExtractAssociatedIcon 的尺寸取系統大圖示（SM_CXICON）：runner 為 96 DPI 即 32 px。在縮放比例會讓它落在 .ico 沒有的
+# 尺寸（例如 36 px）的機器上用 -AllowOnThisMachine 跑，比對可能誤判不符。
+Add-Type -AssemblyName System.Drawing
+Add-Type -Namespace CockpitSmoke -Name Shell -MemberDefinition @'
+[DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+public static extern uint ExtractIconExW(string lpszFile, int nIconIndex, IntPtr phiconLarge, IntPtr phiconSmall, uint nIcons);
+'@
+$AppIco = Join-Path $PSScriptRoot 'icon\app.ico'
+
+function Get-IconCount([string] $Path) {
+    $n = [CockpitSmoke.Shell]::ExtractIconExW($Path, -1, [IntPtr]::Zero, [IntPtr]::Zero, 0)
+    if ($n -eq [uint32]::MaxValue) { return -1 }
+    return [int] $n
+}
+
+function Test-AppIcon([string] $Path) {
+    $a = [System.Drawing.Icon]::ExtractAssociatedIcon($Path).ToBitmap()
+    $b = (New-Object System.Drawing.Icon $AppIco, $a.Width, $a.Height).ToBitmap()
+    if ($a.Width -ne $b.Width -or $a.Height -ne $b.Height) { return $false }
+    for ($y = 0; $y -lt $a.Height; $y++) {
+        for ($x = 0; $x -lt $a.Width; $x++) {
+            if ($a.GetPixel($x, $y).ToArgb() -ne $b.GetPixel($x, $y).ToArgb()) { return $false }
+        }
+    }
+    return $true
+}
+
+function Check-AppIcon([string] $Label, [string] $Path) {
+    Check "$Label has an icon resource" $true ((Get-IconCount $Path) -ge 1)
+    # 取圖或讀 .ico 丟例外時記為 FAIL 並印出原因，不讓整支腳本在 Stop 模式下中斷、後面的步驟都沒跑。
+    try {
+        $same = Test-AppIcon $Path
+    } catch {
+        Write-Host "      icon comparison error: $($_.Exception.Message)"
+        $same = $false
+    }
+    Check "$Label icon matches packaging/icon/app.ico" $true $same
+}
+
+function Check-VersionInfo([string] $Label, [string] $Path) {
+    $v = (Get-Item $Path).VersionInfo
+    Check "$Label ProductName" $AppName $v.ProductName
+    Check "$Label FileDescription" $AppName $v.FileDescription
+    Check "$Label ProductVersion" $Version $v.ProductVersion
+    Check "$Label FileVersion" $Version $v.FileVersion
+}
+
 # ---------------------------------------------------------------------------------------------
 
 Step 'Precondition: clean machine'
@@ -269,6 +326,14 @@ foreach ($f in $AppFiles) {
 }
 # 已發出的啟動器以程式目錄有 unins000.exe 判定「由安裝檔安裝」（spec release-distribution「自動更新客戶端契約」第 4 項）。
 Check 'installs unins000.exe (auto-update client contract)' $true (Test-Path (Join-Path $AppDir 'unins000.exe') -PathType Leaf)
+Check-AppIcon 'setup program' $Setup
+foreach ($exe in 'cockpit.exe', 'cockpit-launch.exe') {
+    $p = Join-Path $AppDir $exe
+    if (Test-Path $p) {
+        Check-AppIcon $exe $p
+        Check-VersionInfo $exe $p
+    }
+}
 Check 'data directory exists' $true (Test-Path $DataDir -PathType Container)
 Check-Shortcut 'Start menu' $StartMenuLnk
 Check-Shortcut 'Desktop' $DesktopLnk

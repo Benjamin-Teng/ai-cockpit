@@ -43,6 +43,8 @@ OutputBaseFilename=ai-cockpit-{#AppVersion}-x64-setup
 LicenseFile={#StageDir}\LICENSE.txt
 UninstallDisplayName={#AppName}
 UninstallDisplayIcon={app}\cockpit-launch.exe
+; 安裝檔本身與精靈視窗的圖示（change app-icon design D4）；路徑相對於本檔所在的 packaging/。
+SetupIconFile=icon\app.ico
 ; 執行中的偵測由 [Code] 負責，只提示、不關閉程式（design D2）。
 CloseApplications=no
 WizardStyle=modern

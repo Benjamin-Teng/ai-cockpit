@@ -222,3 +222,32 @@ async fn index_links_manifest() {
         "index.html 應該引用 /manifest.webmanifest"
     );
 }
+
+/// spec release-distribution「應用程式圖示與版本資訊」情境「介面頁面圖示」（change app-icon task 4.2）：
+/// `index.html` 以 `<link rel="icon">` 宣告頁面圖示，指向的網址回 200 且是 PNG。
+#[tokio::test]
+async fn index_declares_app_icon() {
+    let (_handle, state) = new_app_state();
+
+    let response = get(http::router(state.clone()), "/").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let text = String::from_utf8(body_bytes(response).await).expect("body 應該是合法 UTF-8");
+
+    let tag = text
+        .split('<')
+        .find(|t| t.starts_with("link ") && t.contains(r#"rel="icon""#))
+        .expect("index.html 應該有 <link rel=\"icon\">");
+    let href = tag
+        .split(r#"href=""#)
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("<link rel=\"icon\"> 應該有 href");
+    assert_eq!(href, "/icons/icon-192.png");
+
+    let icon = get(http::router(state), href).await;
+    assert_eq!(icon.status(), StatusCode::OK);
+    assert!(
+        body_bytes(icon).await.starts_with(&PNG_SIGNATURE),
+        "{href} 應該是 PNG"
+    );
+}

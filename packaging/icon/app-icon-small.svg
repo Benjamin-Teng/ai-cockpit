@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- app-icon.svg 的 16 至 24 px 簡化版（change app-icon design D2）：拿掉地平線白線與兩側機翼，圓盤放大、提示字元加粗，
+       讓小尺寸仍看得出圓形儀表、上下分色與琥珀色的提示字元。色票同 app-icon.svg。 -->
+  <defs><clipPath id="dial"><circle cx="128" cy="128" r="106"/></clipPath></defs>
+  <circle cx="128" cy="128" r="124" fill="#091320"/>
+  <g clip-path="url(#dial)" transform="rotate(-14 128 128)">
+    <rect x="0" y="0" width="256" height="136" fill="#63d5e8"/>
+    <rect x="0" y="136" width="256" height="140" fill="#142338"/>
+  </g>
+  <circle cx="128" cy="128" r="112" fill="none" stroke="#294258" stroke-width="16"/>
+  <path d="M96 84L148 136L96 188" fill="none" stroke="#e9bc73" stroke-width="36" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

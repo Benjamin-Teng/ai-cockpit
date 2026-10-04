@@ -365,7 +365,8 @@
     }
     var notification;
     try {
-      notification = new api(note.title, { body: note.body, tag: note.tag, renotify: true });
+      // icon：應用程式圖示（change app-icon design D6），與 index.html 的 favicon 同一張。
+      notification = new api(note.title, { body: note.body, tag: note.tag, renotify: true, icon: "/icons/icon-192.png" });
     } catch (e) {
       // 某些環境不允許在頁面直接建構 Notification：不報錯（spec「通知呈現」）。
       return;

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- AI Agent Cockpit 應用程式圖示母檔（change app-icon；提案 B「姿態儀」）。改這裡之後重跑同目錄的 gen-icon.js。
+       色票取自 cockpit/assets/app/style.css 的 CSS 變數 bg-deep #091320、accent #63d5e8、surface #142338、
+       text #e5edf3、line #294258、warn #e9bc73（XML 註解內不得出現兩個連字號，所以變數名省略前綴）。 -->
+  <defs><clipPath id="dial"><circle cx="128" cy="128" r="100"/></clipPath></defs>
+  <circle cx="128" cy="128" r="116" fill="#091320"/>
+  <g clip-path="url(#dial)" transform="rotate(-14 128 128)">
+    <rect x="0" y="0" width="256" height="140" fill="#63d5e8"/>
+    <rect x="0" y="140" width="256" height="140" fill="#142338"/>
+    <path d="M28 140H228" stroke="#e5edf3" stroke-width="6"/>
+  </g>
+  <circle cx="128" cy="128" r="108" fill="none" stroke="#294258" stroke-width="16"/>
+  <g fill="none" stroke="#e9bc73" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M56 140H96"/>
+    <path d="M160 140H200"/>
+    <path d="M114 112L138 136L114 160"/>
+  </g>
+</svg>
