@@ -4,7 +4,7 @@ All notable changes to AI Agent Cockpit are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.1.1] - 2026-10-04
 
 ### Added
 
@@ -18,6 +18,11 @@ All notable changes to AI Agent Cockpit are listed here. The format follows
   turn it off. The zip, `install-desktop.ps1` installs and source builds are not updated
   automatically. Anyone on v0.1.0 has to install the new version by hand once, because v0.1.0 has
   no updater.
+
+### Changed
+
+- **v0.1.0 is now marked as a pre-release** on GitHub, since it cannot update itself. It stays
+  available for download; v0.1.1 is the first stable release.
 
 ## [0.1.0] - 2026-10-03
 
