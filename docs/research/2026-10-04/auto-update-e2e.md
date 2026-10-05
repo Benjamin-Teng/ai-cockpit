@@ -25,6 +25,21 @@ SmartScreen／UAC 有沒有跳出。這份是在使用者電腦上補驗的步�
   Cockpit 重開之前另外複製。
 - 演練中假伺服器曾因 agent 背景工作 30 分鐘時限被停掉，使用者按「是」前已重啟；長時間等待時背景工作要給較長時限。
 
+## 真實更新 v0.1.1 → v0.1.2（2026-10-05）：通過
+
+change `app-icon` task 6.3。這次不用假伺服器，啟動器直接查 GitHub 的 `releases/latest`（v0.1.2 公開後才安裝 v0.1.1，
+避免 v0.1.1 先記下「沒有新版」而節流 24 小時）。
+
+- 安裝：GitHub 上 v0.1.1 的安裝檔（SHA-256 `5ea4e3b0…e946`，與 v0.1.1 的 `SHA256SUMS.txt` 一致），`/VERYSILENT` 結束碼 0；
+  安裝後 `cockpit-launch.exe` 沒有版本資訊（v0.1.1 尚未內嵌，作為更新前的對照）。刪除 `cockpit.update.json` 後由使用者
+  雙擊桌面捷徑啟動。
+- 使用者觀察：詢問更新到 0.1.2 → 按「是」→ 沒有 SmartScreen、沒有 UAC、安裝進度視窗自己關閉、Cockpit 自己重新開啟，
+  底列顯示 `v0.1.2`，捷徑換成新圖示（使用者回報「一切正常」）。
+- 佐證：`cockpit.update.json` 為 `update available: 0.1.2`（18:46:26 查詢）；18:46:54 新的 `cockpit.exe` 從
+  `%LOCALAPPDATA%\Programs\AI Agent Cockpit\` 啟動；兩個執行檔 `ProductName`「AI Agent Cockpit」、`ProductVersion`
+  0.1.2；`GET /` 帶 `<meta name="cockpit-version" content="0.1.2">`。執行檔的修改時間是建置時間（Inno 保留內嵌檔案
+  的時間戳），不能用來判斷是否覆寫。
+
 ## 步驟：按「是」之後的整段
 
 需要使用者在電腦前操作第 7 步。約 5–10 分鐘。指令在 repo 根目錄、PowerShell 7 執行。

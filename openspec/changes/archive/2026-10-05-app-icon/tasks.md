@@ -49,10 +49,17 @@
 
 ## 6. 發布 v0.1.2 與自動更新真機驗證
 
-- [ ] 6.1 squash 併回 `main` 並推送；升版 0.1.2（`cockpit/Cargo.toml`、`Cargo.lock`、`CHANGELOG.md` 改 `## [0.1.2] - Unreleased`）
+- [x] 6.1 squash 併回 `main` 並推送；升版 0.1.2（`cockpit/Cargo.toml`、`Cargo.lock`、`CHANGELOG.md` 改 `## [0.1.2] - Unreleased`）
   後推 `v0.1.2-rc.1`。驗收＝release workflow 全綠、冒煙測試 log 有本 change 新增的檢查且 PASS。
-- [ ] 6.2 填 CHANGELOG 日期、推 `v0.1.2`（推 tag 前問使用者）；`gh release delete v0.1.2-rc.1 --cleanup-tag`（刪 tag 前問使用者）。
+  結果：b7be30e（squash）、8bd9109（升版）推上 main；v0.1.2-rc.1 冒煙測試 104 PASS（含本 change 新增 16 項）。使用者其後
+  要求底列改顯示程式版本，併進 0.1.2（8afd835），v0.1.2-rc.2 同樣 104 PASS。
+- [x] 6.2 填 CHANGELOG 日期、推 `v0.1.2`（推 tag 前問使用者）；`gh release delete v0.1.2-rc.1 --cleanup-tag`（刪 tag 前問使用者）。
   驗收＝`releases/latest` 為 v0.1.2、三個資產齊全。
-- [ ] 6.3 自動更新真機驗證（design Migration Plan 第 3 步，需使用者操作）：備份桌面捷徑 → 安裝 GitHub 上的 v0.1.1 → 從捷徑
+  結果：使用者授權後推 v0.1.2（7f6ce36）。首次 build 因 cockpit-herdr loop_integration 測試時序空檔失敗（release 未執行、
+  無公開半成品），重跑 failed job 通過；`releases/latest`＝v0.1.2、三個資產齊全。測試修正另併入 main（44732ed）。rc.1、rc.2
+  草稿與 tag 經使用者同意刪除。
+- [x] 6.3 自動更新真機驗證（design Migration Plan 第 3 步，需使用者操作）：備份桌面捷徑 → 安裝 GitHub 上的 v0.1.1 → 從捷徑
   啟動 → 詢問更新到 0.1.2 → 按「是」→ 重新開啟。驗收＝重開後程式目錄 `cockpit-launch.exe` 的 `ProductVersion` 為 0.1.2、
   使用者目視捷徑為新圖示；結果記入 `docs/research/2026-10-04/auto-update-e2e.md`；收尾還原捷徑。
+  結果（2026-10-05）：通過。無 SmartScreen、無 UAC、自動重開、底列 `v0.1.2`；佐證記入上述檔案「真實更新 v0.1.1 → v0.1.2」；
+  測試版已解除安裝、捷徑已還原。
