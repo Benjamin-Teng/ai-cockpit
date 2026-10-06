@@ -1,134 +1,175 @@
 # 交接：下一段任務
 
-> **建立日期**：2026-10-03　|　**上一段做完的事**：change `auto-update`（啟動器自動更新、安裝檔更新模式；另一個 session ai-cockpit-05 實作）
-> 與 v0.1.1 發版；稍早 change `release-packaging`（Inno Setup 安裝檔＋zip、推 tag 發 GitHub Release、
-> 宣傳頁下載區塊、MIT LICENSE、CHANGELOG、`rust-toolchain.toml` 釘 1.97.1）；同日稍早 change `ws-source-check`（m1）與
-> change `ui-language`（介面可切中英、後端訊息代碼、啟動器跟隨 Windows 語言）。審查由 Opus 5.5 擔任（本專案視同 Codex）。
-> 2026-10-02：change 11 `desktop-launch-notify`（啟動器、關窗即結束、桌面通知）。
-> 同日稍早：change 9 去識別化並改寫 git 歷史、repo 公開、change 10 Live Output 色彩微調。
-> 同日最後：宣傳頁（GitHub Pages）與 README 中英雙語（非 OpenSpec change，文件與靜態頁）。
+> **建立日期**：2026-10-07　|　**上一段做完的事**：v0.1.2（change `app-icon` 應用程式圖示＋執行檔版本資訊、底列改顯示程式版本、
+> 推送即跑的 CI）與 v0.1.3（change `file-split-view` 檔案分頁並排，session ai-cockpit-3f 實作）兩版發布；v0.1.1 → v0.1.2
+> 自動更新第一次在真機從 GitHub 更新成功；修掉讓 v0.1.2 首次發版失敗的測試時序問題。審查由 Opus 5.5 擔任（本專案視同 Codex）。
 > **性質**：接手用文件，會過期，每段重寫。
 > 為什麼做看 `docs/cockpit-spec.md`（北極星）與各 change 的 proposal；怎麼做看 `~/.claude/CLAUDE.md`（本 repo 精簡版在
 > `AGENTS.md`）；規格看 `openspec/specs/`。
 
 ## 0. 三十秒版本
 
-1. **等使用者實際使用後回饋**（使用者 2026-10-02：「使用一陣子再來看」）。回來時**先問兩件事**：
-   - **通知真機確認**（archive 中未勾的 task 4.2）：設定面板按「允許通知」→ 最小化視窗、等 pane 變 `blocked` → 確認收到 Windows 通知、點下去視窗回來並選定
-     該 pane → 最小化 10 分鐘以上仍收得到。結果補記 `docs/research/2026-10-02/desktop-launch-live.md`。
-   - **關窗後 agent 回報會遺失可不可以接受**（第 4 節第一列）。
-2. repo **已公開** `https://github.com/Benjamin-Teng/ai-cockpit`；**每次推送前**跑 `node docs/research/2026-10-02/deid-check.js --history`（0 命中才推）；
-   **歷史不再改寫**。
-3. 審查：本專案 Opus 5.5 subagent 審查**視同 Codex**（memory 有）。
-4. **使用者 2026-10-03 排定的三件事**：① m1 來源檢查——完成（archive `2026-10-03-ws-source-check`）；② 介面語言可選中英——完成（archive `2026-10-03-ui-language`，含 SDD ledger）；③ 發布 v0.1.0——2026-10-03 公開後，**使用者同日改標為預發布（不刪）**：它沒有自動更新；自動更新由另一個 session（ai-cockpit-05）開 change 實作，做完以 **v0.1.1** 正式發布。**v0.1.1 現況（2026-10-04）**：分支 `release-0.1.1`（worktree `D:projectsi-cockpit-release`）版本與 CHANGELOG 已備好、`v0.1.1-rc.1` 演練全綠（冒煙 88 項）、草稿保留；**等使用者有空做自動更新真機驗證**（步驟 `docs/research/2026-10-04/auto-update-e2e.md`，查詢與判定、不需提權已確認），驗過才填 CHANGELOG 日期、併回 main、推 `v0.1.1`。在那之前沒有「最新版」，宣傳頁下載按鈕退回 Releases 頁（`https://github.com/Benjamin-Teng/ai-cockpit/releases/tag/v0.1.0`）（archive `2026-10-03-release-packaging`；發版做法見第 1 節「發版」）。**Tauri：使用者 2026-10-03 再次確認不包**，有常駐／系統匣需求才重評。
-5. **發新版**：改 `cockpit/Cargo.toml` 的 `version`（tag 版本必須等於它，否則 workflow 失敗）、跑 `cargo update -p webpki-roots`（內建根憑證
-   跟上，archive `2026-10-03-auto-update` design Risks）與 `cargo check`，連同更新後的 `Cargo.lock` 一起提交（workflow 用 `--locked`）→
-   `CHANGELOG.md` 把 `## [Unreleased]` 改成 `## [X.Y.Z] - YYYY-MM-DD`（rc 演練可先寫 `- Unreleased`；正式版不得是，build 一開始就檢查）→
-   先推 `vX.Y.Z-rc.N` 演練 → 推 `vX.Y.Z` tag。宣傳頁與已安裝客戶端的自動更新都只看「最新正式版」，不用改網頁。
-6. **凍結契約（改了已安裝的客戶端就全部無法自動更新）**：資產名稱 `ai-cockpit-<X.Y.Z>-x64-setup.exe`／`-x64.zip`／`SHA256SUMS.txt`、
-   `SHA256SUMS.txt` 格式（64 位小寫 hex＋兩空白＋檔名、LF、無 BOM）、安裝檔參數
-   `/SILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /COCKPITUPDATE=1 /LOG=`、程式目錄的 `unins000.exe`。規格
-   `openspec/specs/release-distribution/`「自動更新客戶端契約」。
+1. **使用者排定的候選工作（新 session 討論，尚未開 change）**：
+   - **新增 project 不必手寫 `cockpit.toml`**（使用者 2026-10-04 提出：「對一般使用者太困難」）——第 2 節。
+   - **自動更新加獨立簽章**（使用者 2026-10-06：「列入」）——第 3 節。
+   - **修 `cockpit/tests/app.rs::abort_await_is_bounded` 的時序前提**（使用者 2026-10-06 交辦）——第 3 節。
+2. **還沒問到的兩件事（沿用前幾段）**：① 通知真機確認（archive `2026-10-02-desktop-launch-notify` 未勾的 task 4.2）；② 啟動器
+   模式下關窗後 agent 回報會遺失，可不可以接受（第 5 節第一列）。
+3. repo **已公開** `https://github.com/Benjamin-Teng/ai-cockpit`；**每次推送前**跑去識別化檢查（第 1 節指令，0 命中才推）；**歷史不再改寫**。
+4. **驗收腳本用固定 port，同時只能有一個 session 跑**（7770、7830 起一段、split-check 7910／CDP 19510）。多個 session 並行開發時先講好誰在用，
+   撞 port 的 FAIL 看起來像偶發（memory `acceptance-scripts-fixed-ports-collide-across-sessions`）。
+5. **發新版**：改 `cockpit/Cargo.toml` 的 `version`、`cargo update -p webpki-roots`、`cargo check`，連同 `Cargo.lock` 提交 → `CHANGELOG.md`
+   的 `## [Unreleased]`（目前沒有這段，開發新功能時先在最上面建）改 `## [X.Y.Z] - Unreleased` → 推 `vX.Y.Z-rc.N` 演練 → 綠了改成日期、推 `vX.Y.Z`（推正式 tag 與刪 rc 前問使用者）→
+   `gh release delete vX.Y.Z-rc.N --yes --cleanup-tag`。正式 tag 的 build 撞到偶發測試：`gh run rerun <id> --failed`，**不用刪 tag**。
+6. **凍結契約**（改了已安裝的客戶端就全部無法自動更新）：資產名稱 `ai-cockpit-<X.Y.Z>-x64-setup.exe`／`-x64.zip`／`SHA256SUMS.txt`、
+   `SHA256SUMS.txt` 格式、安裝檔參數 `/SILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /COCKPITUPDATE=1 /LOG=`、程式目錄的 `unins000.exe`。
+   規格 `openspec/specs/release-distribution/`「自動更新客戶端契約」。
 
 ## 1. 現在的狀態
 
-- **`main`**：change 1a 至 11 與小 change `html-charset`。本段 commit：`36d0c3f`（change 11 squash）、archive 與本檔。remote：`origin`（公開，`main` 追蹤 `origin/main`）。
-  改寫歷史前的舊編號查 `docs/research/2026-10-02/commit-map.txt`（只收可達 commit；檔案內容裡的舊編號沒改）。
-- **桌面啟動**（archive `openspec/changes/archive/2026-10-02-desktop-launch-notify/`；規格 `openspec/specs/desktop-launch/`、`desktop-notifications/`）：
-  - 使用者電腦已安裝：`%LOCALAPPDATA%\ai-cockpit\bin\`（`cockpit.exe`、`cockpit-launch.exe`）＋桌面捷徑「AI Agent Cockpit」（`--config` 指向 repo 根的
-    `cockpit.toml`）。**更新**：改完程式後重跑 `pwsh -File scripts\install-desktop.ps1`（Cockpit 開著時腳本會拒絕，先關視窗等 10 秒）。
-  - 啟動器：已在執行就只開視窗；否則背景啟動後端（log 在設定檔旁的 `cockpit.log`，已 gitignore）並以 Chrome（沒有則 Edge）`--app` 開窗；錯誤以訊息框說明。
-  - 後端 `--exit-when-idle`：最後一個 `/ws` 關閉滿 10 秒（`GET /`、`/api/state` 會延長）或 60 秒內從未連線即正常結束。手動跑 `cockpit` 不帶旗標時不受影響。
-  - 通知：頂列鈴鐺開設定面板；agent blocked／done、task failed／completed 四類開關（預設 blocked、failed）；前景不打擾、>3 件合併、點通知帶回並選定 pane、
-    多視窗設定同步。**task failed／completed 目前只由人工標記產生**（agent 不能標記），所以這兩類幾乎只在另一個視窗標記時才會出現。
-- **介面語言**（規格 `openspec/specs/ui-language/`）：字典 `cockpit/assets/app/i18n.js`（`t`／`tn`／`tMsg`，繁中與英文兩份、鍵與佔位符必須一致）；語言規則同宣傳頁，手動選擇存 `localStorage` 的 `cockpit.lang`，頂列切換鈕重新載入、其他視窗跟著換。後端訊息：錯誤本體 `{error, code, params}`、投影 `reason_msg`／`protocol_warning_msg`／`warning_msgs`／事件 `detail_msg`，代碼由 `cockpit-core` 的 `Message` 目錄產生（新增訊息**一律加變體**，對帳測試會擋缺字典鍵）；繁中介面顯示原文、英文套 `msg.*` 範本。代碼清單在 `cockpit/README.md`「介面語言」。啟動器依 `GetUserDefaultUILanguage`。驗收 `docs/research/2026-10-03/i18n-check.js`（第 5 段會重拍 15 張英文截圖並覆寫已提交的 PNG，重拍後必跑 deid-check 並逐張看圖）。**既有驗收腳本都帶 `--lang=zh-TW`**，不依賴機器時區。
-- **宣傳頁與 README**：`site/`（靜態頁，`.github/workflows/pages.yml` 在 `site/**` 有變動推上 `main` 時發布到 `https://benjamin-teng.github.io/ai-cockpit/`；Pages 來源已設為 GitHub Actions）。主視覺是 Signal Grid 點陣動畫（使用者 2026-10-02 從三個原型選定）。語言：`index.html` head 腳本決定——手動選過照 `localStorage` 的 `cockpit.site.lang`；否則第一順位瀏覽器語言符合 `zh`／`zh-Hant`／`zh-Hans`（可帶 TW／HK／MO／CN）或時區在台港澳中就用繁中；繁中字串在 `site/i18n.js`，鍵與 `index.html` 的 `data-i18n` 一對一。根目錄 `README.md`（英文）與 `README.zh-TW.md` 頂端互相連結；橫幅 `docs/assets/readme-banner.svg` 由 `node docs/assets/gen-readme-banner.js` 產生（改橫幅改產生器再重跑）。`site/img/` 的兩張截圖是 `docs/research/` 既有去識別化截圖的複本。
-- **發版**（archive `2026-10-03-release-packaging`；規格 `openspec/specs/release-distribution/`）：
-  - `.github/workflows/release.yml`：推 `vX.Y.Z` tag → Windows runner 跑 fmt／clippy／test → `cargo build --release -p cockpit --bins` → zip 與
-    `iscc packaging/ai-cockpit.iss`（Inno Setup 6.7.1，runner 預裝）→ `packaging/smoke-test.ps1` 真的安裝、啟動、執行中阻擋（安裝結束碼 7、
-    解除安裝 1）、覆蓋更新、解除安裝、zip 核對 → `SHA256SUMS.txt` → 草稿 release 上傳三個檔、確認齊全後公開為最新版。
-  - **演練**：推 `vX.Y.Z-rc.N`（版本取去掉後綴者）跑同一流程，停在**不公開的預發布草稿**；看完 `gh release delete vX.Y.Z-rc.N --yes --cleanup-tag`
-    （在 repo 目錄內執行會連遠端與本機 tag 一起刪，2026-10-03 實測；在 repo 外執行未實測，事後以 `git tag -l` 確認）。`gh workflow run release.yml --ref main` 只建置不發布。
-  - **正式 tag 失敗的收拾**（不會產生公開的半成品）：release job 在建草稿之後失敗 → `gh release delete vX.Y.Z --yes`（只刪草稿，**不要**
-    `--cleanup-tag`）後在 Actions 頁面 Re-run failed jobs（build 產物沿用）；只有 Publish 失敗 → `gh release edit vX.Y.Z --draft=false --latest`。
-  - 安裝檔：per-user、免管理員，程式在 `%LOCALAPPDATA%\Programs\AI Agent Cockpit\`，捷徑工作目錄＝資料目錄 `%LOCALAPPDATA%\ai-cockpit\`
-    （`cockpit.toml` 放這裡；解除安裝保留）。Cockpit 執行中時安裝與解除安裝都只提示、不強制結束。英文／繁中依系統語言（繁中語言檔
-    `packaging/ChineseTraditional.isl` 取自 Inno 原始碼 `is-6_7_1`，Inno 換主版本時一起換）。**未做程式碼簽章**，SmartScreen 會擋第一次執行。
-  - 宣傳頁 `#download` 在瀏覽時向 `api.github.com/.../releases/latest` 取版本與兩個資產網址；取不到就連 Releases 頁。驗收
-    `docs/research/2026-10-03/download-section-check.js`（每次重跑會覆寫兩張截圖，沒改外觀就 `git checkout` 還原）。
-  - **安裝檔不能在本機測**：本機沒有 Inno Setup，`smoke-test.ps1` 沒有 `CI` 環境變數會拒跑（它會動到使用者自己的安裝與捷徑）。
-- **自動更新**（archive `2026-10-03-auto-update`；規格 `openspec/specs/auto-update/`，另改 `desktop-launch`、`release-distribution`）：只有
-  安裝檔版本會更新；從捷徑啟動且 Cockpit 沒在跑時，最多每 24 小時查一次 `releases/latest`（404＝沒有正式版，不提示），問過使用者才下載
-  安裝檔、以 `SHA256SUMS.txt` 驗證、結束自己後以 `/COCKPITUPDATE=1` 靜默安裝，`.iss` 在更新模式等程序結束最多 30 秒、裝完重新啟動。
-  `COCKPIT_NO_UPDATE_CHECK=1` 關閉；`COCKPIT_UPDATE_API_URL`／`COCKPIT_UPDATE_DOWNLOAD_BASE` 只供測試。冒煙測試 88 項（含更新模式 5a／5b）。
-  **CI 驗不到、要真機**：端到端更新（假伺服器提供較新版本）與一般使用者帳號啟動安裝檔不提權。已知延後：更新模式逾時不會重新開啟舊版；
-  安裝檔要等下次冷啟動才清掉。
-- **工具鏈**：`rust-toolchain.toml` 釘 Rust 1.97.1（含 clippy、rustfmt）。升版＝改這個檔、修新 lint、跑完整 gate，一個 commit。
-- **去識別化**：`docs/research/2026-10-02/deid-check.js`（用法 `deid-check.md`）＋本機詞表 `.deid-terms`（repo 根、不進 git，換機器要重建）。保留 `quant-dev`、`shioaji`。
+- **版本**：GitHub `releases/latest` = **v0.1.3**（2026-10-07）；v0.1.2（2026-10-05）、v0.1.1（2026-10-04）為一般 release，v0.1.0 為預發布。
+  tag 只有 `v0.1.0`～`v0.1.3`（rc 草稿與 tag 都已刪）。
+- **`main`**（`origin/main` 追蹤中）：本段 commit 由舊到新 `0f89f66`（CI）、`b7be30e`（app-icon）、`8bd9109`（升版 0.1.2）、`8afd835`（底列版本號）、
+  `7f6ce36`（0.1.2 日期）、`44732ed`（測試時序修正）、`e1bbaa2`（archive app-icon）、`c3e25a1`／`fae506d`／`03b6c57`（file-split-view、archive、0.1.3）、本檔。
+  worktree 只剩 `D:\projects\ai-cockpit`。**已併回但未刪的分支**（使用者尚未同意刪）：本機 `app-icon`、`footer-app-version`、
+  `fix-loop-integration-race`、`app-icon-wrapup`；遠端 `app-icon`、`fix-loop-integration-race`。
+- **本機設定**：`.claude/settings.local.json`（由使用者全域 gitignore `~/.config/git/ignore` 忽略，repo 的 `.gitignore` 沒有這條，換機器要留意）只允許 `git push origin main` 與 `git push origin v*`（使用者授權）。
+- **使用者電腦**：
+  - 桌面捷徑「AI Agent Cockpit」→ `%LOCALAPPDATA%\ai-cockpit\bin\cockpit-launch.exe --config "D:\projects\ai-cockpit\cockpit.toml"`（`install-desktop.ps1`
+    的安裝，**不會自動更新**；目前 `bin\` 是 2026-10-04 app-icon 分支建的 0.1.1，沒有並排與底列版本號）。要換成最新程式：關 Cockpit 等 10 秒後
+    `pwsh -File scripts\install-desktop.ps1`。
+  - **安裝檔版本目前沒裝**（自動更新驗證後已解除安裝）。所以「v0.1.2 → v0.1.3 第二次真實派送」要觀察的話得先裝 v0.1.2 再從捷徑啟動。
+  - 使用者自己的 `cockpit.toml` 是 `listen = "127.0.0.1:7770"`，開著時會擋到驗收腳本（第 0 節第 4 點）。
+- **應用程式圖示**（archive `2026-10-05-app-icon`；規格 `release-distribution`「應用程式圖示與版本資訊」）：使用者從五個提案選「姿態儀」
+  （提案與比較圖在 `docs/research/2026-10-04/icon-concepts/`）。母檔 `packaging/icon/app-icon.svg`、16–24 px 簡化版 `app-icon-small.svg`；
+  `node packaging/icon/gen-icon.js` 以 headless Chrome 產生 `packaging/icon/app.ico` 與網頁 PNG（`cockpit/assets/icons/`、`site/img/icon-192.png`），
+  產物提交、**改母檔要同一個 commit 重跑產生器**（沒有自動防呆）。`cockpit/build.rs`＋建置期相依 `winresource` 把圖示與版本資訊
+  （ProductName／FileDescription「AI Agent Cockpit」、版本＝crate 版本）嵌進兩個執行檔，Windows 建置需要 Windows SDK 的 `rc.exe`；
+  `.iss` 的 `SetupIconFile`；冒煙測試以 32 px 逐像素比對 `app.ico`（Inno 會原樣搬入 `.ico`，見 issrc `is-6_7_1` `UpdateIconsAndStyle`）。
+- **底列版本號**：右下角顯示程式版本（`v` 加 crate 版本）。`index.html` 的 `<meta name="cockpit-version" content="__COCKPIT_VERSION__">` 由
+  後端 `GET /` 送出前替換（`cockpit/src/http.rs` 的 `INDEX_HTML`）。投影的遞增 version 不顯示，放在 `#version` 的 `data-state-version`
+  屬性——**驗收腳本以它判斷重畫**，寫新腳本照抄，不要讀 `#version` 的文字。
+- **檔案並排**（archive `2026-10-07-file-split-view`；規格 `file-review`「檔案並排」等）：最多 3 個檔案分頁等寬並排，焦點欄替換規則、
+  窄於 760 px 只顯示焦點欄、每個可見檔案分頁各自定時更新、並排組合存本機儲存。審查、17 條裁決、偶發紀錄、延後清單在該 archive
+  的 `sdd-ledger.md` §4。真機驗收 `docs/research/2026-10-04/split-live.md`（Windows HERDR、2560 寬，6 項 PASS）。
+- **CI／CD**：`.github/workflows/ci.yml`——推送任何分支或對 `main` 開 PR 時跑 Windows 上的 fmt／clippy／`cargo test --workspace`／
+  ui_preview 範例測試（clippy、test、ui_preview 帶 `--locked`）與 Ubuntu 上的 markdownlint、`openspec validate`（版本與本機一致，升版兩邊
+  一起改）；也可手動觸發（`workflow_dispatch`），推 tag 不觸發。`release.yml`
+  推 tag 發版、`pages.yml` 推 `site/**` 發宣傳頁。本段沒有啟用 branch protection（單人 repo、直接 squash 推 `main`）。
+- **自動更新**（規格 `auto-update`）：只有安裝檔版本會更新；從捷徑啟動且 Cockpit 沒在跑時最多每 24 小時查 `releases/latest`，問過使用者
+  才下載、以同 release 的 `SHA256SUMS.txt` 驗證、交棒給安裝檔更新模式。**真機驗證通過**（2026-10-05，v0.1.1 → v0.1.2：無 SmartScreen、
+  無 UAC、自動重開；`docs/research/2026-10-04/auto-update-e2e.md`）。**只驗 SHA-256、沒有獨立簽章**（第 3 節）。
+- **發版、安裝檔、宣傳頁、介面語言、桌面啟動、去識別化**：做法與前一版本檔第 1 節相同（`git show 7e5af42:docs/handover.md`），規格在
+  `openspec/specs/` 對應目錄。安裝檔不能在本機測（`smoke-test.ps1` 沒有 `CI` 會拒跑）。
 - **可用指令**（repo 根目錄）：
   - 全 gate：`cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test --workspace && cargo test -p cockpit --example ui_preview && markdownlint-cli2 "**/*.md" && openspec validate --all`
   - 推送前：`node docs/research/2026-10-02/deid-check.js && node docs/research/2026-10-02/deid-check.js --history`
-  - 預覽：`cargo run -p cockpit --example ui_preview`（`127.0.0.1:7770`）。排程狀態轉換：`COCKPIT_PREVIEW_TRANSITIONS`（`ui_preview.rs` 檔頭）；上色樣本
-    `COCKPIT_PREVIEW_OUTPUT_MODES="wJ:p1=ansi;wJ:p4=ansi-flip"`。
-  - 驗收腳本（不可並行、一律前景跑、不要包短 timeout、**不要用背景批次**）：12 支既有——`docs/research/2026-09-15/reconnect-check.js`、`whatever-check.js`、
-    `docs/research/2026-09-16/actions-check.js`、`channel-backoff-check.js`、`factory-floor-check.js`、`docs/research/2026-09-19/live-output-check.js`、
-    `docs/research/2026-09-23/visual-check.js`、`docs/research/2026-09-27/files-check.js`、`docs/research/2026-09-28/git-check.js`、
-    `docs/research/2026-10-01/progress-check.js`、`ui-fixes-check.js`、`docs/research/2026-10-02/output-color-check.js`；本段新增
-    `docs/research/2026-10-02/notify-check.js`、`idle-exit-check.js`。`factory-floor-check.js` 跑完 `git checkout -- docs/research/2026-09-16/task-5.2-scenario-d.png`。
-  - 測啟動器時一律設 `COCKPIT_LAUNCH_DIALOG_FILE`（訊息框改寫檔）與指向假瀏覽器的 `COCKPIT_BROWSER`，避免在使用者桌面開真視窗。
-- **測試數字**（2026-10-03 `release-packaging` rebase 到 `ui-language` 之後，當場跑為準）：workspace 1238 passed／0 failed／13 ignored；ui_preview 62；
-  `download-section-check.js` 54 PASS；release 演練冒煙測試 64 PASS；markdownlint 0 issues；`openspec validate --all` 23 passed；deid-check 0 命中。
-  驗收腳本清單與 `ui-language` 的 `i18n-check.js` 數字見該 change 的 archive。
+  - 預覽：`cargo run -p cockpit --example ui_preview`（`127.0.0.1:7770`）。
+  - 驗收腳本（改了 `cockpit/assets/` 先 `cargo build -p cockpit --example ui_preview`；`reconnect-check.js` 要 `--examples`；不可並行、
+    一次一支）：`docs/research/2026-09-15/reconnect-check.js`、`whatever-check.js`、`docs/research/2026-09-16/actions-check.js`、
+    `channel-backoff-check.js`、`factory-floor-check.js`、`docs/research/2026-09-19/live-output-check.js`、`docs/research/2026-09-23/visual-check.js`、
+    `docs/research/2026-09-27/files-check.js`、`docs/research/2026-09-28/git-check.js`、`docs/research/2026-10-01/progress-check.js`、`ui-fixes-check.js`、
+    `docs/research/2026-10-02/output-color-check.js`、`notify-check.js`、`docs/research/2026-10-03/i18n-check.js`，本段新增
+    `docs/research/2026-10-04/split-check.js`（47 段、每輪約 6～7 分鐘，用法 `split-check.md`）——以上 15 支是 file-split-view 收尾全綠的集合。
+    另有 `docs/research/2026-10-02/idle-exit-check.js`（測啟動器、不走 ui_preview，不在上述集合）。跑完要還原會被覆寫的截圖：
+    `factory-floor-check.js` → `git checkout -- docs/research/2026-09-16/task-5.2-scenario-d.png`；`i18n-check.js` 預設含第 5 段、重拍
+    `i18n-en-*.png` → `git checkout -- docs/research/2026-10-03`（真的改了外觀才保留，並跑 deid-check、逐張看圖）。
+    多數腳本可帶段落代號只跑一段（例如 `node docs/research/2026-09-23/visual-check.js S1,DF1`），偶發失敗先單段重跑。
+  - 圖示：`node packaging/icon/gen-icon.js`（Chrome 路徑可用 `COCKPIT_ICON_CHROME` 指定）。
+- **測試數字**（2026-10-07，file-split-view 收尾時；內容等同 `c3e25a1`，當時的分支 HEAD `a1e0cd3` 已 squash、日後可能查不到；當場跑為準）：
+  workspace 1304 passed／0 failed／13 ignored；ui_preview 62；markdownlint 204 files 0 issues；`openspec validate --all` 24 passed；
+  `visual-check.js` 1769 ok；上列 15 支驗收腳本全綠（`sdd-ledger.md` §5.1）。release 冒煙測試 104 PASS（v0.1.2 的 rc 與正式 release run）。
 
-## 2. 立刻要做：等使用者回饋
+## 2. 立刻要做：新增 project 不必手寫 `cockpit.toml`（新 session）
 
-- 先問第 0 節兩件事。依回饋開 change：feature 分支 → brainstorming（範圍明確可跳）→ `/opsx:propose`（`tasks.md` 開頭寫執行路徑）→ apply → Opus 審查 → squash 併回 → 推送。
-- 建 PR 要使用者明確要求；目前慣例是直接 squash 併回 `main` 後推送（已授權）。
+**現況**（2026-10-06 向使用者說明過）：零設定模式只能看 HERDR 的 pane；要用 Factory Floor 必須手寫 `cockpit.toml` 的 `[[project]]`
+（`stages`、`[[project.workstream]]` 的 `binding = { runtime, workspace, pane_label, cwd, agent }`、`[[project.task]]` 的 stage 與
+`depends_on`），格式見 `cockpit.example.toml`。設定只在啟動時讀一次（`cockpit/src/config.rs` 的 `load`，沒有熱載入），改完要關窗等
+10 秒再開；寫錯會啟動失敗並以訊息框說明。設定檔位置依啟動方式不同：`install-desktop.ps1` 的捷徑帶 `--config`，安裝檔版本讀
+`%LOCALAPPDATA%\ai-cockpit\cockpit.toml`；狀態檔 `cockpit.state.json` 預設跟著設定檔目錄。
 
-## 3. 這一段踩過的坑
+**做法**：使用者明說要在新 session 討論，所以先走 brainstorming，不要直接 propose。要先問清楚的事：
+
+- 一般使用者心中的「project」是什麼：一個 repo？一個 HERDR workspace？
+- 想在畫面上手動新增（表單），還是希望 Cockpit 從 HERDR 現有的 workspace／pane 自動產生？
+- stages 與 tasks 要不要一開始就有，還是先只有 project＋workstream、之後再加？
+- 畫面寫回設定檔還是另存一份「使用者設定」？手寫的 `cockpit.toml` 要不要繼續支援、兩者衝突時誰優先？
+
+**牽涉的硬性約束**：對 HERDR 完全唯讀（AGENTS.md）；寫入類 HTTP 端點要過來源檢查（規格 `cockpit-dashboard`、archive
+`2026-10-03-ws-source-check`）；`cockpit-core` 不得依賴其他 crate（ADR-0003）；新介面字串要加進 `i18n.js` 兩種語言、後端訊息要加
+`Message` 變體（對帳測試會擋）。
+
+## 3. 接著要做
+
+### 3.1 自動更新加獨立簽章
+
+**機制**：現在只驗「HTTPS＋同 release 的 `SHA256SUMS.txt`」，擋得住傳輸損毀與中間人，擋不住 release 本身被換掉——GitHub 帳號或 token
+被盜、CI 被入侵時，攻擊者可同時上傳惡意安裝檔與對得上的雜湊檔，所有已安裝的客戶端都會被問要不要更新（archive `2026-10-03-auto-update`
+design Risks 第一條）。獨立簽章是私鑰不放 GitHub、公鑰編進執行檔，客戶端驗不過就不裝。
+
+**要先跟使用者決定**（白話說明後再問取捨，memory `user-prefers-plain-language-before-tradeoffs`）：
+
+- 私鑰放哪：放 GitHub secrets 讓 CI 自動簽，帳號被盜時攻擊者仍能觸發 CI 簽章，保護打折；本機離線簽，每次發版多一個手動步驟。
+- 私鑰遺失或外洩的換鑰方案（客戶端只認編進去的公鑰）。
+- 已發出的 v0.1.1～v0.1.3 不驗簽：升到第一個帶公鑰的版本那一次仍只靠 SHA-256，之後才受保護。
+- 簽章檔怎麼發布（新增資產會動到凍結契約之外的部分，舊客戶端要能忽略它）。
+
+工具名稱與格式（例如 minisign）動手前查一手來源（鐵則 3）。
+
+### 3.2 修 `abort_await_is_bounded` 的時序前提
+
+CI run 37217313821（commit `8afd835`）失敗在 `cockpit/tests/app.rs:1206` 的前提檢查「那個 blocking task 在放行前確實收不掉」——
+CI 高負載時這個前提本身不成立。與本段修過的 `loop_integration`（memory `fake-server-registers-connection-before-first-line`）同一類：
+**測試對時序的假設在 CI 慢機上被打破，本機幾乎重現不了**。修法要讓前提改成「等到條件成立」而不是假設它立刻成立；修完在分支推 CI
+看結果，修改前後各記錄能否重現。
+
+## 4. 這一段踩過的坑
 
 （**不會報錯的錯誤**加粗。）
 
-- **CI 用未釘版本的 Rust 比本機新，新 clippy lint 讓 `-D warnings` 只在 CI 失敗**（本機 1.97.1 綠、runner 1.98.1 紅）→ 已釘 `rust-toolchain.toml`；CI 出現本機跑不出的
-  lint 先比 `rustc -V`（memory 有）。
-- Inno Pascal Script：`Variant` 不能直接當字串函式的引數或 `for` 的邊界（編譯期 `Type mismatch`）→ 先指派給 `String`／`Integer` 變數。
-- **Inno 會還原內嵌檔案的時間戳**：同一個安裝檔覆寫後修改時間不變，「沒有覆寫」不能看時間戳 → 看結束碼與 log 的 `-- File entry --`（冒煙測試有對照組）。
-- runner 上 `iscc` 是 choco 的 shim，`(Get-Command iscc).Source` 不是 Inno 目錄 → 從登錄 `Inno Setup 6_is1` 的 `InstallLocation` 取。
-- PowerShell `Set-StrictMode -Version Latest`：函式回傳空陣列會被展開成 `$null`，`(F).Count` 丟例外 → 寫 `@(F).Count`。
-- `workflow_dispatch` 只能觸發預設分支上已存在的 workflow 檔；併回 main 前的演練改用 rc tag。
+- **測試假伺服器在 accept 時就登記連線，早於收到第一行**：「看到第 N 條連線就讀它的 request」在 CI 負載下偶發 panic，曾讓 v0.1.2 首次
+  發版 build 失敗（memory 有）。
+- **驗收腳本的固定 port 跨 session 互撞**，零星 FAIL 像 flaky（memory 有）。**收尾只看 PID 會誤報殘留**（PID 重用或 taskkill 後還在結束），
+  先用 `Get-CimInstance` 查建立時間，不是自己開的 PID 不可砍（memory 有）。**iframe 內的 pointerdown 不冒泡**，焦點在兩個 iframe 間移動時
+  父文件收不到事件（memory 有）。
+- **改了底列文字，9 支驗收腳本的「判斷重畫」全部失效**（讀 `textContent.slice(1)`、`replace(/\D/g,'')` 等不同寫法，`Number("v0.1.2")` 得 NaN 或
+  恆為 12，等到逾時才 FAIL）→ 改 DOM 文字前，用多種寫法 grep 所有讀取者，不要只搜一種字串。
+- **SVG 的 XML 註解裡出現 `--`（例如寫 CSS 變數名）整份 SVG 無效**，Chrome 只回「圖片載入失敗」不說原因 → 註解不寫兩個連字號。
+- 只看「圖示數量 ≥ 1」分不出自己的圖示和 Inno 預設圖示 → 取 32 px 圖示逐像素比對 `app.ico`（冒煙測試做法）；對照組用 `cargo.exe`（0 個）、`node.exe`（不同）。
+- **工作目錄的文字檔是 CRLF**，用 LF 字串比對錨點會找不到 → 比對前依檔案換行轉換，或改用 Edit 工具。Git Bash 裡用 `node -e "…"` 或 heredoc
+  寫含反引號、反斜線的內容會被 shell 改寫（反引號被當指令替換、`\\` 變 `\`）→ 這類內容一律用 Edit／Write 工具。
+- `gh release download` 在網速慢時兩個大檔停在 0 位元組像卡住 → `curl -L` 下載 `releases/download/<tag>/<asset>`（或帶 token 打 asset API）。
+- agent 的背景工作預設 30 分鐘時限會砍掉長駐程序（例如假更新伺服器）；容器重啟也會砍掉背景 subagent → 長等待給長時限，重啟後重新派工。
+- 執行檔的修改時間是建置時間（Inno 保留內嵌檔案時間戳），不能用來判斷自動更新是否覆寫 → 看 `VersionInfo` 與程序啟動時間。
+- 重新開啟的啟動器會清掉 `%TEMP%\ai-cockpit-update\` 下其他 PID 的資料夾，安裝檔 `setup.log` 隨之消失（設計行為）→ 要保留得在 Cockpit 重開前複製。
+- 既有偶發（單段重跑一次並記錄）：`git-check.js`「收尾衛生」、`factory-floor-check.js`、`live-output-check.js` 的 L／R／S 段收尾、
+  `reconnect-check.js`（Chrome 20 秒內沒出現 page target）、`actions-check.js` 的 Enter 送出兩次 POST、`visual-check.js` 的 chrome-P1（原因未查）、
+  `tests/app.rs::abort_await_is_bounded`（第 3.2 節）。
 
-- **Windows 上 spawn 的長命子程序會繼承呼叫端交給父程序的 stdout pipe**：擷取輸出的呼叫端卡到孫程序結束 → 啟動器在 spawn 前清掉自身標準 handle 的繼承旗標（memory 有）。
-- **PowerShell 5.1：呼叫端導向錯誤串流時，原生程式的 stderr 變成終止錯誤；32 位元 PS 讀 64 位元程序的 Path 為空**（memory 有）。
-- **啟動器模式下關窗約 10 秒後後端結束，之後 agent 的進度回報 `curl -s` 無聲失敗**（已寫進 spec 與 README，待使用者裁決）。
-- 宣傳頁：`clip-path` 切角會連外推的 `outline` 一起切掉，鍵盤焦點框消失（`:focus-visible` 仍成立、無錯誤）→ 外框改內縮＋切角漸層補線（同介面做法）。headless 截圖用 `--virtual-time-budget` 時 CSS 延遲進場動畫不會前進，標題像是不見了 → 改用 CDP 實際時間等待。Chrome 的 `--lang=zh-HK`／`zh-SG` 會被換成 zh-TW／zh-CN，測語言判斷的邊界要直接驗判斷式，不能只靠 `--lang`。
-- headless 以外的瀏覽器：使用者的 Chrome 已在執行時，`--app` 視窗會併入同一個程序；要關測試開出的視窗，只對「標題恰為 AI Agent Cockpit」的視窗送 `WM_CLOSE`，
-  不可對 Chrome 程序用 `CloseMainWindow`（會關到使用者的主視窗）。PowerShell 每次呼叫是新工作階段，`Add-Type` 定義的型別不會保留。
-- Windows 子程序會依 `ProgramW6432` 重算 `ProgramFiles`，改環境變數藏不住已安裝的 Chrome。
-- 驗收腳本以背景批次＋短 timeout 執行時，殼被殺但迴圈續跑，兩輪重疊搶 7770 造成假 FAIL → 一律前景逐支跑。
-- 既有偶發：`git-check.js`「收尾衛生」、`factory-floor-check.js`、`live-output-check.js`、`reconnect-check.js`（Chrome 20 秒內沒出現 page target）、
-  `tests/app.rs::abort_await_is_bounded`（高負載）→ 重跑一次並記錄。
+更早仍有效的坑：前一版本檔第 3 節（`git show 7e5af42:docs/handover.md`），再往前用 `git log --format=%h -- docs/handover.md` 逐版查。
 
-change 10 與更早仍有效的坑：本檔前一版第 3 節（`git log -2 --format=%h -- docs/handover.md` 取前一版編號後 `git show <編號>:docs/handover.md`）。
-
-## 4. 已定但未執行的決策
+## 5. 已定但未執行的決策
 
 | 決策 | 狀態 |
 |---|---|
-| 啟動器模式下關窗後 agent 回報遺失（change 11 整支審查 I1） | **Claude 依授權維持「關窗即結束」並文件化**；**待使用者裁決**（替代：後端常駐＋系統匣，或 agent 端回報失敗重試） |
+| 啟動器模式下關窗後 agent 回報遺失（change 11 整支審查 I1） | Claude 依授權維持「關窗即結束」並文件化；**待使用者裁決**（替代：後端常駐＋系統匣，或 agent 端回報失敗重試） |
 | 通知的真機確認（change 11 task 4.2） | **待使用者操作** |
-| change 11 其他細節（archive ledger 全部 `Ruling:`） | **Claude 依授權裁決**，使用者可推翻 |
-| 授權 | **MIT**（使用者 2026-10-03 決定，`LICENSE`） |
-| 程式碼簽章、Windows 以外的安裝檔 | **不做**（change `release-packaging` 非目標）；SmartScreen 警告以宣傳頁與 README 說明。自動更新**已做**（change `auto-update`），讓警告只出現在第一次安裝 |
-| 從 `install-desktop.ps1` 改用安裝檔 | 安裝檔會取代同名桌面捷徑（不帶 `--config`）；使用者要把 `cockpit.toml` 連同旁邊的 `cockpit.state.json` 移到 `%LOCALAPPDATA%\ai-cockpit\`（狀態檔預設跟著設定檔目錄，只搬設定檔會**無聲地從空白看板開始**），再刪舊 `bin\`（README 有寫） |
-| 延後：change 11 的 m5（`cockpit.log` 每次覆寫）、m6（啟動器與安裝腳本缺 repo 內回歸驗收）、3.6 M6（HTML 預覽 iframe 內點擊不關面板）、2.6 其餘小項；change 8 與更早的延後項（見前一版本檔第 4 節） | **延後** |
-| m1 殘留：外站網頁以 no-cors 定期請求 `GET /` 仍可延長 `--exit-when-idle` 期限（讀不到資料） | **已接受**（archive `2026-10-03-ws-source-check` design Risks） |
-| `real_attach` 測試（`#[ignore]`）已補回填埠，但尚未在有 HERDR 的機器上實跑 | 下次真機測試時跑一次 |
-| v2 狀態檔未知 project 缺 `active` 啟動失敗 | **決定不修**（change 6 裁決） |
-| Claude 在 feature 分支 commit，收尾 squash 併回 main 並推送 | **已授權** |
+| 新增 project 免手寫 toml、自動更新簽章、`abort_await_is_bounded` | **使用者已排定**，新 session 處理（第 2、3 節） |
+| 刪除已併回的 6 個分支（第 1 節） | **待使用者同意**（刪分支會被權限擋，要使用者明確下指令） |
+| 程式碼簽章（Authenticode）、Windows 以外的安裝檔、Tauri | **不做**；Tauri 使用者 2026-10-03 再次確認不包，有常駐／系統匣需求才重評 |
+| 圖示：提案 B「姿態儀」、16–24 px 用簡化版 | **使用者 2026-10-04 決定** |
+| 底列改顯示程式版本、併進 v0.1.2 | **使用者 2026-10-05 決定** |
+| 母檔改了卻沒重跑產生器的防呆 | **不做**（換行依平台不同，雜湊比對成本高於收益；改為流程規範，archive `2026-10-05-app-icon` design Risks） |
+| file-split-view：三欄不設最小欄寬；停用的並排鈕維持顯示 | **使用者 2026-10-06 裁決**（proposal 非目標） |
+| file-split-view 延後項：鍵盤移出並排後焦點停在 tabindex=-1 按鈕、`reading-flow` 只有 Chrome／Edge 137+、重新整理後各欄捲動歸零、窄於 760 px 時 scrollIntoView 目標被狀態列蓋住（WCAG 2.4.11，既有問題，建議另開 change）、焦點 iframe 重建時漏一次切換 | **延後**（使用者已知；`2026-10-07-file-split-view/sdd-ledger.md` §4.6） |
+| 授權 MIT；Claude 在 feature 分支 commit、收尾 squash 併回 `main` 並推送 | **已定／已授權** |
+| 更早的延後項（change 11 m5／m6、3.6 M6、change 8 與更早）、`real_attach` 待真機實跑、v2 狀態檔缺 `active` 不修 | 見前一版本檔第 4 節 |
 
-## 5. 之後的路
+## 6. 之後的路
 
-使用者回饋 → 依回饋修正。之後可考慮：若常駐需求出現再評估 Tauri（系統匣、開機自啟；ADR-0005 補充段）。
+北極星是讓一個人同時盯多個 coding agent 的工作狀態（`docs/cockpit-spec.md`）。產品已能安裝、自動更新、看 pane、看進度、看檔案與
+git 變更；最大的缺口是**一般使用者上手**——第 2 節的 project 設定，以及 agent 回報進度要靠 `curl` 指令（README「Let agents report
+progress」）。發版面的缺口是第 3.1 節的更新簽章與 Authenticode（SmartScreen 首次警告）。
 
 ## 版本紀錄
 
@@ -152,3 +193,4 @@ change 10 與更早仍有效的坑：本檔前一版第 3 節（`git log -2 --fo
 | 39 | 2026-10-03 | change `ui-language`（介面中英切換、後端訊息代碼、啟動器語言）SDD 完成，Opus 兩段階段審查＋整支審查；Tauri 確認不包；release 交給打包 session |
 | 40 | 2026-10-03 | change `release-packaging`：Inno Setup 安裝檔＋zip、release workflow（rc 演練三輪後全綠、版本不一致演練如預期失敗）、宣傳頁下載區塊、MIT、CHANGELOG、釘 Rust 1.97.1 |
 | 41 | 2026-10-03 | change `auto-update`（ai-cockpit-05 實作）併回並 archive；v0.1.0 改標預發布；v0.1.1 發版準備（版本、CHANGELOG、凍結契約） |
+| 42 | 2026-10-07 | v0.1.1（真機驗證假伺服器）、CI（`ci.yml`）、change `app-icon`＋底列版本號＋測試時序修正 → v0.1.2，v0.1.1 → v0.1.2 真實自動更新通過；change `file-split-view`（ai-cockpit-3f）→ v0.1.3；兩個 session 的交接由本 session 統一重寫 |
