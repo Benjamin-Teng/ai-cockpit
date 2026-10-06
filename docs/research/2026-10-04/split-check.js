@@ -3,7 +3,7 @@
 // docs/research/2026-09-27/files-check.js（startPreview／startChrome／killTree＋tasklist 收尾判準、
 // 「還握著 ChildProcess 且沒觀察到 exit 才終止」、parseSegmentArg、打錯段名 exit 2）。
 //
-// 對 `cockpit --example ui_preview` 驗 openspec/changes/file-split-view/specs/file-review/spec.md 中屬於前端的
+// 對 `cockpit --example ui_preview` 驗 openspec/specs/file-review/spec.md「檔案並排」等需求中屬於前端的
 // scenario，以及「沒有並排時」的基準行為（重構前後都必須綠）。
 //
 // 用法（repo 根；先 `cargo build -p cockpit --example ui_preview`）：
