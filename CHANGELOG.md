@@ -4,6 +4,19 @@ All notable changes to AI Agent Cockpit are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.3] - 2026-10-07
+
+### Added
+
+- **Read files side by side.** Up to three file tabs can be shown next to each other in equal
+  columns. Each file tab has a split button (shown next to its close button when you hover over
+  the tab); Ctrl+click or Ctrl+Enter on a tab does the same. One column is the focus column, with
+  an accent outline: click anywhere in a column to make it the focus column, and opening another
+  file (from a tab, the file tree or a Markdown link) replaces it while the other columns stay as
+  they are. Every visible column keeps updating when its file changes, and the arrangement is
+  restored when you reload the page. Live Output, diff and Git Graph tabs cannot be split. In a
+  window narrower than 760 pixels only the focus column is shown.
+
 ## [0.1.2] - 2026-10-05
 
 ### Changed
