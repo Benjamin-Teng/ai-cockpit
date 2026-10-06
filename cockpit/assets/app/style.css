@@ -2742,7 +2742,9 @@ body {
 }
 
 /* 關閉按鈕：18px 方塊、次要文字色，滑過時中性提示底＋--text；只有目前分頁的關閉按鈕在 Tab 順序中
-   （files.js），其餘可用滑鼠點或在分頁上按 Delete。 */
+   （files.js），其餘可用滑鼠點或在分頁上按 Delete。並排鈕（file-split-view task 3.1）沿用同一款外觀，
+   放在關閉鈕左側、右邊不留間距；顯示時機、按下與停用見下方 file-split-view task 3.3 的規則。 */
+.review-tab-split,
 .review-tab-close {
   flex: none;
   width: 18px;
@@ -2760,13 +2762,83 @@ body {
   cursor: pointer;
 }
 
+/* 並排鈕的顯示時機（file-split-view task 3.3；spec「檔案並排」的並排鈕）：只在目前分頁、或滑鼠移到分頁上時顯示。
+   用 opacity 而不是 display／visibility：位置一直保留，滑鼠移上去時分頁寬度不跳動；按鈕也留在無障礙樹裡（輔助技術
+   照樣找得到它，非目前分頁的不在 Tab 順序中）。鍵盤聚焦時一律顯示（不讓焦點落在看不見的按鈕上）。design D5 不加過渡。 */
+.review-tab-split {
+  margin-right: 0;
+  opacity: 0;
+}
+
+.review-tab.is-current > .review-tab-split,
+.review-tab:hover > .review-tab-split,
+.review-tab-split:focus-visible {
+  opacity: 1;
+}
+
+.review-tab-split:hover,
 .review-tab-close:hover {
   background: var(--focused-tint);
   color: var(--text);
 }
 
+/* 按下（在並排組合中）：品牌強調色（同 .pdf-tool[aria-pressed="true"]；對 --surface 與 --bg-base 都在 9:1 以上），
+   滑過時維持強調色。 */
+.review-tab-split[aria-pressed="true"],
+.review-tab-split[aria-pressed="true"]:hover {
+  color: var(--accent);
+}
+
+/* 停用（spec「加入」：沒有並排組合、目前分頁不是這個分頁以外的檔案分頁）：用 aria-disabled（仍可聚焦，title 看得到），
+   同 .pdf-tool 的停用語彙：文字維持 --text-dim（文字對比仍 ≥4.5:1）、滑過不變亮、游標回到預設。 */
+.review-tab-split[aria-disabled="true"],
+.review-tab-split[aria-disabled="true"]:hover {
+  background: transparent;
+  color: var(--text-dim);
+  cursor: default;
+}
+
+/* 欄位編號徽章（file-split-view task 3.3；design D7；spec「焦點欄的標示與切換」）：並排組合中的分頁（包裝元素帶
+   data-split-col）在檔名右側畫 1～3 的數字。數字用等寬字（design D11：數值用等寬）、--fs-meta、細框。顏色（file-split-view
+   task 4.1 設計審核 F5）：只有目前分頁（＝焦點欄）的徽章用 --accent，其餘用 --text-dim（對 --bg-deep 9.04:1、對 --surface
+   7.67:1），冰青只留給「目前活動」，不讓三個徽章與焦點欄框互搶。選定 Live Output 等「不在並排中」時沒有目前分頁的徽章，
+   三個都是 --text-dim，表達「組合還在、但現在不在並排中」。content 的替代文字設成空字串，徽章不混進分頁的無障礙名稱；輔助
+   技術讀的是 aria-describedby 指到的「並排第 N 欄」（files.js）。 */
+.review-tab[data-split-col] > .review-tab-main::after {
+  flex: none;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  border: 1px solid var(--text-dim);
+  border-radius: 3px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-weight: 400;
+  line-height: 14px;
+  text-align: center;
+}
+
+.review-tab.is-current[data-split-col] > .review-tab-main::after {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.review-tab[data-split-col="1"] > .review-tab-main::after {
+  content: "1" / "";
+}
+
+.review-tab[data-split-col="2"] > .review-tab-main::after {
+  content: "2" / "";
+}
+
+.review-tab[data-split-col="3"] > .review-tab-main::after {
+  content: "3" / "";
+}
+
 /* 焦點外框：分頁列會內部橫向捲動，外推的外框會被裁掉，改成往內 2px（同 .tabbar-tab）。 */
 .review-tab-main:focus-visible,
+.review-tab-split:focus-visible,
 .review-tab-close:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
@@ -3765,6 +3837,65 @@ body {
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+/* 檔案並排（file-split-view task 3.2；design D4）：files.js 在並排顯示時給 #review 加 data-split（實際可見的
+   欄數 2 或 3），這時改成 grid：分頁列獨占第一列，其餘一列以 minmax(0, 1fr) 等寬切欄——最小值 0 讓長行、表格、
+   PDF 在欄內捲動，不會撐寬中欄（spec「檔案並排」的「版面」）。各欄的左右順序由 files.js 寫在面板上的 CSS
+   order（欄位編號）決定，不搬動面板的 DOM（搬動 iframe 會重新載入）；其他面板維持 hidden。沒有並排顯示時沒有
+   data-split，維持上面的 flex column。
+   reading-flow: grid-order（file-split-view task 4.1 設計審核 F4）：讓 Tab 順序與螢幕閱讀器的瀏覽順序跟著 order
+   走，與畫面左右一致，不必搬 DOM。不支援的瀏覽器會忽略這個屬性，退回 DOM 順序（＝開啟順序）。 */
+[data-region="review"][data-split] {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  reading-flow: grid-order;
+}
+
+[data-region="review"][data-split="2"] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+[data-region="review"][data-split="3"] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+[data-region="review"][data-split] > .review-tabbar {
+  grid-column: 1 / -1;
+}
+
+/* 並排的窄欄裡（例如 1280 寬三欄，每欄約 230 px），檔案工具列的時間與「在 VS Code 開啟」放不下，會超出欄寬、
+   壓到隔壁欄：改成可以折行（spec「版面」：超出欄寬時在該欄內捲動或折行）。路徑的 flex-basis 改 0，它才不會因為
+   自己的完整寬度把其他項目擠到下一行；放得下時版面與單欄相同（路徑仍吃掉剩餘寬度、單行省略）。 */
+[data-region="review"][data-split] .file-toolbar {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+/* file-split-view task 4.1 設計審核 F1：三欄時路徑只拿得到時間與按鈕用剩的寬度（1100 寬三欄實測 18 px），
+   認不出開的是哪個檔案。min-width 讓路徑至少保留 7em（約 91 px）；放不下時時間與按鈕折到下一列，不再壓縮路徑。 */
+[data-region="review"][data-split] .file-toolbar-path {
+  flex-basis: 0;
+  min-width: 7em;
+}
+
+/* 設計審核 F2：窄欄（800 寬三欄每欄約 173 px）時 PDF 工具列的中文按鈕會逐字直排。按鈕本身不折行，按鈕群組改以
+   按鈕為單位折行（.pdf-toolbar 本身已經可以折行）。只在並排時套用，單欄版面不變。 */
+[data-region="review"][data-split] .pdf-tool {
+  white-space: nowrap;
+}
+
+[data-region="review"][data-split] .pdf-toolbar-group {
+  flex-wrap: wrap;
+}
+
+/* 焦點欄：框線改成 --accent（只換 .file-panel 既有 1px 框的顏色，不動 box model；Direction 01 的十個 token
+   之內，不另加顏色）。設計審核 F3：三欄時整排都是 1px 框，只換顏色不夠醒目，再加一圈 1px 的 --accent 外框
+   （outline 畫在框外，合計 2 px，不影響欄寬與內容位置；Direction 01「選取或活動輪廓可增加至 2 px」）。欄間距 8 px，
+   外框不會碰到隔壁欄；過期標示是框內的 inset box-shadow，兩者不重疊；面板與其內檢視器都沒有 :focus-visible 外框規則。 */
+.review-panel[data-split-focus] {
+  border-color: var(--accent);
+  outline: 1px solid var(--accent);
 }
 
 [data-region="output"] {

@@ -60,10 +60,14 @@
 //     （`aria-label="關閉 <檔名>"`），加在分頁列的 Live Output 之後；內容是 `#review` 內自己的 tabpanel：
 //     工具列（相對路徑、最後一次成功讀取的時間、「在 VS Code 開啟」）、狀態列（讀取中／失敗原因）、檢視器
 //     容器（`.file-viewer-host`，也是內容的捲動容器；檢視器由 viewers.js 提供）。
-//   - 檔案分頁成為目前分頁時立即查中繼資料，之後依自動更新節奏重查（見下方「自動更新」），取得 icon、
+//   - 檔案分頁變成可見時立即查中繼資料，之後依自動更新節奏重查（見下方「自動更新」），取得 icon、
 //     `vscode_uri`、`viewer`，內容版本（size／modified_ms）與畫面上的不同時依 `viewer` 呼叫 viewers.js
 //     重讀（見 viewers.js 檔頭「檢視器入口」）。Live Output 為目前分頁時不查。
 //   - 關閉目前分頁 → 右側，沒有右側 → 左側（Live Output 不可關閉）；焦點在檔案分頁上時 Delete 也可關閉。
+//     關閉並排組合中的分頁時改依並排規則（見下方「並排」）。
+//   - 並排（file-split-view task 3.1；spec「檔案並排」）：每個檔案分頁的關閉鈕左側有並排鈕（aria-pressed），
+//     最多 3 個檔案分頁同時可見；加入、替換焦點欄、移出與關閉的狀態轉換見 selectState()／leaveSplit()／
+//     toggleSplit()，可見集合由 visibleTabs() 推導。
 //   - 切走前記下內容的捲動位置與是否貼底，切回後寫回（design D6）；分頁可見期間捲動位置也隨時記在
 //     ft.scroll（file-review task 4.4）。
 //   - Markdown 相對連結經由檢視器的 ctx.openFile(path, anchor) 開檔；帶錨點時等內容畫好才捲到該標題
@@ -71,13 +75,17 @@
 //   - 已打開的分頁、目前分頁與左欄目前分頁存在 localStorage（見下方「分頁還原」），載入時還原。
 //
 // 自動更新（file-review task 4.6；spec file-review「自動更新」「分頁還原」；design D6、D7）：
-//   - 只查「目前的檔案分頁」的中繼資料：成為目前分頁時立即查一次；每次查詢結束（成功或失敗）後 2 秒才排
-//     下一次（POLL_INTERVAL_MS，setTimeout 串接，不用 setInterval），同一時間至多一個進行中。切換或關閉
-//     分頁時 stopPolling()：清掉排好的下一次、abort 進行中的那一筆，並把輪詢世代（poll.gen）加一——之後
-//     才回來的回應一律丟棄。Live Output 為目前分頁、或沒有檔案分頁時沒有任何輪詢鏈存在。
-//   - 兩種世代分開（控制端裁決）：poll.gen 是「分頁身分」的世代，只在切換／關閉分頁時變；ft.gen 是「內容
-//     讀取」的世代（檢視器的 ctx.isCurrent() 以它判斷），只在開始下一次重讀、分頁被切走或關閉時變。輪詢
-//     本身不動 ft.gen，所以讀一個大 PDF 的期間照常輪詢不會把這次讀取當成過期丟掉。
+//   - 只查「可見的檔案分頁」的中繼資料（file-split-view task 2.2 起以 isVisible() 判斷；沒有並排時就是
+//     目前分頁）。每個分頁各有一條輪詢鏈，狀態放在自己的 ft.poll（file-split-view task 2.3；design D3）：
+//     變成可見時立即查一次；每次查詢結束（成功或失敗）後 2 秒才排下一次（POLL_INTERVAL_MS，setTimeout
+//     串接，不用 setInterval），同一個分頁同一時間至多一個進行中。分頁變成不可見或被關閉時
+//     stopPolling(ft)：清掉它排好的下一次、abort 它進行中的那一筆，並把它的輪詢世代（ft.poll.gen）加一，
+//     之後才回來的回應一律丟棄。只動這個分頁自己的鏈，其他可見分頁的輪詢不受影響。Live Output 為目前
+//     分頁、或沒有檔案分頁時沒有任何輪詢鏈存在。
+//   - 兩種世代分開（控制端裁決）：ft.poll.gen 是「這一段可見期間」的世代，只在分頁變成可見、不可見或
+//     被關閉時變（error 分頁的立即重試也會重開一條）；ft.gen 是「內容讀取」的世代（檢視器的
+//     ctx.isCurrent() 以它判斷），只在開始下一次重讀、分頁被切走或關閉時變。輪詢本身不動 ft.gen，所以
+//     讀一個大 PDF 的期間照常輪詢不會把這次讀取當成過期丟掉。
 //   - 內容版本＝`size:modified_ms`。中繼資料的版本與畫面上顯示的版本（ft.shown；正在讀取時比對正在讀的
 //     版本 ft.readingSig）不同時才重讀——同版本不重畫，DOM 節點不換（spec cockpit-dashboard「頻繁重畫不影響
 //     檔案分頁」）。重讀由檢視器以 mount() 換內容：markdown／text 保住 host 的 scrollTop（超出新內容長度
@@ -113,7 +121,14 @@
   // --- 模組狀態 ---
 
   var leftTab = LEFT_PROJECTS;
-  var currentReviewTabId = LIVE_TAB_ID;
+  var currentReviewTabId = LIVE_TAB_ID; // 目前分頁＝焦點（aria-selected、roving tabindex、持久化的 current）
+  // 並排（file-split-view task 2.2；design D1）：分頁區「可見」的分頁不再等於目前分頁，由 visibleTabs()
+  // 從目前分頁與並排組合推導（見下方「可見集合」）。狀態轉換（加入、替換、移出、關閉）見下方「並排」
+  // （file-split-view task 3.1；design D9）。
+  var SPLIT_MAX = 3; // spec「檔案並排」：最多 3 個檔案分頁同時並排
+  var splitTabs = []; // 並排組合：檔案 kind 物件，長度 0 或 2～3，順序就是欄位順序
+  var splitFocus = null; // 焦點欄：並排組合非空時恆為其中一員，空時為 null（目前分頁離開並排組合時，恢復並排靠它）
+  var shownTabs = [null]; // 上一次 applyVisibility() 套用的可見集合；null＝Live Output（載入時只有它可見）
   var selectedPane = null; // { runtime, paneId } | null（Live Output 的選取＝檔案樹的根目錄來源）
 
   // --- 分頁列共用 ---
@@ -150,11 +165,13 @@
     }
   }
 
+  // onActivate(tab, event)：event 是觸發選定的 click 事件（file-split-view task 3.3；design D7）。分頁區的呼叫端讀
+  // event.ctrlKey 判斷 Ctrl＋點選，左欄的呼叫端不看它。
   function wireTablist(tablist, onActivate) {
     tablist.addEventListener("click", function (event) {
       var tab = event.target instanceof Element ? event.target.closest('[role="tab"]') : null;
       if (tab !== null && tablist.contains(tab)) {
-        onActivate(tab);
+        onActivate(tab, event);
       }
     });
     tablist.addEventListener("keydown", function (event) {
@@ -925,15 +942,19 @@
   //       // panel 是 role="tabpanel"）；框架呼叫後才會補上 `kind`／`key`，kind 自己不用設。分頁建立
   //       // 時還不是目前分頁（不會自動選定）。其餘欄位（中繼資料、輪詢狀態……）由 kind 自己決定、自己
   //       // 讀寫，框架不碰。file kind 的完整實作見下方 FILE_KIND／createFileTab()，可直接照抄。
-  //     activate(tab)   // 選填。這個分頁成為目前分頁時呼叫（framework 的 selectTab()）：開始輪詢、
-  //                     // 寫回捲動位置等。沒有提供就當作沒事可做。
-  //     deactivate(tab) // 選填。這個分頁被切走時呼叫：記下捲動位置、停止輪詢、作廢進行中的讀取。
+  //     activate(tab)   // 選填。這個分頁變成可見時呼叫（framework 的 applyVisibility()；file-split-view
+  //                     // task 2.2 起由可見集合的比對觸發，不再是「成為目前分頁」——並排中切換焦點欄時
+  //                     // 兩邊都仍可見，不會呼叫）：開始輪詢、寫回捲動位置等。沒有提供就當作沒事可做。
+  //                     // 不參與並排的 kind（git 類）可見就等於是目前分頁，兩種意思對它們相同。
+  //     deactivate(tab) // 選填。這個分頁變成不可見時呼叫（同上；關閉一個仍可見的分頁時也會先呼叫，
+  //                     // 之後才 dispose()）：記下捲動位置、停止輪詢、作廢進行中的讀取。
   //                     // 每個 kind 要自己在這裡停掉自己的輪詢——框架不會因為「切去別的 kind」就
   //                     // 自動幫忙停（file kind 的教訓：舊版只有 file／Live Output 兩種分頁時，
   //                     // 「切到別的東西」＝「切到 Live Output」＝唯一需要 stopPolling() 的時機；
-  //                     // 多了 kind 之後這個等價關係不成立了，所以 stopPolling() 現在收在
+  //                     // 多了 kind 之後這個等價關係不成立了，所以 stopPolling(tab) 現在收在
   //                     // FILE_KIND.deactivate() 裡，不再依賴「entering 是不是 null」）。
-  //     dispose(tab)    // 選填。分頁被關閉時呼叫（在從陣列移除、DOM 移除之前）：釋放檢視器等資源。
+  //     dispose(tab)    // 選填。分頁被關閉時呼叫（在從陣列移除、DOM 移除之前）：停掉自己的輪詢、
+  //                     // 釋放檢視器等資源。不要假設 deactivate() 一定先跑過（file-split-view task 2.3）。
   //     serialize(tab) -> object|null
   //       // 選填。存檔用（見「分頁還原」）：回傳可以存進 localStorage、之後能原封不動傳給
   //       // deserialize() 再傳給 openTab() 重建這個分頁的欄位（不含 `kind`，框架會補上）。省略這個
@@ -952,13 +973,16 @@
   //     callback（activate／deactivate／dispose／serialize／deserialize）。
   //
   // file kind 是唯一「不透過 openTab() 開啟」的例外：openFile()（見下方，file-review task 4.4 起也給
-  // Markdown 相對連結用）在 openTab() 的邏輯之上多做兩件事——已是目前分頁但上次讀取失敗時立即重試、
+  // Markdown 相對連結用）在 openTab() 的邏輯之上多做兩件事——已經可見但上次讀取失敗時立即重試、
   // 處理 Markdown 錨點——這兩個都是 file 專屬的既有行為（不是分頁 kind 框架的一部分），所以 file kind
   // 保留自己的開啟入口，不強塞進通用的 openTab()。
 
   var reviewTabs = []; // 下半部全部分頁（不含 Live Output），依分頁列順序；每筆共同欄位見上方
   var fileTabSeq = 0; // file kind 分頁 DOM id 用的序號（createFileTab()；其餘 kind 各自管自己的序號）
-  var restoring = false; // 還原期間不寫回 localStorage（還原完成後寫一次）
+  // 還原期間不寫回 localStorage。還原完成後也不另外寫一次：儲存的紀錄維持原樣，直到下一次操作觸發 persistTabs() 才被
+  // 覆寫，所以被略過的分頁與不合法的並排資料會留到那時（每次載入多一則警告）。刻意不在還原後補寫：那會提早丟掉新版
+  // 才認得的 kind（file-split-view task 5.2 最終審查）。
+  var restoring = false;
 
   function tabById(id) {
     for (var i = 0; i < reviewTabs.length; i += 1) {
@@ -978,8 +1002,132 @@
     return null;
   }
 
-  function currentTab() {
-    return tabById(currentReviewTabId);
+  // --- 可見集合（file-split-view task 2.2；design D1、D2）---
+  //
+  // 「目前分頁」（currentReviewTabId，焦點）與「可見」是兩個概念：可見集合由 visibleTabs() 從目前分頁與
+  // 並排組合推導，不另存一份會不同步的狀態。所有會改變可見集合的入口（選定分頁、開檔、關閉、還原……）
+  // 改完狀態後都呼叫 applyVisibility()，由它比對新舊集合：對離開的分頁呼叫 kind 的 deactivate()、對進入
+  // 的分頁呼叫 activate()，兩邊都有的分頁什麼都不做（並排中切換焦點欄時其他欄不重新讀取，由這個結構保證）。
+  // tabpanel 的 hidden 只由 applyVisibility() 寫，所以「hidden ⇔ 不在可見集合」恆成立。
+
+  // 並排顯示的寬度門檻（design D5；spec「檔案並排」的「窄視窗」）：視窗至少 760 CSS px 才並排顯示，否則只顯示焦點欄。
+  // 760 與 style.css 的單欄斷點是同一個數值，改一邊要一起改（CSS 與 JS 無法共用常數）。visibleTabs() 與下面的
+  // change 監聽共用這一個 MediaQueryList（file-split-view task 3.5）。
+  var SPLIT_WIDTH_QUERY = window.matchMedia("(min-width: 760px)");
+
+  // 推導可見集合（純函式）：目前分頁在並排組合裡、而且視窗夠寬（SPLIT_WIDTH_QUERY）時是整個並排組合，其餘情況只有
+  // 目前分頁；Live Output 是 [null]。
+  function visibleTabs() {
+    var current = tabById(currentReviewTabId);
+    if (current !== null && splitTabs.indexOf(current) >= 0 && SPLIT_WIDTH_QUERY.matches) {
+      return splitTabs.slice();
+    }
+    return [current];
+  }
+
+  // 視窗寬度跨過門檻時重新套用可見集合（file-split-view task 3.5；design D5）。只靠 CSS 藏欄不夠：藏起來的欄仍在可見
+  // 集合裡，會繼續輪詢。經 applyVisibility() 比對進出：變窄時非焦點欄 deactivate()（停輪詢、中止進行中的查詢），變寬時
+  // 這些欄 activate()（立即查詢一次），#review 的 data-split 與各欄標記也一併更新。不在並排中時可見集合不變，
+  // 不會觸發任何 activate()／deactivate()。
+  SPLIT_WIDTH_QUERY.addEventListener("change", function () {
+    if (reviewTablist !== null) {
+      applyVisibility();
+    }
+  });
+
+  // 這個分頁此刻是否可見（以上一次 applyVisibility() 套用的集合為準，跟 tabpanel 的 hidden 一致）。
+  function isVisible(tab) {
+    return shownTabs.indexOf(tab) >= 0;
+  }
+
+  // 把可見集合與目前分頁的標示套到 DOM 上，並觸發各 kind 的生命週期（design D2）。順序沿用舊版
+  // selectTab()：先對離開的分頁 deactivate()，再更新 aria-selected 與 hidden（契約 C3：先更新
+  // aria-selected，再開始輪詢），最後對進入的分頁 activate()。Live Output 進出可見集合時，DOM 更新包在
+  // output.js 的 tabHidden()／tabShown() 回呼裡（它要在面板藏起來之前記下捲動位置、顯示之後才請求）。
+  function applyVisibility() {
+    var prev = shownTabs;
+    var next = visibleTabs();
+    var leaving = prev.filter(function (entry) {
+      return next.indexOf(entry) < 0;
+    });
+    var entering = next.filter(function (entry) {
+      return prev.indexOf(entry) < 0;
+    });
+    shownTabs = next; // 先換：activate() 裡立即發出的查詢以 isVisible() 判斷要不要繼續
+    leaving.forEach(function (entry) {
+      callKindHook(entry, "deactivate");
+    });
+    var tabs = tabsOf(reviewTablist);
+    var current = tabById(currentReviewTabId);
+    var currentEl = current !== null ? current.els.tab : liveTabEl;
+    var shownEls = next.map(function (entry) {
+      return entry !== null ? entry.els.tab : liveTabEl;
+    });
+    // 並排顯示＝可見集合有 2 個以上（visibleTabs() 只在並排中且視窗夠寬時回整個並排組合，其餘情況只有一個）。
+    var splitShown = next.length >= 2;
+    var apply = function () {
+      markSelected(tabs, currentEl);
+      for (var i = 0; i < tabs.length; i += 1) {
+        var panel = panelOf(tabs[i]);
+        if (panel !== null) {
+          panel.hidden = shownEls.indexOf(tabs[i]) < 0;
+        }
+      }
+      // 目前分頁的包裝元素（外觀：同 Live Output 分頁的目前分頁標示）與關閉按鈕的 tabindex：只有目前
+      // 分頁的關閉按鈕在 Tab 順序中（分頁列本身是 roving tabindex）。這兩項是焦點，不是可見。
+      // 並排組合的標記（file-split-view task 3.1、3.3；design D7）：包裝元素的 data-split-col＝欄位編號（1 起算，
+      // style.css 依它畫數字徽章；選定 Live Output 等「不在並排中」時也保留，並排組合沒有解除）；並排鈕與「並排第 N 欄」
+      // 說明見 paintSplitControls()。
+      reviewTabs.forEach(function (entry) {
+        var isCurrent = entry === current;
+        entry.els.wrap.classList.toggle("is-current", isCurrent);
+        entry.els.close.tabIndex = isCurrent ? 0 : -1;
+        var col = splitTabs.indexOf(entry);
+        setAttr(entry.els.wrap, "data-split-col", col >= 0 ? String(col + 1) : null);
+        if (entry.els.split) {
+          paintSplitControls(entry, col, isCurrent);
+        }
+        // 並排版面（file-split-view task 3.2；design D4）：並排顯示中，各欄面板的 CSS order＝欄位編號（分頁列
+        // 是 0，排在最前），焦點欄的面板帶 data-split-focus（外框由 style.css 畫）。只改 order，不搬動面板的
+        // DOM：搬動 html 檢視器的 <iframe> 會讓它重新載入。
+        var shownCol = splitShown ? next.indexOf(entry) : -1;
+        var order = shownCol >= 0 ? String(shownCol + 1) : "";
+        if (entry.els.panel.style.order !== order) {
+          entry.els.panel.style.order = order;
+        }
+        setAttr(entry.els.panel, "data-split-focus", shownCol >= 0 && isCurrent ? "" : null);
+      });
+      // #review 的 data-split＝實際可見的並排欄數（file-split-view task 3.2；控制端裁決 C）；沒有並排顯示時
+      // （不在並排中、或窄視窗只剩焦點欄）移除，回到原本的 flex column。
+      if (reviewRoot !== null) {
+        setAttr(reviewRoot, "data-split", splitShown ? String(next.length) : null);
+      }
+    };
+    var fromLive = prev.indexOf(null) >= 0;
+    var toLive = next.indexOf(null) >= 0;
+    var live = window.liveOutput;
+    if (fromLive && !toLive && live && typeof live.tabHidden === "function") {
+      live.tabHidden(apply);
+    } else if (toLive && !fromLive && live && typeof live.tabShown === "function") {
+      live.tabShown(apply);
+    } else {
+      apply();
+    }
+    entering.forEach(function (entry) {
+      callKindHook(entry, "activate");
+    });
+  }
+
+  // 呼叫 tab 所屬 kind 的 activate()／deactivate()／dispose()（選填，沒有就當作沒事可做）；null（Live Output）
+  // 略過。
+  function callKindHook(tab, name) {
+    if (tab === null) {
+      return;
+    }
+    var module = kindModuleFor(tab.kind);
+    if (module && typeof module[name] === "function") {
+      module[name](tab);
+    }
   }
 
   // kind → 模組（見上方框架說明）。"file" 內建；其餘每次都向 `window.cockpitGit` 查，不在載入時快取，
@@ -1053,6 +1201,8 @@
       pendingAnchor: null,
       viewing: false,
       closed: false,
+      // 這個分頁自己的輪詢鏈（見下方「自動更新」；file-split-view task 2.3）。
+      poll: { gen: 0, timer: null, controller: null },
       els: {},
     };
 
@@ -1069,7 +1219,10 @@
     tab.setAttribute("aria-controls", "review-panel-f" + n);
     tab.setAttribute("data-path", file.path);
     tab.tabIndex = -1;
-    tab.title = t("files.tab.title", { path: file.path, root: file.rootName });
+    // 分頁的 title 與並排時的路徑說明（pathDesc）共用同一段文字。title 只在這裡寫一次：切換介面語言會重新載入頁面、
+    // 分頁重建，路徑與根目錄名稱在分頁存活期間不變。
+    var titleText = t("files.tab.title", { path: file.path, root: file.rootName });
+    tab.title = titleText;
     var icon = document.createElement("img");
     icon.className = "review-tab-icon";
     icon.alt = "";
@@ -1083,6 +1236,29 @@
     tab.appendChild(icon);
     tab.appendChild(label);
 
+    // 並排鈕（file-split-view task 3.1、3.3；design D7；spec「檔案並排」的並排鈕）：關閉鈕左側的切換鈕。只有檔案分頁有。
+    // aria-pressed（是否在並排組合中）、aria-disabled＋title（停用與原因）與 tabindex（只有目前分頁的在 Tab 順序中，
+    // 同關閉鈕）都由 applyVisibility() 依狀態寫（paintSplitControls()）；顯示時機（目前分頁或滑鼠移上去）由 style.css 管。
+    var split = document.createElement("button");
+    split.type = "button";
+    split.className = "review-tab-split";
+    split.tabIndex = -1;
+    split.setAttribute("aria-pressed", "false");
+    split.setAttribute("aria-label", t("files.tab.splitNamed", { name: name }));
+    split.textContent = "◫";
+    // 「並排第 N 欄」說明（file-split-view task 3.3；design D7）：在並排組合中時，分頁以 aria-describedby 指到這裡。
+    // 用 hidden：只給輔助技術透過 aria-describedby 讀（被直接參照的隱藏節點仍計入說明），本身不出現在畫面與無障礙樹，
+    // 分頁列（tablist）裡也就不會多出一段不是分頁的文字。
+    var colDesc = document.createElement("span");
+    colDesc.id = tab.id + "-col";
+    colDesc.hidden = true;
+    // 完整路徑＋根目錄（file-split-view task 3.3 修正第 1 輪）：分頁一旦帶 aria-describedby，Chrome 就不再拿 title 當說明；
+    // 並排時 aria-describedby 依序指到 colDesc 與這裡，兩個根目錄各自的 README.md 並排時才分得出是哪一個。
+    var pathDesc = document.createElement("span");
+    pathDesc.id = tab.id + "-path";
+    pathDesc.hidden = true;
+    pathDesc.textContent = titleText;
+
     var close = document.createElement("button");
     close.type = "button";
     close.className = "review-tab-close";
@@ -1092,7 +1268,10 @@
     close.textContent = "×";
 
     wrap.appendChild(tab);
+    wrap.appendChild(split);
     wrap.appendChild(close);
+    wrap.appendChild(colDesc);
+    wrap.appendChild(pathDesc);
     reviewTablist.appendChild(wrap);
 
     var panel = document.createElement("div");
@@ -1132,11 +1311,11 @@
 
     // 檢視器的容器（也是內容的捲動容器）：viewers.js 的檢視器把內容畫在這裡（file-review task 4.4／4.5）。
     // 捲動位置隨時記進模組變數 ft.scroll（design D6；file-review task 4.4）：只在這個分頁可見時記，
-    // 被 hidden 的容器 scrollTop 不可信。
+    // 被 hidden 的容器 scrollTop 不可信（並排中的非焦點欄也可見，照樣記；file-split-view task 2.2）。
     var host = document.createElement("div");
     host.className = "file-viewer-host";
     host.addEventListener("scroll", function () {
-      if (!panel.hidden) {
+      if (isVisible(ft)) {
         captureFileScroll(ft);
       }
     });
@@ -1146,7 +1325,7 @@
     panel.appendChild(host);
     reviewRoot.appendChild(panel);
 
-    ft.els = { wrap: wrap, tab: tab, icon: icon, close: close, panel: panel, pathEl: pathEl, staleLabel: staleLabel, timeEl: timeEl, vscode: vscode, status: status, host: host };
+    ft.els = { wrap: wrap, tab: tab, icon: icon, split: split, colDesc: colDesc, pathDesc: pathDesc, close: close, panel: panel, pathEl: pathEl, staleLabel: staleLabel, timeEl: timeEl, vscode: vscode, status: status, host: host };
     renderFilePanel(ft);
     return ft;
   }
@@ -1159,21 +1338,26 @@
       return fileKey(fields.runtime, fields.rootId, fields.path);
     },
     create: createFileTab,
-    // 成為目前分頁：捲動位置寫回（design D6）、立即查一次中繼資料（見下方「自動更新」）。
+    // 變成可見（file-split-view task 2.2 起由可見集合的比對觸發）：捲動位置寫回（design D6）、立即查一次
+    // 中繼資料（見下方「自動更新」）。
     activate: function (tab) {
       restoreFileScroll(tab);
-      startPolling(tab); // 內部一定先 stopPolling()，所以不管上一個目前分頁是哪個 kind 都會先收掉
+      startPolling(tab); // 只開這個分頁自己的鏈；其他仍可見的分頁照常輪詢（file-split-view task 2.3）
     },
-    // 被切走：記下捲動位置、作廢進行中的內容讀取、停止輪詢（不管接下來要換去哪個 kind——這裡是唯一
-    // 一處會停掉 file kind 自己的輪詢，框架不會替它停，見上方「分頁 kind 框架」deactivate 的說明）。
+    // 變成不可見（被切走、或關閉一個仍可見的分頁時在 dispose() 之前）：記下捲動位置、作廢進行中的內容
+    // 讀取、停止這個分頁自己的輪詢（不管接下來要換去哪個 kind——框架不會替它停，見上方「分頁 kind 框架」
+    // deactivate 的說明）。
     deactivate: function (tab) {
       captureFileScroll(tab);
       abandonRead(tab);
-      stopPolling();
+      stopPolling(tab);
     },
-    // 分頁被關閉：釋放檢視器資源（PDF 的文件、worker、render task）。
+    // 分頁被關閉：停掉它的輪詢、釋放檢視器資源（PDF 的文件、worker、render task）。
     dispose: function (tab) {
       tab.closed = true;
+      // 不依賴 deactivate() 先停過（file-split-view task 2.3；task 2.1 盤點 #18）：並排後關閉一個可見但
+      // 不是焦點欄的分頁，未必會先走 deactivate()。這裡再停一次：清掉計時器、abort 進行中的查詢。
+      stopPolling(tab);
       tab.gen += 1; // 之後才讀完的內容一律丟棄
       var viewerHost = window.cockpitViewerHost;
       if (viewerHost && typeof viewerHost.release === "function") {
@@ -1229,16 +1413,17 @@
 
   // --- 自動更新（file-review task 4.6；見檔頭「自動更新」）---
 
-  // 輪詢狀態：gen＝分頁身分的世代（切換／關閉分頁時加一，之後才回來的中繼資料回應丟棄）；timer＝排好的下一次；
-  // controller＝進行中那一筆的 AbortController（同一時間至多一筆）。
-  var poll = { gen: 0, timer: null, controller: null };
+  // 輪詢狀態放在每個檔案分頁自己的 ft.poll（file-split-view task 2.3；design D3）：gen＝這一段可見期間的世代
+  // （變成可見、不可見或被關閉時加一，之後才回來的中繼資料回應丟棄）；timer＝排好的下一次；controller＝進行中
+  // 那一筆的 AbortController（同一個分頁同一時間至多一筆）。並排時每個可見分頁各有一條，互不覆寫。
 
   function contentSig(meta) {
     return String(meta.size) + ":" + String(meta.modified_ms);
   }
 
-  // 停掉目前的輪詢鏈：清掉排好的下一次、中止進行中的那一筆、世代加一。
-  function stopPolling() {
+  // 停掉 ft 自己的輪詢鏈：清掉排好的下一次、中止進行中的那一筆、世代加一。不碰其他分頁的鏈。
+  function stopPolling(ft) {
+    var poll = ft.poll;
     poll.gen += 1;
     if (poll.timer !== null) {
       clearTimeout(poll.timer);
@@ -1250,14 +1435,18 @@
     }
   }
 
-  // 對目前的檔案分頁開一條新的輪詢鏈，立即查一次（spec：切換到某個檔案分頁時立即查詢一次）。
+  // 對可見的檔案分頁重開它自己的輪詢鏈，立即查一次（spec：變成可見時立即查詢一次；openFile() 對 error
+  // 分頁的立即重試也走這裡）。只先停掉 ft 自己的舊鏈，其他可見分頁的輪詢照常（file-split-view task 2.3）。
   function startPolling(ft) {
-    stopPolling();
-    pollMeta(ft, poll.gen);
+    stopPolling(ft);
+    pollMeta(ft, ft.poll.gen);
   }
 
+  // 繼續條件是「可見」，不是「目前分頁」（file-split-view task 2.2；spec「自動更新」：每個可見的檔案分頁
+  // 各自查詢，並排中的非焦點欄也要查）。世代、計時器與 controller 全部讀寫 ft.poll（file-split-view task 2.3）。
   function pollMeta(ft, gen) {
-    if (gen !== poll.gen || ft.closed || currentTab() !== ft) {
+    var poll = ft.poll;
+    if (gen !== poll.gen || ft.closed || !isVisible(ft)) {
       return;
     }
     var controller = new AbortController();
@@ -1268,7 +1457,7 @@
     }
     getJson(fileUrl("meta", ft.runtime, ft.rootId, ft.path), controller.signal).then(function (result) {
       if (gen !== poll.gen || ft.closed) {
-        return; // 切換或關閉分頁之後才回來（含被 stopPolling() 中止的那一筆）：丟棄
+        return; // 這個分頁變成不可見或被關閉之後才回來（含被 stopPolling(ft) 中止的那一筆）：丟棄
       }
       poll.controller = null;
       applyMeta(ft, result);
@@ -1387,10 +1576,11 @@
   }
 
   // Markdown 相對連結帶的錨點（file-review task 4.4；spec「md 相對連結在分頁區開啟」）：分頁可見且內容已
-  // 畫好時捲到該標題，回傳是否捲到了。捲動只動檢視器容器（viewers.js 的 cockpitMarkdownAnchor）。
+  // 畫好時捲到該標題，回傳是否捲到了。捲動只動檢視器容器（viewers.js 的 cockpitMarkdownAnchor）。「可見」
+  // 含並排中的非焦點欄（file-split-view task 2.2）。
   function applyPendingAnchor(ft) {
     var anchors = window.cockpitMarkdownAnchor;
-    if (ft.pendingAnchor === null || ft.els.panel.hidden || !anchors || typeof anchors.reveal !== "function") {
+    if (ft.pendingAnchor === null || !isVisible(ft) || !anchors || typeof anchors.reveal !== "function") {
       return false;
     }
     if (anchors.reveal(ft.els.host, ft.pendingAnchor)) {
@@ -1426,59 +1616,163 @@
     }
   }
 
-  // 切換目前分頁（framework，取代原本的 selectReviewTab；見上方「分頁 kind 框架」）：leaving／entering 可能
-  // 是任何 kind（或 Live Output，這時對應的 tab 物件是 null，繼續由 output.js 的 tabHidden／tabShown 管）。
-  // 各 kind 自己的 activate()／deactivate() 負責自己的輪詢與狀態，框架不需要知道細節（也不需要知道
-  // 「切去的是不是同一種 kind」——每個 kind 的 deactivate 在被切走時就該把自己收乾淨）。
+  // 切換目前分頁（framework，取代原本的 selectReviewTab；見上方「分頁 kind 框架」）：進出可見集合的分頁
+  // 可能是任何 kind（或 Live Output，這時對應的 tab 物件是 null，繼續由 output.js 的 tabHidden／tabShown
+  // 管；見 applyVisibility()）。各 kind 自己的 activate()／deactivate() 負責自己的輪詢與狀態，框架不需要
+  // 知道細節（也不需要知道「切去的是不是同一種 kind」——每個 kind 的 deactivate 在變成不可見時就該把
+  // 自己收乾淨）。
   function selectTab(tabEl) {
     if (reviewTablist === null || tabEl.id === currentReviewTabId) {
       return;
     }
-    var tabs = tabsOf(reviewTablist);
-    var leaving = tabById(currentReviewTabId);
-    var entering = tabById(tabEl.id);
-    if (leaving !== null) {
-      var leavingModule = kindModuleFor(leaving.kind);
-      if (leavingModule && typeof leavingModule.deactivate === "function") {
-        leavingModule.deactivate(leaving);
-      }
-    }
-    // 契約 C3：先更新 aria-selected 與 hidden，再開始／停止輪詢（Live Output 經由 output.js 的入口；其餘
-    // kind 的輪詢在下面 apply() 之後才由 activate()／deactivate() 啟停）。
-    var apply = function () {
-      markSelected(tabs, tabEl);
-      for (var i = 0; i < tabs.length; i += 1) {
-        var panel = panelOf(tabs[i]);
-        if (panel !== null) {
-          panel.hidden = tabs[i] !== tabEl;
-        }
-      }
-      // 目前分頁的包裝元素（外觀：同 Live Output 分頁的目前分頁標示）與關閉按鈕的 tabindex：只有目前
-      // 分頁的關閉按鈕在 Tab 順序中（分頁列本身是 roving tabindex）。
-      reviewTabs.forEach(function (entry) {
-        var current = entry.els.tab === tabEl;
-        entry.els.wrap.classList.toggle("is-current", current);
-        entry.els.close.tabIndex = current ? 0 : -1;
-      });
-    };
-    var fromLive = currentReviewTabId === LIVE_TAB_ID;
-    var toLive = tabEl.id === LIVE_TAB_ID;
+    // file-split-view task 2.2（design D2）：先改狀態（目前分頁與並排組合，見 selectState()），再由
+    // applyVisibility() 比對可見集合的進出、更新標示並觸發各 kind 的 activate()／deactivate()。
+    selectState(tabById(tabEl.id));
     currentReviewTabId = tabEl.id;
-    var live = window.liveOutput;
-    if (fromLive && live && typeof live.tabHidden === "function") {
-      live.tabHidden(apply);
-    } else if (toLive && live && typeof live.tabShown === "function") {
-      live.tabShown(apply);
-    } else {
-      apply();
+    applyVisibility();
+    var entering = tabById(tabEl.id);
+    revealTab(entering !== null ? entering.els.wrap : tabEl);
+    persistTabs();
+  }
+
+  // --- 並排（file-split-view task 3.1；spec file-review「檔案並排」；design D1、D9）---
+  //
+  // 狀態：splitTabs（並排組合，長度 0 或 2～3）、splitFocus（焦點欄，並排組合非空時恆為其中一員）與
+  // currentReviewTabId（目前分頁）。「並排中」＝目前分頁在並排組合裡，這時目前分頁一定是 splitFocus。
+  // 下面三個函式只改狀態，呼叫端改完後呼叫 applyVisibility()（design D2）。只有 file kind 能進並排組合
+  // （入口驗 kind：selectState() 的替換與 toggleSplit() 的加入），所以 git 類分頁「可見就是目前分頁」的前提不變。
+
+  // 目前是否「並排中」。
+  function inSplitView() {
+    var current = tabById(currentReviewTabId);
+    return current !== null && splitTabs.indexOf(current) >= 0;
+  }
+
+  // 按 tab 的並排鈕會不會動作（spec「加入」：沒有並排組合、而且目前分頁不是 tab 以外的檔案分頁時停用；design D7）。
+  // 已有並排組合時一律可用（加入、替換或移出）。只有檔案分頁有並排鈕。
+  function splitAvailable(tab) {
+    if (tab === null || tab.kind !== "file") {
+      return false;
     }
-    if (entering !== null) {
-      var enteringModule = kindModuleFor(entering.kind);
-      if (enteringModule && typeof enteringModule.activate === "function") {
-        enteringModule.activate(entering);
+    if (splitTabs.length > 0) {
+      return true;
+    }
+    var current = tabById(currentReviewTabId);
+    return current !== null && current.kind === "file" && current !== tab;
+  }
+
+  // 依狀態寫並排鈕與「並排第 N 欄」說明（file-split-view task 3.3；design D7）。col：tab 在並排組合中的位置（-1＝不在）。
+  //   - aria-pressed：是否在並排組合中。
+  //   - 停用：aria-disabled="true"（不用 disabled 屬性，滑鼠移上去才看得到 title），title 說明要先選另一個檔案分頁；
+  //     可用時移除 aria-disabled，title 為「並排」。
+  //   - tabindex：只有目前分頁的並排鈕在 Tab 順序中（同關閉鈕）。
+  //   - 在並排組合中時，分頁以 aria-describedby 依序指到「並排第 N 欄」與完整路徑＋根目錄（同 title）；不在時移除，
+  //     這時輔助技術照舊以 title 當說明。
+  function paintSplitControls(tab, col, isCurrent) {
+    var els = tab.els;
+    var enabled = splitAvailable(tab);
+    setAttr(els.split, "aria-pressed", col >= 0 ? "true" : "false");
+    setAttr(els.split, "aria-disabled", enabled ? null : "true");
+    setAttr(els.split, "title", t(enabled ? "files.tab.split" : "files.tab.splitDisabled"));
+    els.split.tabIndex = isCurrent ? 0 : -1;
+    var desc = col >= 0 ? t("files.tab.splitCol", { n: col + 1 }) : "";
+    if (els.colDesc.textContent !== desc) {
+      els.colDesc.textContent = desc;
+    }
+    setAttr(els.tab, "aria-describedby", col >= 0 ? els.colDesc.id + " " + els.pathDesc.id : null);
+  }
+
+  // 分頁區的選定入口（file-split-view task 3.3；design D7）：點選分頁（wireTablist）與 Ctrl＋Enter 共用。
+  // wantSplit（按住 Ctrl）且該分頁的並排鈕可用時，效果等同按並排鈕；否則（不是檔案分頁、並排鈕停用、沒按 Ctrl）是
+  // 一般的選定（spec「並排鈕」）。
+  function activateReviewTab(tabEl, wantSplit) {
+    var tab = tabById(tabEl.id);
+    if (wantSplit && splitAvailable(tab)) {
+      toggleSplit(tab);
+    } else {
+      selectTab(tabEl);
+    }
+  }
+
+  // 選定分頁（target；Live Output 為 null）之前的並排狀態轉換（spec「替換」「不在並排中」）：
+  //   - target 在並排組合中：它成為焦點欄（回到並排中，或只是換焦點欄）。
+  //   - 並排中、target 是不在並排組合中的檔案分頁：它取代焦點欄的分頁，位置不變，並成為焦點欄；被取代的分頁
+  //     留在分頁列。點選分頁、從檔案樹開檔、點 md 相對連結（含新開的分頁）都經過 selectTab() 走到這裡。
+  //   - 其他（Live Output、git 類分頁、不在並排中時選定未並排的檔案分頁）：並排組合與焦點欄保留不動，只以單欄
+  //     顯示 target（由 visibleTabs() 推導）。
+  // 呼叫端接著把 currentReviewTabId 設成 target。
+  function selectState(target) {
+    if (target !== null && splitTabs.indexOf(target) >= 0) {
+      splitFocus = target;
+    } else if (target !== null && target.kind === "file" && inSplitView()) {
+      splitTabs[splitTabs.indexOf(splitFocus)] = target;
+      splitFocus = target;
+    }
+  }
+
+  // 把 tab 移出並排組合（按並排鈕移出、或關閉並排組合中的分頁；design D9 的 4 步）。不在並排組合中時不動作。
+  function leaveSplit(tab) {
+    var index = splitTabs.indexOf(tab);
+    if (index < 0) {
+      return;
+    }
+    // 1. 先記下移出前是否並排中。
+    var wasInSplit = inSplitView();
+    // 2. 移出的是焦點欄：焦點欄改為右側欄，沒有右側時為左側欄。
+    if (tab === splitFocus) {
+      splitFocus = index + 1 < splitTabs.length ? splitTabs[index + 1] : splitTabs[index - 1];
+    }
+    splitTabs.splice(index, 1);
+    // 3. 只剩一個分頁時解除並排組合（splitTabs 的長度因此恆為 0 或 2～3）。
+    var remaining = null;
+    if (splitTabs.length < 2) {
+      remaining = splitTabs.length === 1 ? splitTabs[0] : null;
+      splitTabs = [];
+      splitFocus = null;
+    }
+    // 4. 目前分頁只在移出前是並排中時才跟著改：改成新的焦點欄；並排組合已解除時改成剩下的那個分頁。移出前
+    //    不是並排中（例如目前是 Live Output）時目前分頁不動。
+    if (wasInSplit) {
+      var next = splitFocus !== null ? splitFocus : remaining;
+      if (next !== null) {
+        currentReviewTabId = next.els.tab.id;
       }
     }
-    revealTab(entering !== null ? entering.els.wrap : tabEl);
+  }
+
+  // 按並排鈕（spec「加入」「移出」）。tab 在並排組合中就移出；不在就加入：
+  //   - 沒有並排組合：目前分頁是 tab 以外的檔案分頁 Y 時，並排組合成為 Y、tab 兩欄；否則按了不動作（並排鈕此時
+  //     為停用狀態，見 splitAvailable()）。
+  //   - 已有並排組合且未滿 3 個：tab 加到最右欄。
+  //   - 已滿 3 個：tab 取代焦點欄的分頁，位置不變；被取代的分頁留在分頁列。
+  //   只要 tab 有加入，它就成為焦點欄與目前分頁（並排中）。
+  function toggleSplit(tab) {
+    // 停用條件只寫在 splitAvailable() 一處（file-split-view task 5.2 最終審查）：通過之後，沒有並排組合時目前分頁一定是
+    // tab 以外的檔案分頁。
+    if (!splitAvailable(tab) || reviewTabs.indexOf(tab) < 0) {
+      return;
+    }
+    var currentBefore = currentReviewTabId;
+    if (splitTabs.indexOf(tab) >= 0) {
+      leaveSplit(tab);
+    } else {
+      if (splitTabs.length === 0) {
+        splitTabs = [tabById(currentReviewTabId), tab];
+      } else if (splitTabs.length < SPLIT_MAX) {
+        splitTabs.push(tab);
+      } else {
+        splitTabs[splitTabs.indexOf(splitFocus)] = tab;
+      }
+      splitFocus = tab;
+      currentReviewTabId = tab.els.tab.id;
+    }
+    applyVisibility();
+    // 只有目前分頁真的換了才捲（file-split-view task 3.3 修正第 1 輪）：不在並排中移出成員時目前分頁不變，分頁列不該
+    // 被捲回目前分頁（使用者正看著被按的那一顆）。
+    if (currentReviewTabId !== currentBefore) {
+      var now = tabById(currentReviewTabId);
+      revealTab(now !== null ? now.els.wrap : liveTabEl);
+    }
     persistTabs();
   }
 
@@ -1495,12 +1789,15 @@
       return;
     }
     ft.pendingAnchor = typeof anchor === "string" && anchor !== "" ? anchor : null;
-    if (ft.els.tab.id === currentReviewTabId) {
-      if (ft.status === "error") {
-        startPolling(ft); // 已是目前分頁但上次讀取失敗：再點一次就立即重試（不等下一次輪詢）
-      }
-    } else {
+    // 呼叫前就已經可見、而且上次讀取失敗：再點一次就立即重試（不等下一次輪詢）。條件是「可見」不是
+    // 「目前分頁」（file-split-view task 2.2；design D2）：並排中點一個可見但不是焦點欄的 error 欄，除了
+    // 切焦點也要重試。呼叫前不可見的分頁不必重試，selectTab() 讓它進入可見集合時 activate() 會立即查一次。
+    var retry = isVisible(ft) && ft.status === "error";
+    if (ft.els.tab.id !== currentReviewTabId) {
       selectTab(ft.els.tab);
+    }
+    if (retry) {
+      startPolling(ft); // 只重開 ft 自己的鏈，不影響其他可見分頁的輪詢（file-split-view task 2.3）
     }
     if (!applyPendingAnchor(ft) && !ft.viewing && ft.shown !== null) {
       ft.pendingAnchor = null; // 內容已畫好卻找不到該標題：不留到之後的重讀才突然捲動
@@ -1508,48 +1805,95 @@
     persistTabs();
   }
 
-  // 關閉分頁（framework，取代原本的 closeFileTab；任何 kind 皆適用）：關的是目前分頁時改顯示右側的分頁，
-  // 沒有右側時顯示左側（第一個分頁的左側是 Live Output）。焦點在被關掉的分頁上時移到接手的分頁。
+  // 關閉分頁（framework，取代原本的 closeFileTab；任何 kind 皆適用）：
+  //   - 被關閉的分頁在並排組合中（file-split-view task 3.1；design D9；spec「移出」）：跟按並排鈕移出共用
+  //     leaveSplit()，目前分頁依並排規則決定，不套用「改為顯示右側分頁」。
+  //   - 其餘情況：關的是目前分頁時改顯示右側的分頁，沒有右側時顯示左側（第一個分頁的左側是 Live Output）。
+  // 焦點在被關掉的分頁上時移到接手的分頁：目前分頁因此改變時是新的目前分頁，否則是右側相鄰（沒有右側時為左側）的分頁。
   function closeTab(tab) {
     var index = reviewTabs.indexOf(tab);
     if (index < 0) {
       return;
     }
-    var neighbor = index + 1 < reviewTabs.length ? reviewTabs[index + 1].els.tab : index > 0 ? reviewTabs[index - 1].els.tab : liveTabEl;
     var hadFocus = tab.els.wrap.contains(document.activeElement);
-    if (tab.els.tab.id === currentReviewTabId && neighbor !== null) {
-      selectTab(neighbor); // 切走的過程會呼叫 tab 所屬 kind 的 deactivate()，輪詢等資源已在那裡停掉
+    var successor;
+    var revealEl = null; // 並排分支且目前分頁換了：接手的分頁（目前分頁）要捲進分頁列的視野，同 toggleSplit()
+    var neighbor = index + 1 < reviewTabs.length ? reviewTabs[index + 1].els.tab : index > 0 ? reviewTabs[index - 1].els.tab : liveTabEl;
+    if (splitTabs.indexOf(tab) >= 0) {
+      var currentBefore = currentReviewTabId;
+      leaveSplit(tab);
+      // 由可見集合的比對處理進出（design D2）：被關閉的分頁若仍可見就離開集合、呼叫 deactivate()（停輪詢、
+      // 中止進行中的查詢），之後才 dispose()；並排解除時剩下的那欄留在集合裡，什麼都不做。
+      applyVisibility();
+      if (currentReviewTabId !== currentBefore) {
+        // 目前分頁改變（並排中關閉的是焦點欄）：目前分頁改為新的焦點欄（或並排解除後剩下的那個），焦點與可視範圍都跟過去。
+        var now = tabById(currentReviewTabId);
+        successor = now !== null ? now.els.tab : liveTabEl;
+        revealEl = now !== null ? now.els.wrap : liveTabEl;
+      } else {
+        // 目前分頁不變（不在並排中，或並排中關閉的不是焦點欄；file-split-view task 3.3 修正第 1 輪）：同下方「關的不是
+        // 目前分頁」，焦點移到相鄰分頁、不捲動分頁列（移到 Live Output 會讓 focus() 把分頁列捲回最左）。
+        successor = neighbor;
+      }
+    } else {
+      successor = neighbor;
+      if (tab.els.tab.id === currentReviewTabId && successor !== null) {
+        selectTab(successor); // 切走的過程會呼叫 tab 所屬 kind 的 deactivate()，輪詢等資源已在那裡停掉
+      }
     }
-    var module = kindModuleFor(tab.kind);
-    if (module && typeof module.dispose === "function") {
-      module.dispose(tab);
-    }
+    // dispose() 不假設 deactivate() 已經跑過，file kind 會在這裡再停一次自己的輪詢（file-split-view task 2.3）。
+    callKindHook(tab, "dispose");
     reviewTabs.splice(index, 1);
     tab.els.wrap.remove();
     tab.els.panel.remove();
-    if (hadFocus && neighbor !== null) {
-      neighbor.focus();
+    // 在移除被關閉分頁之後才量位置（file-split-view task 3.3；審查第 1 項）。
+    if (revealEl !== null) {
+      revealTab(revealEl);
+    }
+    if (hadFocus && successor !== null) {
+      successor.focus();
     }
     persistTabs();
   }
 
   if (reviewTablist !== null) {
-    wireTablist(reviewTablist, selectTab);
+    // 按住 Ctrl 點選分頁＝按它的並排鈕（並排鈕停用或不是檔案分頁時等同一般選定；file-split-view task 3.3）。
+    wireTablist(reviewTablist, function (tabEl, event) {
+      activateReviewTab(tabEl, !!(event && event.ctrlKey));
+    });
     reviewTablist.addEventListener("click", function (event) {
-      var close = event.target instanceof Element ? event.target.closest(".review-tab-close") : null;
-      if (close === null) {
+      var target = event.target instanceof Element ? event.target : null;
+      var close = target !== null ? target.closest(".review-tab-close") : null;
+      // 並排鈕（file-split-view task 3.1）：只有檔案分頁有，toggleSplit() 另外再驗 kind。停用（aria-disabled）時照樣呼叫，
+      // toggleSplit() 在停用條件下本來就不動作（file-split-view task 3.3）。
+      var split = target !== null ? target.closest(".review-tab-split") : null;
+      if (close === null && split === null) {
         return;
       }
       for (var i = 0; i < reviewTabs.length; i += 1) {
-        if (reviewTabs[i].els.close === close) {
+        if (close !== null && reviewTabs[i].els.close === close) {
           closeTab(reviewTabs[i]);
+          return;
+        }
+        if (split !== null && reviewTabs[i].els.split === split) {
+          toggleSplit(reviewTabs[i]);
           return;
         }
       }
     });
     // 鍵盤：方向鍵／Home／End／Enter／Space 見 wireTablist；焦點在分頁上時 Delete 關閉它（關閉按鈕
     // 本身也可用 Tab 到達、以 Enter／Space 操作）。
+    // 焦點在分頁上時 Ctrl＋Enter＝按它的並排鈕（file-split-view task 3.3；design D7；spec「鍵盤加入並排」），規則同
+    // Ctrl＋點選。一定要 preventDefault()：<button> 的 Enter 預設會再轉成一次 click，多跑一次選定。
     reviewTablist.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" && event.ctrlKey) {
+        var focused = document.activeElement;
+        if (focused !== null && focused.getAttribute("role") === "tab" && reviewTablist.contains(focused)) {
+          event.preventDefault();
+          activateReviewTab(focused, true);
+        }
+        return;
+      }
       if (event.key !== "Delete") {
         return;
       }
@@ -1561,6 +1905,112 @@
     });
   }
 
+  // 讓某一欄成為焦點欄的兩種操作（file-split-view task 3.4；design D6；spec「焦點欄的標示與切換」）：在那一欄內按下
+  // 滑鼠（pointerdown），或焦點進入那一欄的 iframe（window blur＋輪詢，見下）。用 Tab 鍵把焦點移到 md 欄的連結等父文件
+  // 裡的元素，不會切換焦點欄（沒有聽 focusin）；用 Tab 鍵把焦點移進 iframe 則會，因為走的是 iframe 那條路。
+  //
+  // pointerdown：掛在 #review 的 capture 階段，早於欄內各自的處理。pointerdown 先換焦點欄，接著的 click 若是 md 相對連結
+  // 開檔，就照 spec「替換」換掉這一欄，也就是「在哪一欄點的連結，就在哪一欄開」；PDF 工具列等其他點擊照常進行。
+  // 不呼叫 focus()、不 preventDefault()：使用者是要在那一欄捲動、選字或點連結，不能搶走焦點或擋掉預設動作；滑鼠操作後
+  // 由程式 focus() 也會被 Chrome 判成 :focus-visible、留下外框。
+  // 只在並排中、按在可見的並排欄面板內、而且不是焦點欄時動作：分頁列、Live Output 面板、單欄顯示（含窄視窗只剩焦點欄）
+  // 都不動（判斷見 splitColumnAt()／focusColumnAt()）。
+  //
+  // iframe：html 檢視器的內容在 sandbox iframe 裡（不允許腳本），iframe 內按下滑鼠不會傳到這個文件。
+  //   - 焦點從父文件進入 iframe：父文件的 window 收到 blur，activeElement 變成那個 <iframe>（task 3.4 修正第 1 輪）。
+  //   - 焦點從一個 iframe 直接移到另一個 iframe：父文件收不到 blur／focus／focusin／focusout，只有 activeElement 默默改變
+  //     （審查實測，修正第 2 輪）。所以焦點在某個並排欄的 iframe 裡時，以短週期輪詢 activeElement（控制端裁決）。
+  // 兩者都經 followIframeFocus()：activeElement 是非焦點並排欄的 iframe 就切換；之後只要 activeElement 仍是某個並排欄
+  // 的 iframe、在並排中、頁面沒有隱藏，就排下一次檢查，否則立刻停。平常沒有計時器在跑。
+  //   - blur 後等 setTimeout(0) 才讀 activeElement：blur 當下 activeElement 不保證已經換成接手焦點的 iframe。
+  //   - 焦點回到父文件（window 的 focus）或頁面隱藏時立刻停止輪詢；頁面重新顯示時檢查一次（焦點可能仍在 iframe 裡）。
+  //   - 切到別的應用程式：焦點原本在父文件裡時 activeElement 不是 iframe，不動作；焦點原本就在 iframe 裡時，輪詢照常，
+  //     但 activeElement 沒變，也不動作。切回來後點另一個 html 欄的 iframe，由輪詢接手。
+  //   - 只認 target 為 window 的 blur／focus：元素的 blur／focus 不冒泡，不 capture 就不會收到，這裡再擋一次。
+  //   - 已知缺口（file-split-view task 5.2 最終審查記錄，不修）：焦點所在的 iframe 被換掉（html 檔更新後檢視器換新的
+  //     iframe）時父文件收不到任何事件，輪詢在下一次檢查時停止，之後從一個 iframe 直接移到另一個 iframe 就不會切換焦點欄；
+  //     在父文件內任意按一下即恢復。窄視窗只剩焦點欄、焦點在它的 iframe 裡時輪詢會持續，但不會切換任何東西。
+  var IFRAME_POLL_MS = 200;
+  var iframePoll = null;
+
+  // node 所在的並排欄（並排中、可見的並排欄面板內）；不在任何並排欄裡、或不在並排中時回 null。
+  function splitColumnAt(node) {
+    if (!inSplitView() || !(node instanceof Node)) {
+      return null;
+    }
+    for (var i = 0; i < splitTabs.length; i += 1) {
+      var tab = splitTabs[i];
+      if (isVisible(tab) && tab.els.panel.contains(node)) {
+        return tab;
+      }
+    }
+    return null;
+  }
+
+  // node 所在的並排欄，而且不是焦點欄（要切換過去的那一欄）；否則回 null。
+  function focusColumnAt(node) {
+    var tab = splitColumnAt(node);
+    return tab !== null && tab !== splitFocus ? tab : null;
+  }
+
+  function stopIframePoll() {
+    if (iframePoll !== null) {
+      clearTimeout(iframePoll);
+      iframePoll = null;
+    }
+  }
+
+  function scheduleIframeCheck(delay) {
+    stopIframePoll();
+    iframePoll = setTimeout(followIframeFocus, delay);
+  }
+
+  // blur 與輪詢共用的判斷：焦點在某個並排欄的 iframe 裡才繼續，是非焦點欄就切換。
+  function followIframeFocus() {
+    iframePoll = null;
+    var active = document.activeElement;
+    if (document.hidden || active === null || active.tagName !== "IFRAME" || splitColumnAt(active) === null) {
+      return;
+    }
+    var tab = focusColumnAt(active);
+    if (tab !== null) {
+      selectTab(tab.els.tab);
+    }
+    scheduleIframeCheck(IFRAME_POLL_MS);
+  }
+
+  if (reviewRoot !== null) {
+    reviewRoot.addEventListener(
+      "pointerdown",
+      function (event) {
+        var tab = focusColumnAt(event.target);
+        if (tab !== null) {
+          selectTab(tab.els.tab);
+        }
+      },
+      true
+    );
+    window.addEventListener("blur", function (event) {
+      if (event.target === window) {
+        scheduleIframeCheck(0);
+      }
+    });
+    window.addEventListener("focus", function (event) {
+      if (event.target === window) {
+        stopIframePoll();
+      }
+    });
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) {
+        stopIframePoll();
+      } else {
+        scheduleIframeCheck(0);
+      }
+    });
+  }
+
+  // 選定 pane 時切到 Live Output。經 selectTab() → applyVisibility()，可見集合的進出一次處理：之前可見的
+  // 分頁（並排時整組）一起 deactivate()，Live Output 的顯示包在 tabShown() 裡（file-split-view task 2.2）。
   function showLiveOutputTab() {
     if (liveTabEl !== null) {
       selectTab(liveTabEl);
@@ -1572,24 +2022,39 @@
   // 存在 localStorage（鍵 STORAGE_KEY），讀寫都包 try/catch（不可用時照常運作、只是不還原）。v2 格式：
   //   { v: 2, tabs: [{ kind, ...該 kind 的 serialize() 結果 }, …]（依分頁順序）,
   //     current: { kind, ...serialize() 結果 } | null（null＝Live Output）,
-  //     left: "projects" | "files" | "changes" }
+  //     left: "projects" | "files" | "changes",
+  //     split: [索引, …]（選填）, splitFocus: 索引（選填） }
   // v1（本 change 之前，只有檔案分頁）沒有 `kind` 欄位：`tabs`／`current` 每筆視為 `kind: "file"`，
   // 形狀跟 FILE_KIND.serialize() 的輸出相同（少了 rootName 的 current 例外，見 resolveCurrent()）。
   // Live Output 的 pane 選取不存（spec：不還原）。讀到不是合法 JSON、或整體形狀不對（版本無法辨識、
   // `tabs` 不是陣列、`left` 不是認得的值）時 console.warn，以沒有已打開分頁的狀態開始；單筆分頁的
   // kind 無法辨識或欄位不合法時只略過那一筆並 console.warn，其餘分頁照常還原（控制端裁決，file-review
   // 4.1 之前是整份放棄，這裡放寬——多個 kind 之後，一筆壞資料不該連累其他 kind 的分頁）。
+  //
+  // 並排組合（file-split-view task 3.6；design D8）：版號維持 v2，加兩個選填欄位。`split` 是並排組合依欄位順序、
+  // `splitFocus` 是焦點欄，值都是「寫入的 `tabs` 陣列」中的索引（serializeTabList() 略過不存的分頁之後才算）；
+  // 沒有並排組合時兩個欄位都不寫。不升版號是為了回滾：舊版的 isStoredState() 不看多出來的欄位，回滾只失去並排。
+  // 還原時索引一律對照儲存位置，不對照還原後的位置（見 restoreSplit()）。
   function persistTabs() {
     if (restoring) {
       return;
     }
     var current = tabById(currentReviewTabId);
+    var list = serializeTabList();
     var data = {
       v: STORAGE_VERSION,
-      tabs: serializeTabList(),
+      tabs: list.entries,
       current: current === null ? null : serializeTabEntry(current),
       left: leftTab,
     };
+    var split = splitTabs.map(function (tab) {
+      return list.positions.has(tab) ? list.positions.get(tab) : -1;
+    });
+    // 並排成員都是檔案分頁，一定存得下來；萬一有成員沒存（-1），寧可不存並排，也不存一份指錯的索引。
+    if (split.length >= 2 && split.indexOf(-1) < 0) {
+      data.split = split;
+      data.splitFocus = list.positions.get(splitFocus);
+    }
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     } catch (e) {
@@ -1617,15 +2082,19 @@
     return out;
   }
 
+  // 依分頁順序序列化所有分頁：entries 是要寫入的 `tabs` 陣列（略過 serializeTabEntry() 回傳 null 的分頁），
+  // positions 是「分頁物件 → 它在 entries 中的索引」（略過之後才算；並排組合的索引用它，file-split-view task 3.6）。
   function serializeTabList() {
-    var out = [];
+    var entries = [];
+    var positions = new Map();
     reviewTabs.forEach(function (tab) {
       var entry = serializeTabEntry(tab);
       if (entry !== null) {
-        out.push(entry);
+        positions.set(tab, entries.length);
+        entries.push(entry);
       }
     });
-    return out;
+    return { entries: entries, positions: positions };
   }
 
   function isNonEmptyString(value) {
@@ -1713,9 +2182,55 @@
     return typeof key === "string" ? tabByKindKey(kind, key) : null;
   }
 
-  // 載入頁面時還原。還原的分頁一律保留；目前分頁是檔案分頁時開始它的自動更新（根目錄不可用時顯示
+  // 還原並排組合（file-split-view task 3.6；design D8；spec「分頁還原」）。restoredAt：儲存位置 → 還原出的分頁。
+  // 沒有 `split` 欄位（v1、或 v2 沒有並排組合）時什麼都不做。不合法時忽略整個並排組合、console.warn，其餘狀態照常
+  // 還原：不是陣列、長度不在 2～SPLIT_MAX、索引不是整數或越界、指到還原時被略過的位置、指到非檔案分頁、有重複（含兩個
+  // 儲存位置還原成同一個分頁）。焦點欄不在並排組合中（含沒有 `splitFocus` 欄位）時改用第一欄；目前分頁在並排組合中時
+  // 由呼叫端的 selectTab() 改成目前分頁。只改狀態，呼叫端接著走 applyVisibility()。
+  function restoreSplit(data, restoredAt) {
+    if (!Object.prototype.hasOwnProperty.call(data, "split")) {
+      return;
+    }
+    // 警告訊息直接寫在 console.warn 的第一個引數裡（i18n-check 只放行那裡的中文；介面文字才進字典）。
+    var stored = data.split;
+    if (!Array.isArray(stored)) {
+      console.warn("分頁還原：並排組合不合法（不是陣列），忽略並排組合", stored);
+      return;
+    }
+    if (stored.length < 2 || stored.length > SPLIT_MAX) {
+      console.warn("分頁還原：並排組合不合法（分頁數 " + stored.length + " 不在 2～" + SPLIT_MAX + "），忽略並排組合", stored);
+      return;
+    }
+    var tabs = [];
+    for (var i = 0; i < stored.length; i += 1) {
+      var index = stored[i];
+      var tab = Number.isInteger(index) ? restoredAt.get(index) : undefined;
+      if (!Number.isInteger(index) || index < 0 || index >= data.tabs.length) {
+        console.warn("分頁還原：並排組合不合法（索引 " + JSON.stringify(index) + " 不存在），忽略並排組合", stored);
+        return;
+      }
+      if (tab === undefined) {
+        console.warn("分頁還原：並排組合不合法（索引 " + index + " 的分頁在還原時被略過），忽略並排組合", stored);
+        return;
+      }
+      if (tab.kind !== "file") {
+        console.warn("分頁還原：並排組合不合法（索引 " + index + " 不是檔案分頁），忽略並排組合", stored);
+        return;
+      }
+      if (tabs.indexOf(tab) >= 0) {
+        console.warn("分頁還原：並排組合不合法（索引 " + index + " 與前面的欄重複），忽略並排組合", stored);
+        return;
+      }
+      tabs.push(tab);
+    }
+    var focus = Number.isInteger(data.splitFocus) ? restoredAt.get(data.splitFocus) : undefined;
+    splitTabs = tabs;
+    splitFocus = focus !== undefined && tabs.indexOf(focus) >= 0 ? focus : tabs[0];
+  }
+
+  // 載入頁面時還原。還原的分頁一律保留；可見的檔案分頁開始它的自動更新（根目錄不可用時顯示
   // FILE_ERROR_TEXT.root_unavailable，依自動更新節奏重試，恢復後正常顯示；file-review task 4.6）。其餘分頁
-  // 在第一次成為目前分頁時才查（之前顯示預設檔案 icon，spec「檔案 icon」）。
+  // 在第一次變成可見時才查（之前顯示預設檔案 icon，spec「檔案 icon」；file-split-view task 2.2）。
   function restoreTabs() {
     if (reviewTablist === null || reviewRoot === null) {
       return;
@@ -1726,9 +2241,11 @@
     }
     // v1 沒有 `kind` 欄位：每一筆（含 current）都視為 "file"；v2 一定要有 `kind`，缺了就是壞資料，略過。
     var fallbackKind = data.v === 1 ? "file" : null;
+    // 儲存位置 → 還原出的分頁（file-split-view task 3.6；design D8）：被略過的位置沒有對應，並排組合的索引查這張表。
+    var restoredAt = new Map();
     restoring = true;
     try {
-      data.tabs.forEach(function (entry) {
+      data.tabs.forEach(function (entry, position) {
         if (entry === null || typeof entry !== "object") {
           console.warn("分頁還原：略過形狀不對的分頁紀錄", entry);
           return;
@@ -1752,15 +2269,25 @@
           console.warn('分頁還原：「' + kind + '」分頁紀錄欄位不合法，略過', entry);
           return;
         }
-        ensureTab(kind, fields);
+        var tab = ensureTab(kind, fields);
+        if (tab !== null) {
+          restoredAt.set(position, tab);
+        }
       });
       // git-review task 4.2：「變更」分頁現在是真的分頁，還原成它自己（不再視同「檔案」）。
       if (data.left === LEFT_FILES || data.left === LEFT_CHANGES) {
         setLeftTab(data.left);
       }
+      restoreSplit(data, restoredAt);
+      // 並排組合要在選定目前分頁之前還原：目前分頁在並排組合中時，selectTab() 經 selectState() 把焦點欄改成它（spec
+      // 「分頁還原」：目前分頁在並排組合中時，焦點欄一律為目前分頁），再由 applyVisibility() 一次套好可見集合、#review 的
+      // data-split 與輪詢（file-split-view task 3.6）。
       var cur = resolveCurrent(data.current, fallbackKind);
       if (cur !== null) {
         selectTab(cur.els.tab);
+      } else {
+        // 目前分頁維持 Live Output：可見集合不變，但還原出的分頁要依狀態寫一次並排鈕等標示（file-split-view task 3.3）。
+        applyVisibility();
       }
     } finally {
       restoring = false;

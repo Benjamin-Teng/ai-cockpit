@@ -8706,6 +8706,34 @@ async function partCssInventory() {
     await cdp.click('#files [role="treeitem"][title="cl1-gone.md"]');
     await cdp.waitFor("(() => { var t = document.querySelector('#review [role=\"tab\"][data-path=\"cl1-gone.md\"]'); var p = t && document.getElementById(t.getAttribute('aria-controls')); var s = p && p.querySelector('[data-tone=\"warn\"]'); return !!s && !s.hidden; })()", 5000, '[CL1] 開已刪除的 cl1-gone.md：檔案分頁顯示讀取失敗原因');
     await collect('檔案分頁（讀取失敗）');
+    // file-split-view task 3.2：檔案並排的版面（spec file-review「檔案並排」新增的畫面狀態；design D4 新增的選擇器
+    // `[data-region="review"][data-split]` 系列、`.review-panel[data-split-focus]`，以及並排窄欄裡檔案工具列的折行）——
+    // 目前分頁是 cl1-gone.md（檔案分頁）時按 README.md 的並排鈕成為兩欄、再按 note.txt 的並排鈕成為三欄，各取樣一次；
+    // 之後依序按 note.txt、README.md 的並排鈕把它們移出，並排組合解除，回到 cl1-gone.md 單欄，後續狀態與改版前相同。
+    const cl1SplitBtn = (file) => `#review .review-tab:has(> [role="tab"][data-path="${file}"]) > .review-tab-split`;
+    const cl1SplitIs = (n) => `(() => { var r = document.getElementById('review'); return ${n === null ? "!r.hasAttribute('data-split')" : `r.getAttribute('data-split') === '${n}' && !!r.querySelector('.review-panel[data-split-focus]')`}; })()`;
+    await cdp.click(cl1SplitBtn('README.md'));
+    await cdp.waitFor(cl1SplitIs(2), 5000, '[CL1] 按 README.md 的並排鈕：兩欄並排（#review data-split="2"、焦點欄帶 data-split-focus）');
+    await collect('檔案並排（兩欄）');
+    await cdp.click(cl1SplitBtn('note.txt'));
+    await cdp.waitFor(cl1SplitIs(3), 5000, '[CL1] 按 note.txt 的並排鈕：三欄並排（#review data-split="3"）');
+    await collect('檔案並排（三欄）');
+    await cdp.click(cl1SplitBtn('note.txt'));
+    await cdp.waitFor(cl1SplitIs(2), 5000, '[CL1] 再按 note.txt 的並排鈕：移出，剩兩欄');
+    // file-split-view task 4.1：設計審核修正新增的選擇器 `[data-region="review"][data-split] .pdf-tool`、
+    // `[data-region="review"][data-split] .pdf-toolbar-group`，要在「並排中有 PDF 欄」時才對得到元素。report.pdf 的分頁在上面
+    // 已經打開（留著）：並排中點不在組合裡的分頁會替換焦點欄，所以點 report.pdf 分頁就讓它取代焦點欄 README.md（兩欄，
+    // 含 PDF 欄），取樣一次；再點 README.md 分頁換回來，後續狀態與加這段之前相同。
+    await cdp.click('#review [role="tab"][data-path="report.pdf"]');
+    await cdp.waitFor("(() => { var t = document.querySelector('#review [role=\"tab\"][data-path=\"report.pdf\"]'); return !!t && t.getAttribute('aria-selected') === 'true' && !!t.parentElement.getAttribute('data-split-col'); })()", 5000, '[CL1] 點 report.pdf 分頁：替換焦點欄，成為並排組合的一員');
+    await cdp.waitFor(cl1SplitIs(2), 5000, '[CL1] 仍是兩欄並排（含 PDF 欄、焦點欄帶 data-split-focus）');
+    await cdp.waitFor("!!document.querySelector('#review[data-split] .pdf-tool')", 5000, '[CL1] 並排中的 PDF 欄有工具列按鈕（.pdf-tool）');
+    await collect('檔案並排（兩欄含 PDF）');
+    await cdp.click('#review [role="tab"][data-path="README.md"]');
+    await cdp.waitFor("(() => { var t = document.querySelector('#review [role=\"tab\"][data-path=\"README.md\"]'); return !!t && t.getAttribute('aria-selected') === 'true' && !!t.parentElement.getAttribute('data-split-col'); })()", 5000, '[CL1] 點 README.md 分頁：換回焦點欄');
+    await cdp.waitFor(cl1SplitIs(2), 5000, '[CL1] 換回後仍是兩欄並排');
+    await cdp.click(cl1SplitBtn('README.md'));
+    await cdp.waitFor(cl1SplitIs(null), 5000, '[CL1] 再按 README.md 的並排鈕：並排組合解除（#review 沒有 data-split）');
 
     // git-review task 4.2：左欄「變更」分頁（spec git-review「左欄變更分頁」新增的畫面狀態；spec
     // file-review「左欄檔案樹」MODIFIED 的第三個分頁）——分支資訊、已暫存／變更／未追蹤三組（task 3.1
