@@ -31,12 +31,11 @@
   tag 只有 `v0.1.0`～`v0.1.3`（rc 草稿與 tag 都已刪）。
 - **`main`**（`origin/main` 追蹤中）：本段 commit 由舊到新 `0f89f66`（CI）、`b7be30e`（app-icon）、`8bd9109`（升版 0.1.2）、`8afd835`（底列版本號）、
   `7f6ce36`（0.1.2 日期）、`44732ed`（測試時序修正）、`e1bbaa2`（archive app-icon）、`c3e25a1`／`fae506d`／`03b6c57`（file-split-view、archive、0.1.3）、本檔。
-  worktree 只剩 `D:\projects\ai-cockpit`。**已併回但未刪的分支**（使用者尚未同意刪）：本機 `app-icon`、`footer-app-version`、
-  `fix-loop-integration-race`、`app-icon-wrapup`；遠端 `app-icon`、`fix-loop-integration-race`。
+  worktree 只剩 `D:\projects\ai-cockpit`；本機與遠端都只有 `main`（已併回的分支經使用者同意於 2026-10-07 刪除）。
 - **本機設定**：`.claude/settings.local.json`（由使用者全域 gitignore `~/.config/git/ignore` 忽略，repo 的 `.gitignore` 沒有這條，換機器要留意）只允許 `git push origin main` 與 `git push origin v*`（使用者授權）。
 - **使用者電腦**：
   - 桌面捷徑「AI Agent Cockpit」→ `%LOCALAPPDATA%\ai-cockpit\bin\cockpit-launch.exe --config "D:\projects\ai-cockpit\cockpit.toml"`（`install-desktop.ps1`
-    的安裝，**不會自動更新**；目前 `bin\` 是 2026-10-04 app-icon 分支建的 0.1.1，沒有並排與底列版本號）。要換成最新程式：關 Cockpit 等 10 秒後
+    的安裝，**不會自動更新**；2026-10-07 已更新為 `main` 建的 0.1.3）。改了程式要換成最新：關 Cockpit 等 10 秒後
     `pwsh -File scripts\install-desktop.ps1`。
   - **安裝檔版本目前沒裝**（自動更新驗證後已解除安裝）。所以「v0.1.2 → v0.1.3 第二次真實派送」要觀察的話得先裝 v0.1.2 再從捷徑啟動。
   - 使用者自己的 `cockpit.toml` 是 `listen = "127.0.0.1:7770"`，開著時會擋到驗收腳本（第 0 節第 4 點）。
@@ -155,7 +154,7 @@ CI 高負載時這個前提本身不成立。與本段修過的 `loop_integratio
 | 啟動器模式下關窗後 agent 回報遺失（change 11 整支審查 I1） | Claude 依授權維持「關窗即結束」並文件化；**待使用者裁決**（替代：後端常駐＋系統匣，或 agent 端回報失敗重試） |
 | 通知的真機確認（change 11 task 4.2） | **待使用者操作** |
 | 新增 project 免手寫 toml、自動更新簽章、`abort_await_is_bounded` | **使用者已排定**，新 session 處理（第 2、3 節） |
-| 刪除已併回的 6 個分支（第 1 節） | **待使用者同意**（刪分支會被權限擋，要使用者明確下指令） |
+| 刪除已併回的分支 | **已完成**（2026-10-07 使用者同意）。之後刪分支或 tag 仍會被權限擋，要使用者明確下指令 |
 | 程式碼簽章（Authenticode）、Windows 以外的安裝檔、Tauri | **不做**；Tauri 使用者 2026-10-03 再次確認不包，有常駐／系統匣需求才重評 |
 | 圖示：提案 B「姿態儀」、16–24 px 用簡化版 | **使用者 2026-10-04 決定** |
 | 底列改顯示程式版本、併進 v0.1.2 | **使用者 2026-10-05 決定** |
