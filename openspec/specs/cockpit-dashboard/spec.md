@@ -489,6 +489,14 @@ workstream 名稱、task 標題、pane 標題、cwd、檔名與分頁名稱不�
 Project 時，左欄與 Factory Floor 區域顯示沒有 Project 的空狀態，頁面其他部分正常；Factory Floor 的空狀態文字指向左欄
 「偵測到的 repo」區（說明在那裡加入 repo 即可看到 Factory Floor），不得出現需要重啟 Cockpit 的字樣。
 
+使用者選定 Project 時（點選、鍵盤，或加入成功後畫面自動選定新 Project），系統必須同時選定該 Project 的一個 pane，效果等同按該
+工作線的「看輸出」（檔案、變更與 Live Output 改為該 pane，分頁區切到 Live Output）。挑選規則依序為：①已綁定（`binding.state`
+為 `bound`）且綁定的 agent 狀態為 working 的工作線，依畫面順序取第一條；②否則第一條已綁定的工作線；③都沒有就不改變目前
+選定的 pane。因此而選定 pane 時，若右欄 runtime 卡片清單本身是有界的捲動區（三欄且高度足夠的版面），系統必須只在該區內捲動，使
+該 pane 的列落在可見位置；整頁捲動的版面（窄視窗或高度不足）不捲動，任何情況都不得捲動整個頁面。頁面載入時的預設選定 Project（未選定過時
+選第一個、選定的 Project 離開投影時改選第一個）不得自動選定 pane，避免一打開頁面就被切到 Live Output。改綁模式中選定 Project 也不得自動選定 pane（改綁模式下
+pane 列用於指定改綁目標，不是選定 pane）。選定 pane 不反過來切換 Project。
+
 左欄 Project 分頁在 Project 清單之外必須有「偵測到的 repo」區，依投影 `detected_repos` 的順序列出每個 repo：顯示 `name`、
 `pane_count` 與「加入」鈕；沒有偵測到的 repo 時該區不列任何項目、沒有「加入」鈕。按「加入」送出 `POST /api/repo-projects`，
 本體為 `{"repo": <該項的 repo>, "stages": <預設 stages>}`（不帶 `name`）；預設 stages 依介面語言：繁中為 `規劃`、`實作`、
@@ -531,7 +539,49 @@ Project 時，左欄與 Factory Floor 區域顯示沒有 Project 的空狀態，
 
 - **GIVEN** 頁面正顯示一則操作錯誤訊息，且已按 `p1` 某 workstream 的「改綁」進入改綁模式
 - **WHEN** 點左欄的 `p2`
-- **THEN** 錯誤訊息仍在，改綁提示與各 pane 列的「綁定到這裡」仍在
+- **THEN** 錯誤訊息仍在，改綁提示與各 pane 列的「綁定到這裡」仍在；選定的 pane 不變（即使 `p2` 有已綁定的工作線）
+
+#### Scenario: 選定 Project 時優先選 working 的已綁定工作線
+
+- **GIVEN** `p2` 有三條工作線依序為：已綁定且 agent 為 idle 的 `w1`、已綁定且 agent 為 working 的 `w2`、未綁定的 `w3`
+- **WHEN** 點左欄的 `p2`
+- **THEN** 選定的 pane 為 `w2` 綁定的 pane，檔案、變更與 Live Output 顯示該 pane，分頁區切到 Live Output
+
+#### Scenario: 沒有 working 時選第一條已綁定工作線
+
+- **GIVEN** `p2` 有三條工作線依序為：未綁定的 `w1`、已綁定且 agent 為 idle 的 `w2`、已綁定且 agent 為 blocked 的 `w3`
+- **WHEN** 以鍵盤（Enter）選定左欄的 `p2`
+- **THEN** 選定的 pane 為 `w2` 綁定的 pane
+
+#### Scenario: 全部未綁定時選定的 pane 不變
+
+- **GIVEN** 目前選定的 pane 為 `pX`，`p2` 的工作線全部未綁定
+- **WHEN** 點左欄的 `p2`
+- **THEN** Factory Floor 顯示 `p2`，選定的 pane 仍為 `pX`，分頁區的目前分頁不變
+
+#### Scenario: 加入後自動選定新 Project 也選其 pane
+
+- **GIVEN** 已選定 Project `h`，`detected_repos` 有 repo `app`，`app` 有一條已綁定的工作線
+- **WHEN** 按 `app` 的「加入」，服務回 201，含 `app` 的新投影到達
+- **THEN** 左欄選定 `app`，並選定該已綁定工作線的 pane（等同按「看輸出」）
+
+#### Scenario: 頁面載入不自動選 pane
+
+- **GIVEN** 第一個 Project `p1` 有已綁定的工作線
+- **WHEN** 開啟 `/`
+- **THEN** 預設選定 `p1`，但沒有因此選定 pane，分頁區的目前分頁維持載入時的狀態
+
+#### Scenario: 右欄捲動到選定的 pane
+
+- **GIVEN** 右欄 runtime 卡片很長，`p2` 的已綁定 pane 列在可視範圍之外
+- **WHEN** 點左欄的 `p2`
+- **THEN** 右欄捲動，使該 pane 的列落在可見位置
+
+#### Scenario: 整頁捲動的版面不捲動頁面
+
+- **GIVEN** 視窗寬 900、高 800（版面為整頁捲動），頁面捲在最上方
+- **WHEN** 點左欄有已綁定工作線的 Project
+- **THEN** 該 pane 被選定，頁面捲動位置不變
 
 #### Scenario: 各狀態數量
 

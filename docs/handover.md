@@ -2,7 +2,8 @@
 
 > **建立日期**：2026-10-08　|　**上一段做完的事**：change `repo-projects`（畫面加入 git repo 成為 Project、agent 免帶 id 推進）
 > 完成並經使用者同意 squash 併回 `main`（`4f76944`）、archive（`e784ec4`），**發布 v0.1.4**（2026-10-08，rc 演練後正式版，
-> 冒煙測試 104 PASS），桌面捷徑也已更新為 0.1.4。設計與實作由 Claude 依使用者 2026-10-08 授權全權決定，審查由 Opus 5.5 擔任（本專案視同 Codex）。
+> 冒煙測試 104 PASS），桌面捷徑也已更新為 0.1.4。之後依使用者回報做小 change `project-select-pane`（選定 project 時自動選定其 pane，
+> 已併回 `main`、archive，**未發版**，CHANGELOG 在 `## [Unreleased]`）。設計與實作由 Claude 依使用者 2026-10-08 授權全權決定，審查由 Opus 5.5 擔任（本專案視同 Codex）。
 > **性質**：接手用文件，會過期，每段重寫。
 > 為什麼做看 `docs/cockpit-spec.md`（北極星）與各 change 的 proposal；怎麼做看 `~/.claude/CLAUDE.md`（本 repo 精簡版在
 > `AGENTS.md`）；規格看 `openspec/specs/`；本功能的決策與審查紀錄看 `openspec/changes/archive/2026-10-08-repo-projects/`。
@@ -31,6 +32,9 @@
   - 定義與進度存狀態檔 **v3** 的 `repo_projects`（`cockpit/src/progress.rs`），與手寫 `[[project]]` 的進度分開；零設定模式的狀態檔在
     `%LOCALAPPDATA%\ai-cockpit\cockpit.state.json`。
   - `POST /api/agent/advance`：不帶 id，從 `X-Herdr-Pane-Id` 找到唯一一張卡推進（候選在寫入鎖內依 Domain 計算）。
+  - 選定 project 時自動選定其 pane（change `project-select-pane`，`actions.js` 的 `paneForProject`／`selectPaneForProject`）：
+    agent working 的已綁定工作線優先，否則第一條已綁定，都沒有就不動；右欄只在 `.runtime-cards` 為有界捲動區時於區內捲動，
+    絕不捲整頁；頁面載入預設與改綁模式中不觸發。
   - pane 從 HERDR 消失才清進度，而且要等 runtime **沉降重拿完成**（`ConnectionState::Connected.settled`）；已 exited 不清。
   - 查 WSL 路徑前先 `wsl.exe --list --running --quiet` 探測（5 秒逾時、結果沿用 60 秒），發行版沒在跑就不查（不會把它開機）。
 - **使用者電腦**：
@@ -127,3 +131,4 @@ secrets vs 本機離線簽）、遺失或外洩的換鑰方案、已發出的版
 | 1–42 | 2026-09-13～10-07 | 見 `git log -- docs/handover.md`（change 1a～file-split-view、v0.1.0～v0.1.3） |
 | 43 | 2026-10-08 | change `repo-projects` 在 `feat/repo-projects` 完成（SDD、Opus 逐 task 審查＋後端跨 task＋整支分支審查、設計審核、真機冒煙），待使用者確認併回 |
 | 44 | 2026-10-08 | 使用者同意：squash 併回 `main`、archive、推送；發布 v0.1.4；桌面版更新為 0.1.4 |
+| 45 | 2026-10-08 | change `project-select-pane`（選定 project 自動選 pane）併回並 archive，未發版 |
