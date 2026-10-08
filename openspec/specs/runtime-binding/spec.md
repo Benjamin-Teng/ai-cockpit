@@ -44,7 +44,7 @@ pane 為 binding `runtime` 的狀態庫中、`exited` 為 false、所屬 workspa
 為 `override`，否則為 `auto`）；`bound`（附 `runtime`、
 `pane_id`、`source` 為 `auto` 或 `override`）；`unbound`（自動解析的候選為 0 個，附 `runtime`）；
 `ambiguous`（候選超過 1 個，附 `runtime` 與依狀態庫順序排列的候選 `pane_id` 清單）。runtime 未連線時
-不評估候選，也不沿用上次的解析結果。
+不評估候選，也不沿用上次的解析結果。Repo Project 的 workstream 固定綁定到推導出它的 pane，不經上述自動解析（見 `repo-projects`「Repo Project 工作線的固定 pane 綁定」），它的解析結果只會是 `bound`、`unbound`（附 `runtime`）、`runtime_disconnected`（附 `runtime`）三種，`source` 一律為 `pane`，不會是 `none` 或 `ambiguous`；`bound` 的 `source` 因此除了 `auto`、`override`，還可以是 `pane`。
 
 #### Scenario: 恰好一個
 
@@ -76,6 +76,13 @@ pane 為 binding `runtime` 的狀態庫中、`exited` 為 false、所屬 workspa
 - **WHEN** 解析
 - **THEN** 結果為 `runtime_disconnected`，`runtime` 為 `wsl`，`source` 為 `override`；覆蓋仍保留（見「畫面覆蓋」）
 
+#### Scenario: 固定 pane 的解析結果
+
+- **GIVEN** Repo Project 的 workstream `local~wJ:p1` 固定綁定到 runtime `local` 的 pane `wJ:p1`
+- **WHEN** `local` 為 `connected` 且 pane 未 exited；pane 已 exited 或不在 pane 樹（歸類尚未更新）；`local` 變成 `disconnected`
+- **THEN** 解析結果依序為 `bound`（`source` 為 `pane`，`pane_id` 為 `wJ:p1`）、`unbound`（`runtime` 為 `local`，`source` 為 `pane`）、
+  `runtime_disconnected`（`runtime` 為 `local`，`source` 為 `pane`）
+
 ### Requirement: 畫面覆蓋
 
 系統必須允許為任一 workstream（不論有無 binding）設定覆蓋，覆蓋指定一個 runtime `id` 與 pane `id`；
@@ -83,7 +90,7 @@ pane 為 binding `runtime` 的狀態庫中、`exited` 為 false、所屬 workspa
 解析：覆蓋的 runtime 為 `connected` 且 pane 存在且未 exited → `bound`（`source` 為 `override`）；覆蓋的
 runtime 不是 `connected` → `runtime_disconnected`（保留覆蓋）；覆蓋的 runtime 為 `connected` 但 pane
 不存在或已 exited → 系統必須刪除該覆蓋並持久化刪除，該 workstream 回到自動解析。覆蓋可被取消，取消後
-回到自動解析。
+回到自動解析。Repo Project 固定綁定到 pane 的 workstream 不接受覆蓋：設定與取消都被拒絕（`pipeline-progress`「綁定覆蓋端點」回 409，`code` 為 `not_overridable`），不產生也不改變任何覆蓋。
 
 #### Scenario: 覆蓋歧義
 
@@ -114,3 +121,9 @@ runtime 不是 `connected` → `runtime_disconnected`（保留覆蓋）；覆蓋
 - **GIVEN** `be` 有覆蓋、自動解析會得到 `unbound`
 - **WHEN** 取消覆蓋
 - **THEN** `be` 為 `unbound`
+
+#### Scenario: 固定 pane 的 workstream 不接受覆蓋
+
+- **GIVEN** Repo Project 的 workstream `local~wJ:p1` 固定綁定到 `wJ:p1`，runtime `local` 為 `connected` 且有未 exited 的 pane `wJ:p2`
+- **WHEN** 設定該 workstream 的覆蓋為 `local`／`wJ:p2`，或取消它的覆蓋
+- **THEN** 兩者都被拒絕（`not_overridable`），解析結果仍為 `bound`、`pane_id` 為 `wJ:p1`、`source` 為 `pane`

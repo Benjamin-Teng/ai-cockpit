@@ -11,11 +11,12 @@
 
 系統必須由狀態庫與 Domain 狀態以純函數產生 `ProjectedState`，JSON 形狀依設計文件 §6.4：頂層 `version`、
 `generated_at`（RFC 3339）、`runtimes`（依設定檔順序）、`projects`（見「Project 投影」；沒有 Project 時為
-空陣列）、`recent_events`；每個 runtime 含 `id`、`kind`、`endpoint`、`connection`、`focused`、`workspaces`；
+空陣列）、`detected_repos`（見 `repo-projects`「偵測到的 repo 清單」；沒有時為空陣列）、`recent_events`；每個 runtime 含
+`id`、`kind`、`endpoint`、`connection`、`focused`、`workspaces`；
 `connection.state` 為 `connecting`／`connected`／`disconnected`，`connected` 另帶 `since`、
 `server_version`、`protocol`、`last_snapshot_at`、`protocol_warning`（無則 `null`），`disconnected` 另帶
 `reason`、`retry_in_secs`；workspace 巢狀 tabs 巢狀 panes，workspace 與 tab 依 `number` 遞增、pane 依進入
-狀態庫的先後；父層不在狀態庫的物件不出現在投影；狀態值序列化為小寫字串（`working` 等）。`projects` 以外
+狀態庫的先後；父層不在狀態庫的物件不出現在投影；狀態值序列化為小寫字串（`working` 等）。`projects` 與 `detected_repos` 以外
 的既有欄位名稱、型別與排序規則不因 Domain 層而改變。
 
 #### Scenario: 巢狀投影
@@ -32,9 +33,15 @@
 
 #### Scenario: 沒有 Project
 
-- **GIVEN** 設定檔沒有 `[[project]]`
+- **GIVEN** 設定檔沒有 `[[project]]`，也沒有 Repo Project，且沒有 pane 位於 git repo 內
 - **WHEN** 產生投影
-- **THEN** `projects` 為 `[]`，其餘欄位與沒有 Domain 層時相同
+- **THEN** `projects` 與 `detected_repos` 皆為 `[]`，其餘欄位與沒有 Domain 層時相同
+
+#### Scenario: 偵測到的 repo 在最上層
+
+- **GIVEN** 有 pane 位於尚未加入的 git repo `app` 內
+- **WHEN** 產生投影
+- **THEN** 頂層 `detected_repos` 有一筆 `{"repo":"<repo key>","name":"app","pane_count":1}`，`projects` 不含 `app`
 
 ### Requirement: version 只在內容改變時遞增
 
@@ -88,18 +95,23 @@
 
 ### Requirement: Project 投影
 
-系統必須在 `projects` 中依設定檔順序為每個 Project 輸出：`id`、`name`、`stages`（字串陣列，設定順序）、
-`warnings`（字串陣列，無則空）、`workstreams`、`tasks`。每筆 workstream 含 `id`、`name`、`binding`、`active_task`
-（目前 task 的 id，無則 `null`）、`activity_undeclared`（布林）；`binding.state` 為 `none`、`runtime_disconnected`、
+系統必須在 `projects` 中為每個 Project 輸出：`id`、`name`、`kind`（手寫於設定檔的為 `config`，畫面加入的 Repo Project 為
+`repo`）、`stages`（字串陣列，設定順序）、`warnings`（字串陣列，無則空）、`workstreams`、`tasks`；Repo Project 另帶 `repo`
+（repo key），手寫 project 沒有 `repo` 欄位。順序為：手寫 project 依設定檔順序，其後是 Repo Project 依名稱（不分大小寫）排序、同名再依 `id`。
+每筆 workstream 含 `id`、`name`、`binding`、`active_task`
+（目前 task 的 id，無則 `null`）、`activity_undeclared`（布林）；Repo Project 位於 linked worktree 的 pane 所產生的 workstream
+另帶 `worktree`（worktree 資料夾名稱），其餘 workstream 沒有 `worktree` 欄位。`binding.state` 為 `none`、`runtime_disconnected`、
 `bound`、`unbound`、`ambiguous` 之一——
-`unbound` 另帶 `runtime`；`runtime_disconnected` 另帶 `runtime` 與 `source`（`auto`／`override`，
-與 `bound` 的 `source` 同義：這個斷線的綁定來自自動解析或使用者覆蓋）；`ambiguous` 另帶 `runtime` 與 `candidates`（pane id
-陣列）；`bound` 另帶 `runtime`、`pane_id`、`source`（`auto`／`override`）、`agent`（無則 `null`）、
+`unbound` 另帶 `runtime`（Repo Project 的 `unbound` 另帶 `source`，值為 `pane`）；`runtime_disconnected` 另帶 `runtime` 與 `source`（`auto`／`override`／`pane`，
+與 `bound` 的 `source` 同義：這個斷線的綁定來自自動解析、使用者覆蓋，或 Repo Project 的固定 pane）；`ambiguous` 另帶 `runtime` 與 `candidates`（pane id
+陣列）；`bound` 另帶 `runtime`、`pane_id`、`source`（`auto`／`override`／`pane`，`pane` 只出現在 Repo Project 的工作線）、`agent`（無則 `null`）、
 `agent_status`（小寫字串）。`activity_undeclared` 只在 `binding.state` 為 `bound`、`agent_status` 為 `working` 或
-`blocked`、且 `active_task` 為 `null` 時為 `true`，其餘為 `false`。每筆 task 含 `id`、`title`、`workstream`、`stage`
+`blocked`、且 `active_task` 為 `null` 時為 `true`，其餘為 `false`（Repo Project 的 task 標記為 `none` 時就是目前 task，見
+`repo-projects`）。每筆 task 含 `id`、`title`、`workstream`、`stage`
 （目前 Stage）、`mark`
 （`none`／`completed`／`failed`）、`status`（`pending`／`ready`／`running`／`blocked`／`failed`／
-`completed`）、`depends_on`（task id 陣列）。Domain 狀態改變（進度操作、目前 task 改變、覆蓋設定或取消、覆蓋失效）與
+`completed`）、`depends_on`（task id 陣列）。Domain 狀態改變（進度操作、目前 task 改變、覆蓋設定或取消、覆蓋失效、
+Repo Project 的加入／修改／移除、pane 歸類結果改變）與
 Runtime 層改變一樣觸發投影，並遵守「version 只在內容改變時遞增」與「合併廣播」。
 
 #### Scenario: Scenario C 的 JSON 欄位
@@ -139,3 +151,39 @@ Runtime 層改變一樣觸發投影，並遵守「version 只在內容改變時�
 - **GIVEN** workstream `be` 沒有覆蓋、設定檔 binding 的 `runtime` 為 `wsl`，`wsl` 為 `disconnected`
 - **WHEN** 產生投影
 - **THEN** `be` 的 `binding` 為 `{"state":"runtime_disconnected","runtime":"wsl","source":"auto"}`
+
+#### Scenario: 手寫 project 與 Repo Project 的 kind
+
+- **GIVEN** 設定檔有手寫 project `h`；已加入 Repo Project `app`（repo key `d:\work\app\.git`）
+- **WHEN** 產生投影
+- **THEN** `projects` 依序為 `h` 與 `app`；`h` 的 `kind` 為 `config` 且沒有 `repo` 欄位；`app` 的 `kind` 為 `repo`、`repo` 為
+  `d:\work\app\.git`
+
+#### Scenario: Repo Project 的工作線與 task
+
+- **GIVEN** Repo Project `app` 的 stages 為 `["Plan","Build"]`；runtime `local` 的 pane `wJ:p1`（label `backend`，agent
+  `claude`，`working`）位於 linked worktree `app-wt`，task 在 `Plan`
+- **WHEN** 產生投影
+- **THEN** `app.workstreams[0]` 為 `id` `local~wJ:p1`、`name` `backend`、`worktree` `app-wt`、`binding` 為
+  `{"state":"bound","runtime":"local","pane_id":"wJ:p1","source":"pane","agent":"claude","agent_status":"working"}`、
+  `active_task` `local~wJ:p1`、`activity_undeclared` `false`；`app.tasks[0]` 為 `id` `local~wJ:p1`、`title` `backend`、
+  `workstream` `local~wJ:p1`、`stage` `Plan`、`mark` `none`、`status` `running`、`depends_on` `[]`
+
+#### Scenario: Project 與偵測到的 repo 的排序
+
+- **GIVEN** 設定檔有手寫 project `z`、`a`；Repo Project 名稱為 `beta`（id `beta`）、`Alpha`（id `alpha-1`）、`alpha`（id `alpha-2`）；
+  `detected_repos` 有兩個同名 `lib` 的 repo（repo key 不同）
+- **WHEN** 產生投影
+- **THEN** `projects` 依序為 `z`、`a`、`alpha-1`、`alpha-2`、`beta`（名稱不分大小寫排序、同名依 id）；兩個 `lib` 依 `repo` 排序；`detected_repos` 的名稱比較不分大小寫（`app` 在 `Lib` 之前）
+
+#### Scenario: 位於主 worktree 的 pane 沒有 worktree 欄位
+
+- **GIVEN** Repo Project 的某 pane 位於主 worktree
+- **WHEN** 產生投影
+- **THEN** 該 workstream 的 JSON 沒有 `worktree` 欄位
+
+#### Scenario: pane 歸類結果改變遞增 version
+
+- **GIVEN** 投影 version 為 5，Repo Project `app` 有一條 workstream
+- **WHEN** 在 `app` 內新開一個 pane 且歸類完成
+- **THEN** 觀察者收到 version 6，`app` 多一條 workstream 與一張 task
