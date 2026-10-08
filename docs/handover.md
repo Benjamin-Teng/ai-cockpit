@@ -3,14 +3,14 @@
 > **建立日期**：2026-10-08　|　**上一段做完的事**：change `repo-projects`（畫面加入 git repo 成為 Project、agent 免帶 id 推進）
 > 完成並經使用者同意 squash 併回 `main`（`4f76944`）、archive（`e784ec4`），**發布 v0.1.4**（2026-10-08，rc 演練後正式版，
 > 冒煙測試 104 PASS），桌面捷徑也已更新為 0.1.4。之後依使用者回報做小 change `project-select-pane`（選定 project 時自動選定其 pane，
-> 已併回 `main`、archive，**未發版**，CHANGELOG 在 `## [Unreleased]`）。設計與實作由 Claude 依使用者 2026-10-08 授權全權決定，審查由 Opus 5.5 擔任（本專案視同 Codex）。
+> 已併回 `main`、archive，**發布 v0.1.5**（2026-10-08），桌面版已更新為 0.1.5）。設計與實作由 Claude 依使用者 2026-10-08 授權全權決定，審查由 Opus 5.5 擔任（本專案視同 Codex）。
 > **性質**：接手用文件，會過期，每段重寫。
 > 為什麼做看 `docs/cockpit-spec.md`（北極星）與各 change 的 proposal；怎麼做看 `~/.claude/CLAUDE.md`（本 repo 精簡版在
 > `AGENTS.md`）；規格看 `openspec/specs/`；本功能的決策與審查紀錄看 `openspec/changes/archive/2026-10-08-repo-projects/`。
 
 ## 0. 三十秒版本
 
-1. **v0.1.4 已發布**：安裝檔版本的使用者會經自動更新收到（最多每 24 小時查一次）。**狀態檔格式已升到 v3**：v0.1.3 以前的版本讀到
+1. **v0.1.5 已發布**（v0.1.4：Repo Project；v0.1.5：選定 project 自動選 pane）：安裝檔版本的使用者會經自動更新收到（最多每 24 小時查一次）。**狀態檔格式已升到 v3**：v0.1.3 以前的版本讀到
    新狀態檔會拒絕啟動（CHANGELOG 已寫）。若有人回報降版後打不開，指引他刪除或改名 `cockpit.state.json`。
 2. **使用者待決**：設計審核 F8（worktree 標註要不要加可見的「worktree」字樣）、F9（主要動作按鈕要不要比「取消」亮一級，會改設計文件）。
 3. 其餘候選工作：自動更新加獨立簽章、修 `abort_await_is_bounded` 的時序前提（第 3 節）；還沒問到的兩件事：通知真機確認、
@@ -21,10 +21,10 @@
 
 ## 1. 現在的狀態
 
-- **版本**：GitHub `releases/latest` = **v0.1.4**（2026-10-08）；tag 只有 `v0.1.0`～`v0.1.4`（rc 草稿與 tag 已刪）。`main` 最新為
-  `f07f73f`（v0.1.4 日期）與本檔。
-- **本機分支 `feat/repo-projects`** 還在（內容已 squash 進 `main`，未推送過）；刪除要使用者明確指示。SDD 工作區
-  `.superpowers/sdd/tasks-repo-projects/`（git 忽略，含各 task 報告、審查包、設計審核報告路徑）可一併刪除，紀錄已在 archive 的 `sdd-ledger.md`。
+- **版本**：GitHub `releases/latest` = **v0.1.5**（2026-10-08）；tag 只有 `v0.1.0`～`v0.1.5`（rc 草稿與 tag 已刪）。`main` 最新為
+  `4724995`（v0.1.5 日期）與本檔。本機與遠端都只有 `main`。
+- 已併回的分支 `feat/repo-projects`、`feat/project-select-pane` 與 SDD 工作區都已刪除（使用者同意）；紀錄在兩個 archive 目錄。
+  `.superpowers/sdd/tasks/` 不是這兩個 change 的，沒動。
 - **功能摘要**（細節看 archive 的 design 與 `cockpit/README.md`；主規格 `openspec/specs/repo-projects/`）：
   - 左欄 Project 分頁多「偵測到的 repo」區：Cockpit 對已連線 runtime 的每個 pane cwd 跑
     `git rev-parse --path-format=absolute --git-common-dir --git-dir --show-toplevel`（`cockpit/src/repo_resolver.rs`），同一個 repo 的
@@ -39,7 +39,7 @@
   - 查 WSL 路徑前先 `wsl.exe --list --running --quiet` 探測（5 秒逾時、結果沿用 60 秒），發行版沒在跑就不查（不會把它開機）。
 - **使用者電腦**：
   - 桌面捷徑「AI Agent Cockpit」→ `%LOCALAPPDATA%\ai-cockpit\bin\cockpit-launch.exe --config "D:\projects\ai-cockpit\cockpit.toml"`，
-    **2026-10-08 已更新為 v0.1.4 的 release 建置**（`install-desktop.ps1`，不會自動更新）。狀態檔會建在
+    **2026-10-08 已更新為 v0.1.5 的 release 建置**（`install-desktop.ps1`，不會自動更新）。狀態檔會建在
     `D:\projects\ai-cockpit\cockpit.state.json`（已被 `.gitignore` 忽略）；更新前它不存在，所以沒有舊版可回復的顧慮。
     改了程式要換成最新：關 Cockpit 等 10 秒後 `pwsh -File scripts\install-desktop.ps1`（release 建置會印 MSVC「正在建立程式庫 .lib／.exp」
     的 linker 訊息，是例行訊息不是錯誤）。
@@ -66,7 +66,7 @@
 `## [Unreleased]` 改 `## [X.Y.Z] - Unreleased` → 推 `vX.Y.Z-rc.N` 演練（release workflow 允許 rc 標題是 Unreleased）→ 綠了把標題改成日期、
 推 `vX.Y.Z`（正式 tag 的標題是 Unreleased 會在建置前失敗）→ `gh release delete vX.Y.Z-rc.N --yes --cleanup-tag`。推正式 tag 前問使用者。
 正式 tag 的 build 撞到偶發測試：`gh run rerun <id> --failed`，不用刪 tag。凍結契約（資產名稱、`SHA256SUMS.txt` 格式、安裝檔參數、
-`unins000.exe`）見 `openspec/specs/release-distribution/`。v0.1.4 的兩次 release run：rc `37764194922`、正式 `37765219422`，冒煙測試皆 104 PASS。
+`unins000.exe`）見 `openspec/specs/release-distribution/`。v0.1.4 的兩次 release run：rc `37764194922`、正式 `37765219422`；v0.1.5：rc `37787614924`、正式 `37788782109`；冒煙測試皆 104 PASS。
 
 ## 3. 接著要做
 
@@ -131,4 +131,4 @@ secrets vs 本機離線簽）、遺失或外洩的換鑰方案、已發出的版
 | 1–42 | 2026-09-13～10-07 | 見 `git log -- docs/handover.md`（change 1a～file-split-view、v0.1.0～v0.1.3） |
 | 43 | 2026-10-08 | change `repo-projects` 在 `feat/repo-projects` 完成（SDD、Opus 逐 task 審查＋後端跨 task＋整支分支審查、設計審核、真機冒煙），待使用者確認併回 |
 | 44 | 2026-10-08 | 使用者同意：squash 併回 `main`、archive、推送；發布 v0.1.4；桌面版更新為 0.1.4 |
-| 45 | 2026-10-08 | change `project-select-pane`（選定 project 自動選 pane）併回並 archive，未發版 |
+| 45 | 2026-10-08 | change `project-select-pane`（選定 project 自動選 pane）併回並 archive；發布 v0.1.5；桌面版更新為 0.1.5 |
