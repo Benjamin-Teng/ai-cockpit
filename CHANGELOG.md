@@ -4,6 +4,19 @@ All notable changes to AI Agent Cockpit are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **Selecting a project now selects one of its panes.** Clicking a project in the left column
+  (or choosing it with the keyboard, or adding a repo) now selects one of that project's panes,
+  just like pressing **View output** on its row: the Files and Changes tabs and Live Output switch to
+  that pane, and the runtime list on the right scrolls to it. A pane whose agent is working is
+  preferred, otherwise the first bound workstream is used; if no workstream is bound, the selected
+  pane stays as it was. Your open file tabs and side-by-side columns are kept. The project shown
+  when the page first opens, and choosing a project while rebinding a workstream, do not select a
+  pane.
+
 ## [0.1.4] - 2026-10-08
 
 ### Added

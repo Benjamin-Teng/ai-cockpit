@@ -35,6 +35,7 @@
 //   file-review/重複開啟不新增                   檔案分頁
 //   file-review/關閉目前分頁                     檔案分頁
 //   file-review/切換 Project 不影響分頁          檔案分頁
+//   file-review/切到有可選 pane 的 Project      檔案分頁（project-select-pane task 1.1）
 //   file-review/md 相對連結在分頁區開啟          檔案檢視器
 //   file-review/外部圖片不載入                   檔案檢視器
 //   file-review/HTML 內的腳本不執行              檔案檢視器
@@ -1805,30 +1806,107 @@ async function segCloseCurrentTab() {
   );
 }
 
-// GIVEN 已打開 README.md 分頁 WHEN 點左欄 Project 分頁中的另一個 Project THEN README.md 分頁仍在、仍為目前分頁。
+// project-select-pane task 1.1：以 window.onState（channel.js 收到 /ws 訊息時呼叫的同一個入口）注入一份投影，在最後附加
+// 一個沒有可選 pane 的手寫 Project `no-pane`（以第一個 Project 為底，工作線的 binding 全改為 none、task 清空）。先把
+// window.onState 換成空函式擋掉之後真的推送（同 visual-check.js injectState()），再等 #version 的 data-state-version 等於
+// 注入的 version。fixture 的三個 Project 都有已綁定的工作線，選定它們會選定 pane（spec cockpit-dashboard「Project 切換」），
+// 驗「切換 Project 不影響分頁」要用沒有可選 pane 的 Project。
+async function injectNoPaneProject(ctx) {
+  const version = await ctx.cdp.run(() => {
+    const base = JSON.parse(JSON.stringify(window.cockpitLatestState()));
+    const p = JSON.parse(JSON.stringify(base.projects[0]));
+    p.id = 'no-pane';
+    p.name = 'no-pane';
+    p.kind = 'config';
+    p.warnings = [];
+    p.warning_msgs = [];
+    p.tasks = [];
+    p.workstreams = p.workstreams.map((w) => ({ ...w, binding: { state: 'none' }, active_task: null, activity_undeclared: false }));
+    base.projects.push(p);
+    base.version = Number(base.version) + 1;
+    if (!window.__noPaneOrigOnState) window.__noPaneOrigOnState = window.onState;
+    window.onState = function () {};
+    window.__noPaneOrigOnState(base);
+    return String(base.version);
+  });
+  const ok = await ctx.cdp.poll((v) => {
+    const el = document.getElementById('version');
+    return !!el && el.getAttribute('data-state-version') === v;
+  }, [version], UI_TIMEOUT_MS);
+  need(!!ok, `注入附加 no-pane（沒有可選 pane）的投影並已重畫（data-state-version ${version}）`);
+}
+
+// 點左欄 Project 分頁中的 Project `id`，等它成為目前 Project（aria-current="true"）。
+async function clickProjectItem(ctx, id) {
+  const sel = `button[data-action="select-project"][data-project="${id}"]`;
+  need(!!(await ctx.cdp.poll((s) => !!document.querySelector(s) && window.__fc.visible(document.querySelector(s)), [sel], UI_TIMEOUT_MS)), `左欄 Project 分頁中有可見的 Project ${id}`);
+  need(await ctx.cdp.clickEl((s) => document.querySelector(s), [sel], `Project ${id}`), `點 Project ${id}`);
+  const switched = await ctx.cdp.poll((s) => {
+    const b = document.querySelector(s);
+    return !!b && b.getAttribute('aria-current') === 'true';
+  }, [sel], UI_TIMEOUT_MS);
+  need(!!switched, `Project ${id} 成為目前 Project`);
+}
+
+// GIVEN 已打開 README.md 分頁，另一個 Project 沒有可選的 pane WHEN 點左欄 Project 分頁中的另一個 Project THEN README.md
+// 分頁仍在、仍為目前分頁。project-select-pane task 1.1 起「另一個 Project」是注入的 no-pane（原本點「不是目前的那一個」
+// Project，fixture 的 Project 都有已綁定的工作線，點了會選定 pane，那是 segProjectSwitchWithPane 的 scenario）。
 async function segProjectSwitchKeepsTabs() {
   await withCockpit('tab-project', {}, async (ctx) => {
     await openTree(ctx);
     await openFile(ctx, 'README.md');
     await switchLeftTab(ctx, 'Project');
-    const other = await ctx.cdp.poll(() => {
-      const items = Array.from(document.querySelectorAll('button[data-action="select-project"]')).filter((b) => window.__fc.visible(b));
-      const o = items.find((b) => b.getAttribute('aria-current') !== 'true');
-      return o ? o.getAttribute('data-project') : null;
-    }, [], UI_TIMEOUT_MS);
-    need(!!other, '左欄 Project 分頁中有另一個可見的 Project 項目');
-    const sel = `button[data-action="select-project"][data-project="${other}"]`;
-    need(await ctx.cdp.clickEl((s) => document.querySelector(s), [sel], `Project ${other}`), `點 Project ${other}`);
-    const switched = await ctx.cdp.poll((s) => {
-      const b = document.querySelector(s);
-      return !!b && b.getAttribute('aria-current') === 'true';
-    }, [sel], UI_TIMEOUT_MS);
-    need(!!switched, `Project ${other} 成為目前 Project`);
+    await injectNoPaneProject(ctx);
+    await clickProjectItem(ctx, 'no-pane');
     await sleep(300);
     const after = await tabsInfo(ctx);
     const readme = after.find((t) => t.path === 'README.md');
     check(!!readme, 'README.md 分頁仍在');
     check(!!readme && readme.selected, 'README.md 仍為目前分頁');
+  });
+}
+
+// spec「切到有可選 pane 的 Project」（project-select-pane task 1.1）：已打開 README.md 分頁且為目前分頁；點左欄有已綁定
+// 工作線的 p → 分頁區切到 Live Output，README.md 分頁仍在、沒有新增或關閉任何檔案分頁；再點 README.md 分頁 → 內容照舊
+// （面板節點沒被換掉、文字相同）。
+async function segProjectSwitchWithPane() {
+  await withCockpit('tab-project-pane', {}, async (ctx) => {
+    await openTree(ctx);
+    await openFile(ctx, 'README.md');
+    // 比對檢視器容器（.file-viewer-host）的文字，不比整個面板：工具列的「最後一次成功讀取的時間」隨自動更新改變。
+    const hostText = () => {
+      const p = window.__fc.currentPanel();
+      const h = p ? p.querySelector('.file-viewer-host') : null;
+      return h ? window.__fc.txt(h) : '';
+    };
+    const ready = await ctx.cdp.poll(hostText, [], UI_TIMEOUT_MS);
+    need(!!ready, 'README.md 分頁內容已顯示');
+    const before = await tabsInfo(ctx);
+    const text0 = await ctx.cdp.run(hostText);
+    need(await ctx.cdp.run(() => { const p = window.__fc.currentPanel(); if (!p) return false; p.dataset.pspMark = '1'; return true; }), '在 README.md 的面板上貼記號');
+    await switchLeftTab(ctx, 'Project');
+    await clickProjectItem(ctx, 'p');
+    const live = await ctx.cdp.poll(() => !!window.__fc.liveTab() && window.__fc.liveTab().getAttribute('aria-selected') === 'true', [], UI_TIMEOUT_MS);
+    check(!!live, '點 p 後分頁區的目前分頁為 Live Output');
+    // fix round 1 M3：選定的 pane 換成 p 的工作線所綁的 wJ:p1（openTree 原本選定的是 wJ:p4）。
+    const chosen = await ctx.cdp.poll(() => {
+      const rows = Array.from(document.querySelectorAll('[data-region="runtimes"] .pane-row.selected')).map((r) => `${r.getAttribute('data-runtime')}/${r.getAttribute('data-pane')}`);
+      const title = document.querySelector('#output .output-title');
+      return rows.length === 1 && rows[0] === 'win/wJ:p1' && !!title && title.textContent === 'win / wJ:p1' ? rows : null;
+    }, [], UI_TIMEOUT_MS);
+    check(!!chosen, `點 p 後選定的 pane 換成 win/wJ:p1（右欄選定標示與 Live Output 標題；實際 ${JSON.stringify(await ctx.cdp.run(() => Array.from(document.querySelectorAll('[data-region="runtimes"] .pane-row.selected')).map((r) => r.getAttribute('data-pane'))))}）`);
+    const mid = await tabsInfo(ctx);
+    check(
+      JSON.stringify(mid.map((t) => (t.live ? 'LIVE' : t.path))) === JSON.stringify(before.map((t) => (t.live ? 'LIVE' : t.path))),
+      `點 p 後分頁不變（沒有新增或關閉；前 ${JSON.stringify(before.map((t) => t.path || 'LIVE'))}，後 ${JSON.stringify(mid.map((t) => t.path || 'LIVE'))}）`
+    );
+    await clickTab(ctx, 'README.md');
+    const after = await tabsInfo(ctx);
+    const readme = after.find((t) => t.path === 'README.md');
+    check(!!readme && readme.selected, '點 README.md 分頁後它是目前分頁');
+    const text1 = await ctx.cdp.run(hostText);
+    check(text1 === text0, `README.md 分頁內容照舊（檢視器文字相同；前 ${text0.length} 字、後 ${text1.length} 字）`);
+    check(await ctx.cdp.run(() => { const p = window.__fc.currentPanel(); return !!p && p.dataset.pspMark === '1'; }), 'README.md 的面板節點沒有被換掉（記號仍在）');
   });
 }
 
@@ -2454,6 +2532,7 @@ const SEGMENTS = [
   { code: 'file-review/重複開啟不新增', fn: segReopenNoNewTab },
   { code: 'file-review/關閉目前分頁', fn: segCloseCurrentTab },
   { code: 'file-review/切換 Project 不影響分頁', fn: segProjectSwitchKeepsTabs },
+  { code: 'file-review/切到有可選 pane 的 Project', fn: segProjectSwitchWithPane },
   { code: 'file-review/md 相對連結在分頁區開啟', fn: segMdRelativeLink },
   { code: 'file-review/外部圖片不載入', fn: segExternalImageBlocked },
   { code: 'file-review/HTML 內的腳本不執行', fn: segHtmlScriptBlocked },

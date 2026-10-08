@@ -144,6 +144,10 @@ path = "cockpit.state.json"   # 選填；相對路徑相對於設定檔目錄解
 進度則保留到 pane 真正關閉才清除。Repo Project 的「⋯」選單可以改名、編輯 stage（改名、新增、刪除、排序）、
 移除，全部立即生效；移除後，只要還有 pane 在該 repo 內，它就回到「偵測到的 repo」。
 
+在左欄點選任何 Project（手寫或 Repo Project 皆同），Cockpit 會自動選定它的一個 pane，效果等同按該工作線的「看輸出」：
+優先選 agent 正在工作的工作線，沒有就選第一條已綁定的工作線；「檔案」「變更」分頁與 Live Output 隨之換成該 pane，右欄也會捲動到
+該 pane 的列。沒有任何已綁定的工作線時，原本選定的 pane 不變。頁面剛開啟時自動顯示的 Project、以及改綁模式中，不會自動選 pane。
+
 這些 workstream 的綁定固定是那個 pane，不接受畫面改綁（覆蓋端點對它們回 409 `not_overridable`，畫面也不顯示
 「改綁」鈕）。Repo Project 的定義與進度存在狀態檔（見上一節的 v3）。
 

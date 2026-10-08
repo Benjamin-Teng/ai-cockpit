@@ -1801,6 +1801,12 @@
     } finally {
       restoringFocus = false;
     }
+    // project-select-pane task 1.1（spec cockpit-dashboard「Project 切換」）：因選定 Project 而選定 pane 時，把右欄
+    // 該 pane 列捲進右欄捲動容器的可視範圍（只捲 .runtime-cards、不捲整頁，fix round 1 I1）。在新畫面建好、捲動位置與
+    // 焦點都還原之後才做（restoreScroll 不會把它蓋回去）；只捲動、不移動焦點。沒有待捲動時什麼都不做，一般重畫不受影響。
+    if (window.cockpitActions && typeof window.cockpitActions.flushPaneRowScroll === "function") {
+      window.cockpitActions.flushPaneRowScroll();
+    }
   }
 
   // 鍵盤焦點進到 Factory Floor 時把整顆按鈕連同焦點框捲進來（task 5.4 final review／Codex

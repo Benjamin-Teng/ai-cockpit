@@ -10,7 +10,7 @@
 「加入」送出的請求與依介面語言的預設 stages、加入後自動選定新 Project、Factory Floor 空狀態文字（task 5.1），以及 Repo Project
 的「⋯」選單、改名、編輯 stage、移除確認、對話框跨重畫保留與鍵盤操作、錯誤 code 的介面語言顯示（task 5.2），以及 Factory Floor 工作線列首的 worktree 標註與固定 pane（`source: pane`）不顯示改綁鈕（task 5.3）。
 
-腳本目前共 28 段：1 段自我測試（`self/`）、27 段 spec scenario 與相關邊界（`cockpit-dashboard/`；task 5.1 12 段、其中 3 段是
+腳本目前共 37 段：1 段自我測試（`self/`）、36 段 spec scenario 與相關邊界（`cockpit-dashboard/`；project-select-pane task 1.1 9 段、其中 2 段是 fix round 1 加的；task 5.1 12 段、其中 3 段是
 fix round 1 加的；task 5.2 14 段、其中 2 段是 fix round 1、1 段是 fix round 2 加的；task 5.3 1 段）。新斷言依 tasks.md 通則先在未改的前端跑出紅，再改前端轉綠（紅綠紀錄見
 `.superpowers/sdd/tasks-repo-projects/task-5.1-report.md`、`task-5.2-report.md`、`task-5.3-report.md`）。
 
@@ -122,6 +122,15 @@ core 的正規化規則驗證，合法時回 201 `{"id": ...}`。`PATCH`／`DELE
 | `cockpit-dashboard/stages 已在別處變更時不送出` | fix round 1：stage 對話框開著時投影的 stages 被改 → 儲存不送出、對話框內提示「已在別處變更」、已編輯內容保留，重新開啟列出最新 stages；改名對話框開著時 Project 被移除 → 儲存不送出、提示「已不存在」 |
 | `cockpit-dashboard/偵測區標題的焦點跨重畫保留` | fix round 2：焦點在「⋯」上時所有 Project 消失、焦點落到偵測區標題；之後每 100 ms 以 `onState` 重送 version＋1 的投影，2 秒內（至少重畫 10 次）`document.activeElement` 始終是新的標題節點 |
 | `cockpit-dashboard/Repo Project 工作線的 worktree 標註與固定 pane 無改綁鈕` | task 5.3：demo-app 的 `win~wJ:p7`（`worktree` 為 `demo-app-wt`）列首顯示 worktree 標註（`.ff-worktree`，單一文字節點，`title` 依語言為「worktree：…」／「Worktree: …」）、`win~wJ:p6` 沒有；兩列（`source: pane`）列首只剩「看輸出」，沒有「改綁」「取消改綁」與「改綁」徽章；手寫 project cockpit 的 auto／override 列照舊有「改綁」；注入 `source: pane` 的 bound／unbound／runtime_disconnected 都沒有改綁鈕，`override` 照舊「改綁」＋「取消改綁」＋徽章、`auto` 只有「改綁」；worktree 含 HTML 時以原樣文字顯示、空字串不顯示；改綁模式下整頁重畫與一般重畫後仍正確；中英各驗一次 |
+| `cockpit-dashboard/選定 Project 時優先選 working 的已綁定工作線` | project-select-pane task 1.1，scenario 同名：注入 `sp-work`（已綁定 idle 的 `wJ:p7`、已綁定 working 的 `wJ:p5`、未綁定）後點選 → 右欄選定 `wJ:p5`、Live Output 標題 `win / wJ:p5`、分頁區目前為 Live Output；焦點留在 Project 項目、不呈現外框、沒有移到 pane 列；左欄「檔案」的根目錄為 `other-repo` |
+| `cockpit-dashboard/沒有 working 時選第一條已綁定工作線` | scenario 同名：`sp-idle`（未綁定、已綁定 idle 的 `wJ:p7`、已綁定 blocked 的 `wJ:p4`）以鍵盤 Enter 選定 → 選定 `wJ:p7` |
+| `cockpit-dashboard/全部未綁定時選定的 pane 不變` | scenario 同名：先點 pane 列選定 `wJ:p4`、從左欄「檔案」打開 `README.md`（目前分頁），回左欄「Project」點工作線全為 none／unbound／runtime_disconnected／ambiguous 的 `sp-none` → Factory Floor 顯示 `sp-none`，選定的 pane 仍為 `wJ:p4`、Live Output 標題不變、目前分頁仍是 `README.md`（fix round 1 M2） |
+| `cockpit-dashboard/加入後自動選定新 Project 也選其 pane` | scenario 同名：先點 `p`（選定 `wJ:p1`），加入 `billing-api`、201 後注入含它（一條綁 `wJ:p5` 的固定 pane 工作線）的投影 → 選定 `billing-api` 並選定 `wJ:p5`，右欄該列在可視範圍 |
+| `cockpit-dashboard/頁面載入不自動選 pane` | scenario 同名：開啟後預設選定 `cockpit`（有已綁定工作線）但沒有選定 pane、Live Output 維持空狀態與目前分頁；兩次重畫後仍然；選定的 `sp-none` 離開投影改選 `cockpit` 時也不選 pane |
+| `cockpit-dashboard/改綁模式中不自動選 pane` | scenario「切換 Project 不清除錯誤也不離開改綁模式」的 pane 部分：選定 `wJ:p3` 後按 `cockpit`／`be` 的「改綁」，點 `p` → 仍在改綁模式，選定的 pane 與 Live Output 仍是 `wJ:p3` |
+| `cockpit-dashboard/右欄捲動到選定的 pane` | scenario 同名：視窗 1536×800，在 runtime `win` 最前面注入一個 30 pane 的 tab（把 fixture 的 `wJ:p5` 擠到下方），附加綁 `wJ:p5` 的 `sp-scroll`（目標用 fixture 的 pane：ui_preview 的輸出端點只認 fixture 的 pane，選定注入的 pane 會被判「pane 已不存在」而清掉選取）；前置該列在右欄捲動容器（`[data-region="runtimes"] > .runtime-cards`）可視範圍外，點 `sp-scroll` 後整列落在可視範圍內；焦點留在 Project 項目、頁面沒有 `:focus-visible` 元素；之後重畫捲動位置保留 |
+| `cockpit-dashboard/選定 Project 時不捲動整頁` | fix round 1 I1：同上的注入，在 1536×800（固定一屏）、900×800（雙欄、整頁捲動）、1300×600（三欄但高 <720、整頁捲動）三種視窗下點 `sp-scroll`：選定 `wJ:p5` 後 `window.scrollY` 不變；1536×800 下該列在 `.runtime-cards` 可視範圍內 |
+| `cockpit-dashboard/切到綁同一 pane 的 Project 不清空 Live Output` | fix round 1 M1：`COCKPIT_PREVIEW_OUTPUT_MODES=wJ:p1=long`；點 `cockpit`（`be`→`wJ:p1`）、內容框捲到中段，點同樣綁 `wJ:p1` 的 `p` → 仍選定 `wJ:p1`、分頁區為 Live Output，1 秒內每 25 ms 取樣內容從未被清空，捲動位置保留 |
 
 行為面（卡片回到第一個 stage、移除後回到偵測區）由後端整合測試與
 task 7.3 真機冒煙驗證，不在本腳本。

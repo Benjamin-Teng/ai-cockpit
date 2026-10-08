@@ -65,7 +65,8 @@ node docs/research/2026-09-27/files-check.js --scratch=D:\tmp\shots             
 | `file-review/開檔新增分頁` | file-review／檔案分頁 | 只有 Live Output 時點 `README.md`：分頁數 1 → 2、README 為目前分頁、Live Output 仍第一；title 含路徑與根目錄名稱 |
 | `file-review/重複開啟不新增` | file-review／檔案分頁 | 開 `README.md`、`docs/a.md` 後再點 `README.md`：分頁數不變、目前為 README |
 | `file-review/關閉目前分頁` | file-review／檔案分頁 | 暫存副本加 `a.md`／`b.md`／`c.md`；選 b 後按關閉：目前為 c |
-| `file-review/切換 Project 不影響分頁` | file-review／檔案分頁 | 開 README 後切到左欄 Project、點另一個 Project：README 分頁仍在且為目前分頁 |
+| `file-review/切換 Project 不影響分頁` | file-review／檔案分頁 | 開 README 後切到左欄 Project，以 `window.onState` 注入附加沒有可選 pane 的 `no-pane` 的投影、點 `no-pane`：README 分頁仍在且為目前分頁（project-select-pane task 1.1 起改用沒有可選 pane 的 Project） |
+| `file-review/切到有可選 pane 的 Project` | file-review／檔案分頁 | project-select-pane task 1.1：開 README 後點有已綁定工作線的 `p`：分頁區切到 Live Output、分頁沒有新增或關閉；再點 README 分頁：內容文字相同、面板節點沒被換掉 |
 | `file-review/md 相對連結在分頁區開啟` | file-review／檔案檢視器 | 點 README 內「設計」：`docs/design.md` 分頁為目前分頁，「決策」標題在內容捲動容器可視範圍內且 `scrollTop > 0`，整頁沒有離開 |
 | `file-review/外部圖片不載入` | file-review／檔案檢視器 | CDP Network：沒有任何對 `example.com` 的請求；內容顯示替代文字 `logo`；`raw/docs/pic.png` 請求 200 且圖片已載入 |
 | `file-review/HTML 內的腳本不執行` | file-review／檔案檢視器 | 頁面 `message` 監聽器沒收到 `ran`；iframe 帶 `sandbox` 且不含 `allow-scripts`／`allow-same-origin`；`raw/style.css` 請求 200（含 OOPIF 子 session 的網路事件） |

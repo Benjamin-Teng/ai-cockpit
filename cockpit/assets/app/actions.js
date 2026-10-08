@@ -169,19 +169,141 @@
     if (ui.rebind !== null || !selectablePaneInLatestState(runtime, paneId)) {
       return false;
     }
+    choosePane(runtime, paneId);
+    repaint();
+    scrollPaneRowIntoView(runtime, paneId);
+    return true;
+  }
+
+  // 選定一個 pane 的共同流程（pane 列 select-pane、「看輸出」select-bound-pane、點 pane 通知、選定 Project 時自動選
+  // pane 都走這裡）：設定 ui.selected、呼叫 liveOutput.select（它再通知 files.js／git.js 換根目錄、分頁區切到 Live
+  // Output）。只改狀態、不 repaint()——呼叫端自己重畫（或正在重畫，見 applyPendingProjectSelection）。
+  function choosePane(runtime, paneId) {
     ui.selected = { runtime: runtime, paneId: paneId };
     if (window.liveOutput && typeof window.liveOutput.select === "function") {
       window.liveOutput.select(runtime, paneId);
     }
-    repaint();
+  }
+
+  function selectedPaneRow(runtime, paneId) {
     var rows = root.querySelectorAll(".pane-row.selected");
     for (var i = 0; i < rows.length; i += 1) {
       if (rows[i].getAttribute("data-runtime") === runtime && rows[i].getAttribute("data-pane") === paneId) {
-        rows[i].scrollIntoView({ block: "nearest", inline: "nearest" });
-        break;
+        return rows[i];
       }
     }
-    return true;
+    return null;
+  }
+
+  // 點 pane 通知用（selectPane）：把右欄 runtime 卡片中 runtime＋pane 那一列捲進視野（block／inline 都 nearest）。
+  // scrollIntoView 會捲動所有可捲動的祖先、含整頁——點通知時那一列可能在頁面別處，捲整頁是刻意的。只捲動、不移動焦點。
+  function scrollPaneRowIntoView(runtime, paneId) {
+    var row = selectedPaneRow(runtime, paneId);
+    if (row !== null) {
+      row.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }
+
+  // 選定 Project 時用（project-select-pane fix round 1 I1）：只捲右欄自己的捲動容器 `.runtime-cards`，**絕不捲整頁**。
+  // 整頁捲動的版面（寬 <760、760–1199、≥1200 但高 <720，見 style.css「四種情形」）若用 scrollIntoView，點 Project 會把
+  // 整頁跳到 runtime 卡片、Factory Floor 被捲出畫面。只有 `.runtime-cards` 是有界的捲動容器（內容高於可視高度、
+  // overflow-y 為 auto／scroll）時才捲，自己算 scrollTop（nearest 語意：列在上方外就讓列頂貼齊可視區頂，在下方外就讓列底
+  // 貼齊可視區底，已在可視區內不動）。不移動焦點。
+  function scrollPaneRowWithinRuntimeCards(runtime, paneId) {
+    var box = root.querySelector('[data-region="runtimes"] > .runtime-cards');
+    var row = selectedPaneRow(runtime, paneId);
+    if (box === null || row === null || box.scrollHeight <= box.clientHeight) {
+      return;
+    }
+    var overflowY = window.getComputedStyle(box).overflowY;
+    if (overflowY !== "auto" && overflowY !== "scroll") {
+      return;
+    }
+    var boxRect = box.getBoundingClientRect();
+    var rowRect = row.getBoundingClientRect();
+    var viewTop = boxRect.top + box.clientTop;
+    var viewBottom = viewTop + box.clientHeight;
+    if (rowRect.top < viewTop) {
+      box.scrollTop -= viewTop - rowRect.top;
+    } else if (rowRect.bottom > viewBottom) {
+      // 列比可視區還高時改讓列頂貼齊，避免列頂被捲出去。
+      box.scrollTop += Math.min(rowRect.bottom - viewBottom, rowRect.top - viewTop);
+    }
+  }
+
+  // 選定 Project 時要一併選定的 pane（spec cockpit-dashboard「Project 切換」；project-select-pane task 1.1）：
+  // ① `binding.state` 為 `bound` 且 `binding.agent_status` 為 `"working"` 的工作線，依畫面順序（`project.workstreams`
+  // 的順序，render.js 依此畫 Factory Floor 的列）取第一條；② 否則第一條 bound；③ 都沒有回 null（不改變目前選定的 pane）。
+  // 只讀投影欄位，不複算後端的綁定規則。回傳 { runtime, paneId } 或 null。
+  function paneForProject(project) {
+    var workstreams = project && Array.isArray(project.workstreams) ? project.workstreams : [];
+    var firstBound = null;
+    for (var i = 0; i < workstreams.length; i += 1) {
+      var binding = workstreams[i] ? workstreams[i].binding : null;
+      if (!binding || binding.state !== "bound") {
+        continue;
+      }
+      var pane = { runtime: binding.runtime, paneId: binding.pane_id };
+      if (binding.agent_status === "working") {
+        return pane;
+      }
+      if (firstBound === null) {
+        firstBound = pane;
+      }
+    }
+    return firstBound;
+  }
+
+  // 因使用者選定 Project（點選、鍵盤、加入後自動選定）而選定它的 pane：效果等同按該工作線的「看輸出」（同一個
+  // choosePane()），並記下「下次重畫結束後把該 pane 列捲進視野」——捲動要等新畫面的列存在才能做，由 render.js 的
+  // paint() 在最後呼叫 flushPaneRowScroll()。改綁模式中不做（spec：改綁模式下 pane 列用於指定改綁目標，不是選定 pane）；
+  // 沒有可挑的工作線時不動。頁面載入的預設 Project 與「選定的 Project 消失改選第一個」（setSelectedProject()）不經過這裡。
+  // 只改狀態、不 repaint()。
+  var paneRowScrollPending = false;
+  function selectPaneForProject(project) {
+    if (ui.rebind !== null) {
+      return;
+    }
+    var pane = paneForProject(project);
+    if (pane === null) {
+      return;
+    }
+    if (ui.selected !== null && ui.selected.runtime === pane.runtime && ui.selected.paneId === pane.paneId) {
+      // fix round 1 M1：挑到的就是目前選定的 pane（例如兩個 Project 綁同一個 pane）時不再呼叫 liveOutput.select()——
+      // 它會清空 Live Output 的內容與貼底狀態、重新輪詢。只讓分頁區切到 Live Output：files.js 的 paneSelected() 對同一個
+      // pane 不重查根目錄、不清檔案樹，只切分頁（切到 Live Output 時 output.js 經 tabShown() 還原貼底狀態）；git.js 的選取
+      // 本來就沒變，不必通知。只在選定 Project 這條路徑這樣做：點 pane 列、「看輸出」、點通知的既有行為不變（非目標）。
+      if (window.cockpitFiles && typeof window.cockpitFiles.paneSelected === "function") {
+        window.cockpitFiles.paneSelected(pane.runtime, pane.paneId);
+      }
+    } else {
+      choosePane(pane.runtime, pane.paneId);
+    }
+    paneRowScrollPending = true;
+  }
+
+  // render.js paint() 每次重畫結束時呼叫：有待捲動（selectPaneForProject 剛選定 pane）就在右欄捲動容器內把選定的 pane
+  // 列捲進視野（不捲整頁，見 scrollPaneRowWithinRuntimeCards）。狀態存模組變數（整頁重畫會丟掉只存在 DOM 上的狀態）；
+  // 捲動在重畫還原捲動位置之後才做，不會被蓋回去。
+  function flushPaneRowScroll() {
+    if (!paneRowScrollPending) {
+      return;
+    }
+    paneRowScrollPending = false;
+    if (ui.selected !== null) {
+      scrollPaneRowWithinRuntimeCards(ui.selected.runtime, ui.selected.paneId);
+    }
+  }
+
+  function projectInLatestState(id) {
+    var state = typeof window.cockpitLatestState === "function" ? window.cockpitLatestState() : null;
+    var projects = state && Array.isArray(state.projects) ? state.projects : [];
+    for (var i = 0; i < projects.length; i += 1) {
+      if (projects[i] && projects[i].id === id) {
+        return projects[i];
+      }
+    }
+    return null;
   }
 
   // 加入 Repo Project 成功後的自動選定（spec cockpit-dashboard「Project 切換」：加入成功——回 201 與新 Project 的
@@ -199,6 +321,8 @@
       if (state.projects[i] && state.projects[i].id === id) {
         ui.selectedProject = id;
         ui.pendingProjectSelection = null;
+        // project-select-pane task 1.1：加入後自動選定新 Project 也算使用者選定，一併選定它的 pane。
+        selectPaneForProject(state.projects[i]);
         return id;
       }
     }
@@ -251,6 +375,7 @@
     clearSelected: clearSelected,
     setSelectedProject: setSelectedProject,
     applyPendingProjectSelection: applyPendingProjectSelection,
+    flushPaneRowScroll: flushPaneRowScroll,
     pruneAddingRepos: pruneAddingRepos,
     pruneProjectMenu: pruneProjectMenu,
     selectPane: selectPane,
@@ -1049,6 +1174,9 @@
       // 自己選了某個 Project，就取消待自動選定，投影到達後不把選取切走。只在這裡清——paint() 的「選定的 Project 已不在
       // 投影中時退回第一個」也會呼叫 setSelectedProject()，那不是使用者的選擇。
       ui.pendingProjectSelection = null;
+      // project-select-pane task 1.1（spec「Project 切換」）：同時選定這個 Project 的 pane（等同按「看輸出」）；
+      // 改綁模式中與沒有可挑的工作線時不動。以最新投影判斷——純前端選取、不寫入，投影落後也無妨。
+      selectPaneForProject(projectInLatestState(data.project));
       repaint();
       return;
     }
@@ -1059,10 +1187,7 @@
       // pane 看輸出，latestOp 會被選取動作往前推，那筆寫入稍後才失敗時 showError() 會因為
       // op 不符而忽略——寫入失敗被選取動作悄悄吞掉；已經顯示的錯誤訊息也會被下一次選取清掉，
       // 兩者都違反 spec「畫面操作」「頁面顯示錯誤訊息……直到下一次操作或使用者關閉」。
-      ui.selected = { runtime: data.runtime, paneId: data.pane };
-      if (window.liveOutput && typeof window.liveOutput.select === "function") {
-        window.liveOutput.select(data.runtime, data.pane);
-      }
+      choosePane(data.runtime, data.pane);
       repaint();
       return;
     }

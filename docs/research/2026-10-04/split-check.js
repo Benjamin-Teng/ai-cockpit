@@ -41,6 +41,8 @@
 //                                              算索引、沒有並排組合時不寫）與回滾相容（上一個發行版 v0.1.2 的 isStoredState()）
 //   file-review/設計審核修正的外觀  設計審核修正（task 4.1，1 段）：reading-flow 讓 Tab 順序與欄位編號一致、三欄時工具列路徑不被壓扁、
 //                                              焦點欄的 1px 外框（不被裁掉）、非焦點欄的徽章用 --text-dim、800 寬 PDF 按鈕不逐字直排
+//   file-review/切到有可選 pane 的 Project 不改變並排  project-select-pane task 1.1（1 段）：點有已綁定工作線的 Project 時分頁區
+//                                              切到 Live Output、選回後並排照舊；「切換 Project 不影響並排」改用注入的 no-pane
 //
 // 新增段落的方式（後續 task）：寫一個 `async function segXxx()`，用 withCockpit() 開一組 preview＋chrome，
 // 斷言用 check()／need()，最後在檔尾 SEGMENTS 加一列 `{ code: '<capability>/<scenario 名稱>', fn: segXxx }`，
@@ -2437,25 +2439,76 @@ async function segSplitRepaint() {
   });
 }
 
-// spec「切換 Project 不影響並排」：點左欄 Project 分頁中的另一個 Project（同 files-check「切換 Project 不影響分頁」的
-// 做法：button[data-action="select-project"]，不是目前的那一個）。
+// project-select-pane task 1.1：以 window.onState（channel.js 收到 /ws 訊息時呼叫的同一個入口）注入一份投影，在最後附加
+// 一個沒有可選 pane 的手寫 Project `no-pane`（以第一個 Project 為底，工作線的 binding 全改為 none、task 清空）。先把
+// window.onState 換成空函式擋掉之後真的推送（同 visual-check.js injectState()／repo-projects-check.js inject()），再等
+// #version 的 data-state-version 等於注入的 version。fixture 的三個 Project 都有已綁定的工作線，選定它們會選定 pane
+// （spec cockpit-dashboard「Project 切換」），驗「切換 Project 不改變分頁／並排」要用沒有可選 pane 的 Project。
+async function injectNoPaneProject(ctx) {
+  const version = await ctx.cdp.run(() => {
+    const base = JSON.parse(JSON.stringify(window.cockpitLatestState()));
+    const p = JSON.parse(JSON.stringify(base.projects[0]));
+    p.id = 'no-pane';
+    p.name = 'no-pane';
+    p.kind = 'config';
+    p.warnings = [];
+    p.warning_msgs = [];
+    p.tasks = [];
+    p.workstreams = p.workstreams.map((w) => ({ ...w, binding: { state: 'none' }, active_task: null, activity_undeclared: false }));
+    base.projects.push(p);
+    base.version = Number(base.version) + 1;
+    if (!window.__noPaneOrigOnState) window.__noPaneOrigOnState = window.onState;
+    window.onState = function () {};
+    window.__noPaneOrigOnState(base);
+    return String(base.version);
+  });
+  const ok = await ctx.cdp.poll((v) => {
+    const el = document.getElementById('version');
+    return !!el && el.getAttribute('data-state-version') === v;
+  }, [version], UI_TIMEOUT_MS);
+  need(!!ok, `注入附加 no-pane（沒有可選 pane）的投影並已重畫（data-state-version ${version}）`);
+}
+
+// 點左欄 Project 分頁中的 Project `id`，等它成為目前 Project（aria-current="true"）。
+async function clickProjectItem(ctx, id) {
+  const sel = `button[data-action="select-project"][data-project="${id}"]`;
+  need(!!(await ctx.cdp.poll((s) => !!document.querySelector(s) && window.__sc.visible(document.querySelector(s)), [sel], UI_TIMEOUT_MS)), `左欄 Project 分頁中有可見的 Project ${id}`);
+  need(await ctx.cdp.clickEl((s) => document.querySelector(s), [sel], `Project ${id}`), `點 Project ${id}`);
+  const switched = await ctx.cdp.poll((s) => {
+    const b = document.querySelector(s);
+    return !!b && b.getAttribute('aria-current') === 'true';
+  }, [sel], UI_TIMEOUT_MS);
+  need(!!switched, `Project ${id} 成為目前 Project`);
+}
+
+// spec「切換 Project 不影響並排」：GIVEN 另一個 Project 沒有可選的 pane——注入附加 no-pane 的投影後點左欄的 no-pane
+// （project-select-pane task 1.1 起：原本點「不是目前的那一個」Project，fixture 的 Project 都有已綁定的工作線，點了會選定
+// pane 使分頁區切到 Live Output，那是另一個 scenario，見 segSplitProjectSwitchWithPane）。
 async function segSplitProjectSwitch() {
   await withCockpit('split-project', { windowSize: W1280 }, async (ctx) => {
     await splitSurvives(ctx, '切換 Project', async () => {
       await switchLeftTab(ctx, 'Project');
-      const other = await ctx.cdp.poll(() => {
-        const items = Array.from(document.querySelectorAll('button[data-action="select-project"]')).filter((b) => window.__sc.visible(b));
-        const o = items.find((b) => b.getAttribute('aria-current') !== 'true');
-        return o ? o.getAttribute('data-project') : null;
-      }, [], UI_TIMEOUT_MS);
-      need(!!other, '左欄 Project 分頁中有另一個可見的 Project 項目');
-      const sel = `button[data-action="select-project"][data-project="${other}"]`;
-      need(await ctx.cdp.clickEl((s) => document.querySelector(s), [sel], `Project ${other}`), `點 Project ${other}`);
-      const switched = await ctx.cdp.poll((s) => {
-        const b = document.querySelector(s);
-        return !!b && b.getAttribute('aria-current') === 'true';
-      }, [sel], UI_TIMEOUT_MS);
-      need(!!switched, `Project ${other} 成為目前 Project`);
+      await injectNoPaneProject(ctx);
+      await clickProjectItem(ctx, 'no-pane');
+      await sleep(500);
+    });
+  });
+}
+
+// spec「切到有可選 pane 的 Project 不改變並排」（project-select-pane task 1.1）：long.md 與 docs/design.md 並排、焦點欄
+// docs/design.md；點左欄有已綁定工作線的 p → 分頁區切到 Live Output（並排組合保留、只顯示 Live Output），兩個檔案分頁仍在；
+// 再選回 docs/design.md → splitSurvives 的斷言：仍為兩欄並排、焦點欄 docs/design.md、兩欄捲動位置不變、內容沒有重新讀取、
+// 面板節點沒有被換掉。
+async function segSplitProjectSwitchWithPane() {
+  const [L, D] = ['long.md', 'docs/design.md'];
+  await withCockpit('split-project-pane', { windowSize: W1280 }, async (ctx) => {
+    await splitSurvives(ctx, '切到有可選 pane 的 Project', async () => {
+      await switchLeftTab(ctx, 'Project');
+      await clickProjectItem(ctx, 'p');
+      await expectSplit(ctx, { cols: [L, D], selected: 'LIVE', shown: ['LIVE'] }, '點 p（有可選 pane）後分頁區切到 Live Output');
+      const names = (await reviewState(ctx)).tabs.map((t) => t.name);
+      check(JSON.stringify(names) === JSON.stringify(['LIVE', L, D]), `點 p 後分頁依序仍為 Live Output、${L}、${D}，沒有新增或關閉（實際 ${JSON.stringify(names)}）`);
+      await clickTab(ctx, D);
       await sleep(500);
     });
   });
@@ -4162,6 +4215,7 @@ const SEGMENTS = [
   { code: 'file-review/並排切換不重新載入 iframe', fn: segSplitIframeNotReloaded },
   { code: 'file-review/整頁重畫不影響並排', fn: segSplitRepaint },
   { code: 'file-review/切換 Project 不影響並排', fn: segSplitProjectSwitch },
+  { code: 'file-review/切到有可選 pane 的 Project 不改變並排', fn: segSplitProjectSwitchWithPane },
   { code: 'file-review/Ctrl＋點選加入並排', fn: segSplitCtrlClick },
   { code: 'file-review/鍵盤加入並排', fn: segSplitKeyboard },
   { code: 'file-review/並排鈕停用時 Ctrl＋點選等同一般選定', fn: segSplitDisabledCtrlClick },

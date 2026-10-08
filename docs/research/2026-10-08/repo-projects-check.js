@@ -5,6 +5,7 @@
 //
 // 對 `cockpit --example ui_preview` 驗 openspec/changes/repo-projects/specs/cockpit-dashboard/spec.md
 // 「Project 切換」中屬於前端的 scenario：偵測到的 repo 區、「加入」送出的請求、加入後自動選定、空狀態文字。
+// project-select-pane task 1.1 加 7 段：選定 Project 時自動選定其 pane（openspec/changes/project-select-pane）。
 //
 // 用法（repo 根；先 `cargo build -p cockpit --example ui_preview`——前端資產內嵌在執行檔裡，改了
 // cockpit/assets/ 沒重建就是驗舊版）：
@@ -638,7 +639,49 @@ function pageHelpers() {
     probe.remove();
     return c;
   };
+  // project-select-pane task 1.1：選定的 pane（右欄 `.pane-row.selected`）、Live Output 標題、下半部分頁區的目前分頁。
+  const paneRow = (rt, pane) =>
+    Array.from(document.querySelectorAll('[data-region="runtimes"] .pane-row')).find(
+      (r) => r.getAttribute('data-runtime') === rt && r.getAttribute('data-pane') === pane
+    ) || null;
+  const paneState = () => {
+    const cur = document.querySelector('#review [role="tablist"] [role="tab"][aria-selected="true"]');
+    const out = document.getElementById('output');
+    const a = document.activeElement;
+    return {
+      selected: Array.from(document.querySelectorAll('[data-region="runtimes"] .pane-row.selected')).map(
+        (r) => `${r.getAttribute('data-runtime')}/${r.getAttribute('data-pane')}`
+      ),
+      outputTitle: txt(document.querySelector('#output .output-title')) || null,
+      outputOpen: !!out && out.classList.contains('is-open'),
+      currentTab: cur ? cur.getAttribute('data-path') || cur.id || txt(cur) : null,
+      liveCurrent: !!cur && cur.id === 'review-tab-live',
+      rebinding: !!document.querySelector('[data-action="bind-here"]'),
+      focusOnPaneRow: !!a && !!a.closest && !!a.closest('.pane-row'),
+      focusVisibleAnywhere: !!document.querySelector(':focus-visible'),
+    };
+  };
+  // 右欄捲動容器（`[data-region="runtimes"] > .runtime-cards`）的捲動資訊，以及 rt/pane 那一列是否整列落在它的可視範圍內。
+  const paneRowView = (rt, pane) => {
+    const box = document.querySelector('[data-region="runtimes"] > .runtime-cards');
+    const row = paneRow(rt, pane);
+    if (!box || !row) return { box: !!box, row: !!row };
+    const b = box.getBoundingClientRect();
+    const r = row.getBoundingClientRect();
+    return {
+      box: true,
+      row: true,
+      scrollable: box.scrollHeight > box.clientHeight + 1,
+      scrollTop: box.scrollTop,
+      inView: r.top >= b.top - 1 && r.bottom <= b.bottom + 1 && r.bottom <= window.innerHeight + 1 && r.top >= -1,
+      rowTop: Math.round(r.top),
+      rowBottom: Math.round(r.bottom),
+      boxTop: Math.round(b.top),
+      boxBottom: Math.round(b.bottom),
+    };
+  };
   window.__rp = {
+    paneRow, paneState, paneRowView,
     cssColor, txt, region, section, items, addButton, projectItem, stateVersion, snapshot, inject, latest,
     menuButton, menu, menuItem, menuSnap, dialog, stageRows, stageInput, nameInput, dialogButton, dialogSnap, activeDesc, invalidInputs,
   };
@@ -2192,6 +2235,360 @@ async function segWorktreeLabelAndPaneNoRebind() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// project-select-pane task 1.1：選定 Project 時自動選定其 pane（openspec/changes/project-select-pane/specs/
+// cockpit-dashboard/spec.md「Project 切換」）
+// ---------------------------------------------------------------------------
+
+// fixture（ui_preview）三個 Project 都有已綁定的工作線（cockpit：be→wJ:p1 working；p：backend→wJ:p1 working；demo-app：
+// wJ:p6 working、wJ:p7 idle）。要驗挑選規則的各種組合，另以 onState 注入特製的手寫 Project（正式後端可能出現的形狀：
+// 已綁定工作線的 binding.agent_status 與該 pane 的 agent_status 一致，pane 都是 runtime win 上未 exited 的 pane）。
+const RT = 'win';
+const boundTo = (pane, agentStatus) => ({ state: 'bound', runtime: RT, pane_id: pane, source: 'auto', agent: 'claude', agent_status: agentStatus });
+const UNBOUND = { state: 'unbound', runtime: RT };
+const NO_BINDING = { state: 'none' };
+function setPaneStatus(s, paneId, status) {
+  for (const rt of s.runtimes) {
+    if (rt.id !== RT) continue;
+    for (const ws of rt.workspaces || []) for (const tab of ws.tabs || []) for (const p of tab.panes || []) if (p.id === paneId) p.agent_status = status;
+  }
+}
+// 以 p 為底複製一個手寫 Project（id、名稱、工作線換掉；task 清空），附加到 projects 最後。workstreams：[[id, binding], ...]。
+function addConfigProject(s, id, workstreams) {
+  const base = s.projects.find((p) => p.id === 'p');
+  const tmpl = base.workstreams[0];
+  const p = JSON.parse(JSON.stringify(base));
+  p.id = id;
+  p.name = id;
+  p.warnings = [];
+  p.warning_msgs = [];
+  p.tasks = [];
+  p.workstreams = workstreams.map(([wid, binding]) => ({ ...JSON.parse(JSON.stringify(tmpl)), id: wid, name: wid, binding, active_task: null, activity_undeclared: false }));
+  s.projects.push(p);
+  for (const [, b] of workstreams) if (b.state === 'bound') setPaneStatus(s, b.pane_id, b.agent_status);
+}
+const paneState = (ctx) => ctx.cdp.run(() => window.__rp.paneState());
+// 點左欄分頁（「Project」「檔案」「變更」；#files 內的 role="tablist"），等它成為目前分頁。
+async function switchLeft(ctx, name) {
+  const finder = (n) => Array.from(document.querySelectorAll('#files [role="tablist"] [role="tab"]')).find((t) => window.__rp.txt(t) === n) || null;
+  need(await ctx.cdp.clickEl(finder, [name], `左欄分頁「${name}」`), `點左欄分頁「${name}」`);
+  const ok = await ctx.cdp.poll((n) => {
+    const t = Array.from(document.querySelectorAll('#files [role="tablist"] [role="tab"]')).find((x) => window.__rp.txt(x) === n);
+    return !!t && t.getAttribute('aria-selected') === 'true';
+  }, [name], UI_TIMEOUT_MS);
+  need(!!ok, `左欄分頁「${name}」成為目前分頁`);
+}
+// 右欄 runtime win 的第一個 workspace 最前面多一個 tab、30 個 pane（wJ:p100–wJ:p129），把 fixture 的 wJ:p5 擠到右欄下方；
+// 附加唯一工作線綁 wJ:p5 的 sp-scroll（右欄捲動用）。目標用 fixture 本來就有的 wJ:p5、不用注入的 pane：ui_preview 的輸出端點
+// 只認 fixture 的 pane，選定注入的 pane 會被 Live Output 判「pane 已不存在」而清掉選取（實測偶發，視輪詢回應先後）。
+const SCROLL_TARGET = 'wJ:p5';
+function addManyPanesAndScrollProject(s) {
+  const rt = s.runtimes.find((r) => r.id === RT);
+  const tmpl = rt.workspaces[0].tabs[0].panes[0];
+  const panes = [];
+  for (let i = 100; i <= 129; i += 1) {
+    panes.push({ ...JSON.parse(JSON.stringify(tmpl)), id: `wJ:p${i}`, agent: null, agent_status: 'idle', title: `pane ${i}`, cwd: null, label: null, focused: false, exited: false });
+  }
+  rt.workspaces[0].tabs.unshift({ ...JSON.parse(JSON.stringify(rt.workspaces[0].tabs[0])), id: 'wJ:t9', number: 9, focused: false, panes });
+  addConfigProject(s, 'sp-scroll', [['w1', boundTo(SCROLL_TARGET, 'working')]]);
+}
+async function clickPaneRow(ctx, pane) {
+  need(await ctx.cdp.clickEl((p) => window.__rp.paneRow('win', p), [pane], `右欄 pane 列 ${pane}`), `點右欄 pane 列 ${pane}`);
+  const ok = await ctx.cdp.poll((p) => window.__rp.paneState().selected.join() === `win/${p}`, [pane], UI_TIMEOUT_MS);
+  need(!!ok, `選定 pane ${pane}`);
+}
+// 選定 rt/pane 等同按「看輸出」：右欄恰有該列帶選定標示、Live Output 標題為該 pane、分頁區的目前分頁為 Live Output。
+async function expectPaneChosen(ctx, pane, label) {
+  const ok = await ctx.cdp.poll(
+    (p) => {
+      const st = window.__rp.paneState();
+      return st.selected.join() === `win/${p}` && st.outputTitle === `win / ${p}` && st.liveCurrent ? st : null;
+    },
+    [pane],
+    UI_TIMEOUT_MS
+  );
+  const st = ok || (await paneState(ctx));
+  const diag = ok
+    ? ''
+    : J(
+        await ctx.cdp.run((p) => ({
+          version: window.__rp.stateVersion(),
+          rows: document.querySelectorAll('[data-region="runtimes"] .pane-row').length,
+          row: !!window.__rp.paneRow('win', p),
+          latestHas: JSON.stringify(window.cockpitLatestState()).includes(p),
+          selectedProject: window.cockpitActions.uiSnapshot().selectedProject,
+          uiSelected: window.cockpitActions.uiSnapshot().selected,
+        }), pane)
+      );
+  check(st.selected.length === 1 && st.selected[0] === `win/${pane}`, `${label}：右欄選定的 pane 為 win/${pane}（實際 ${J(st.selected)}${diag ? `；${diag}` : ''}）`);
+  check(st.outputTitle === `win / ${pane}` && st.outputOpen, `${label}：Live Output 顯示 win / ${pane}（實際標題 ${J(st.outputTitle)}，open=${st.outputOpen}）`);
+  check(st.liveCurrent, `${label}：分頁區的目前分頁為 Live Output（實際 ${J(st.currentTab)}）`);
+  return st;
+}
+
+// scenario「選定 Project 時優先選 working 的已綁定工作線」：sp-work 依序為 已綁定 idle 的 w1（wJ:p7）、已綁定 working 的 w2
+// （wJ:p5）、未綁定的 w3 → 點選後選定 wJ:p5（不是第一條已綁定的 wJ:p7）；檔案分頁的根目錄跟著換成 wJ:p5 的 other-repo。
+async function segSelectProjectPrefersWorking() {
+  await withCockpit('psp-working', {}, async (ctx) => {
+    await inject(
+      ctx,
+      await craft(ctx, (s) => addConfigProject(s, 'sp-work', [['w1', boundTo('wJ:p7', 'idle')], ['w2', boundTo('wJ:p5', 'working')], ['w3', UNBOUND]])),
+      '附加 sp-work（idle、working、未綁定）'
+    );
+    const before = await paneState(ctx);
+    need(before.selected.length === 0, `前置：尚未選定任何 pane（實際 ${J(before.selected)}）`);
+    await clickProject(ctx, 'sp-work');
+    check((await snap(ctx)).shown === 'sp-work', 'Factory Floor 顯示 sp-work');
+    const st = await expectPaneChosen(ctx, 'wJ:p5', '點 sp-work');
+    check(!st.focusOnPaneRow, '焦點沒有移到 pane 列');
+    const s = await snap(ctx);
+    check(s.active && s.active.action === 'select-project' && s.active.project === 'sp-work' && !s.active.focusVisible, `焦點留在 sp-work 項目上、不呈現外框（實際 ${J(s.active)}）`);
+    // 檔案：切到左欄「檔案」分頁，根目錄為 wJ:p5 的 cwd（other-repo）。
+    need(
+      await ctx.cdp.clickEl(() => Array.from(document.querySelectorAll('#files [role="tablist"] [role="tab"]')).find((t) => window.__rp.txt(t) === '檔案') || null, [], '左欄分頁「檔案」'),
+      '點左欄分頁「檔案」'
+    );
+    // 根目錄查到之前頂端名稱先顯示 pane id（files.js renderFilesPanel），所以輪詢到 other-repo 為止。
+    const rootName = () => {
+      const n = document.querySelector('#files .files-root-name');
+      return n ? n.textContent : null;
+    };
+    const root = await ctx.cdp.poll(() => {
+      const n = document.querySelector('#files .files-root-name');
+      return !!n && n.textContent === 'other-repo';
+    }, [], UI_TIMEOUT_MS);
+    check(!!root, `檔案樹的根目錄為 wJ:p5 的 other-repo（實際 ${J(await ctx.cdp.run(rootName))}）`);
+    noExceptions(ctx);
+  });
+}
+
+// scenario「沒有 working 時選第一條已綁定工作線」：sp-idle 依序為 未綁定的 w1、已綁定 idle 的 w2（wJ:p7）、已綁定 blocked 的
+// w3（wJ:p4）→ 以鍵盤（Enter）選定後選定 wJ:p7。
+async function segSelectProjectFirstBound() {
+  await withCockpit('psp-firstbound', {}, async (ctx) => {
+    await inject(
+      ctx,
+      await craft(ctx, (s) => addConfigProject(s, 'sp-idle', [['w1', NO_BINDING], ['w2', boundTo('wJ:p7', 'idle')], ['w3', boundTo('wJ:p4', 'blocked')]])),
+      '附加 sp-idle（未綁定、idle、blocked）'
+    );
+    await ctx.cdp.pressKey('Tab', 'Tab', 9, '');
+    need(await ctx.cdp.run(() => { const b = window.__rp.projectItem('sp-idle'); if (!b) return false; b.focus(); return document.activeElement === b; }), '焦點移到左欄 sp-idle 項目');
+    await ctx.cdp.pressKey('Enter', 'Enter', 13, '\r');
+    const ok = await ctx.cdp.poll(() => window.__rp.snapshot().selected === 'sp-idle', [], UI_TIMEOUT_MS);
+    need(!!ok, '按 Enter 後左欄選定 sp-idle');
+    await expectPaneChosen(ctx, 'wJ:p7', '鍵盤選定 sp-idle');
+    const s = await snap(ctx);
+    check(s.active && s.active.project === 'sp-idle', `焦點仍在 sp-idle 項目上（實際 ${J(s.active)}）`);
+    noExceptions(ctx);
+  });
+}
+
+// scenario「全部未綁定時選定的 pane 不變」：先點 pane 列選定 wJ:p4（review-repo/src），從左欄「檔案」打開 README.md 使它成為
+// 分頁區的目前分頁（fix round 1 M2：目前分頁若是 Live Output，「不變」恆真），再回左欄「Project」；sp-none 的工作線全是非
+// bound（none、unbound、runtime_disconnected、ambiguous）→ 點選後 Factory Floor 顯示 sp-none，選定的 pane 仍為 wJ:p4、
+// 目前分頁仍是 README.md。
+async function segSelectProjectAllUnbound() {
+  await withCockpit('psp-unbound', {}, async (ctx) => {
+    await inject(
+      ctx,
+      await craft(ctx, (s) =>
+        addConfigProject(s, 'sp-none', [
+          ['w1', NO_BINDING],
+          ['w2', UNBOUND],
+          ['w3', { state: 'runtime_disconnected', runtime: 'wsl', source: 'auto' }],
+          ['w4', { state: 'ambiguous', runtime: RT, candidates: ['wJ:p1', 'wJ:p3'] }],
+        ])
+      ),
+      '附加 sp-none（全部未綁定）'
+    );
+    await clickPaneRow(ctx, 'wJ:p4');
+    await switchLeft(ctx, '檔案');
+    const rowSel = '#files [role="tree"] [role="treeitem"][title="README.md"]';
+    need(!!(await ctx.cdp.poll((q) => !!document.querySelector(q), [rowSel], UI_TIMEOUT_MS)), '檔案樹列出 README.md');
+    need(await ctx.cdp.clickEl((q) => document.querySelector(q), [rowSel], '檔案列 README.md'), '點檔案列 README.md');
+    const opened = await ctx.cdp.poll(() => window.__rp.paneState().currentTab === 'README.md', [], UI_TIMEOUT_MS);
+    need(!!opened, '前置：README.md 分頁成為分頁區的目前分頁');
+    await switchLeft(ctx, 'Project');
+    const before = await paneState(ctx);
+    await clickProject(ctx, 'sp-none');
+    await sleep(400);
+    const after = await paneState(ctx);
+    check((await snap(ctx)).shown === 'sp-none', 'Factory Floor 顯示 sp-none');
+    check(J(after.selected) === J(['win/wJ:p4']), `選定的 pane 仍為 win/wJ:p4（實際 ${J(after.selected)}）`);
+    check(after.outputTitle === before.outputTitle, `Live Output 仍顯示 ${J(before.outputTitle)}（實際 ${J(after.outputTitle)}）`);
+    check(
+      before.currentTab === 'README.md' && after.currentTab === 'README.md',
+      `分頁區的目前分頁仍為 README.md（${J(before.currentTab)} → ${J(after.currentTab)}）`
+    );
+    noExceptions(ctx);
+  });
+}
+
+// scenario「加入後自動選定新 Project 也選其 pane」：已選定 p（因此選定了 wJ:p1），按 billing-api 的「加入」、收到 201，
+// 含 billing-api（有一條固定 pane wJ:p5 的已綁定工作線）的投影到達 → 左欄選定 billing-api，並選定 wJ:p5。
+async function segAutoSelectAlsoSelectsPane() {
+  await withCockpit('psp-add', {}, async (ctx) => {
+    await clickProject(ctx, 'p');
+    await expectPaneChosen(ctx, 'wJ:p1', '前置：點 p');
+    await clickAdd(ctx, BILLING.repo);
+    need((await waitAddRequest(ctx, 1)) !== null, '服務收到 POST /api/repo-projects');
+    const r = await waitAddResponse(ctx, 1);
+    need(r !== null && r.status === 201, `頁面收到 201 回應（實際 ${r ? r.status : '沒有回應'}）`);
+    await inject(
+      ctx,
+      await craft(ctx, (s) => {
+        addProject(s, BILLING, DEFAULT_STAGES.zh);
+        const p = s.projects.find((x) => x.id === BILLING.id);
+        const tmpl = s.projects.find((x) => x.id === 'demo-app').workstreams[0];
+        p.workstreams = [{ ...JSON.parse(JSON.stringify(tmpl)), id: 'win~wJ:p5', name: 'other', worktree: null, binding: { ...boundTo('wJ:p5', 'idle'), source: 'pane' }, active_task: null }];
+      }),
+      '含 billing-api（工作線綁 wJ:p5）的新投影'
+    );
+    const s = await snap(ctx);
+    check(s.selected === BILLING.id && s.shown === BILLING.id, `左欄選定 billing-api、Factory Floor 顯示它（實際 selected=${s.selected} shown=${s.shown}）`);
+    await expectPaneChosen(ctx, 'wJ:p5', '加入後自動選定 billing-api');
+    const v = await ctx.cdp.run(() => window.__rp.paneRowView('win', 'wJ:p5'));
+    check(v.row && v.inView, `右欄 wJ:p5 列在可視範圍內（${J(v)}）`);
+    noExceptions(ctx);
+  });
+}
+
+// scenario「頁面載入不自動選 pane」：第一個 Project cockpit 有已綁定的工作線，開啟後預設選定 cockpit，但沒有選定 pane、
+// 分頁區維持 Live Output（載入時的狀態）、Live Output 是空狀態；之後兩份新投影重畫也一樣。另驗「選定的 Project 離開
+// 投影時改選第一個」也不選 pane：點選沒有已綁定工作線的 sp-none（不選 pane），注入不含 sp-none 的投影 → 改選 cockpit，
+// 仍沒有選定 pane。
+async function segPageLoadDoesNotSelectPane() {
+  await withCockpit('psp-load', {}, async (ctx) => {
+    let s = await snap(ctx);
+    check(s.selected === 'cockpit' && s.shown === 'cockpit', `預設選定第一個 Project cockpit（實際 selected=${s.selected} shown=${s.shown}）`);
+    let st = await paneState(ctx);
+    check(st.selected.length === 0, `頁面載入後沒有選定任何 pane（實際 ${J(st.selected)}）`);
+    check(!st.outputOpen, 'Live Output 維持未選定的空狀態');
+    check(st.liveCurrent, `分頁區的目前分頁維持 Live Output（實際 ${J(st.currentTab)}）`);
+    await inject(ctx, await craft(ctx, () => {}), '第一份新投影');
+    await inject(ctx, await craft(ctx, (x) => addConfigProject(x, 'sp-none', [['w1', UNBOUND]])), '第二份新投影（附加 sp-none）');
+    st = await paneState(ctx);
+    check(st.selected.length === 0 && !st.outputOpen, `重畫兩次後仍沒有選定 pane（實際 ${J(st.selected)}）`);
+    await clickProject(ctx, 'sp-none');
+    await inject(ctx, await craft(ctx, (x) => { x.projects = x.projects.filter((p) => p.id !== 'sp-none'); }), '不含 sp-none 的投影');
+    s = await snap(ctx);
+    check(s.selected === 'cockpit' && s.shown === 'cockpit', `選定的 sp-none 離開投影後改選第一個 cockpit（實際 selected=${s.selected} shown=${s.shown}）`);
+    st = await paneState(ctx);
+    check(st.selected.length === 0 && !st.outputOpen, `改選第一個時沒有選定 pane（實際 ${J(st.selected)}，open=${st.outputOpen}）`);
+    noExceptions(ctx);
+  });
+}
+
+// scenario「切換 Project 不清除錯誤也不離開改綁模式」的 pane 部分：先選定 wJ:p3，按 cockpit 的 be「改綁」進入改綁模式，
+// 點 p（有已綁定的工作線）→ Factory Floor 顯示 p、仍在改綁模式，選定的 pane 仍為 wJ:p3、Live Output 不變。
+async function segRebindModeDoesNotSelectPane() {
+  await withCockpit('psp-rebind', {}, async (ctx) => {
+    await clickPaneRow(ctx, 'wJ:p3');
+    need(
+      await ctx.cdp.clickEl(() => document.querySelector('[data-action="rebind"][data-project="cockpit"][data-workstream="be"]'), [], 'cockpit／be 的「改綁」'),
+      '點 cockpit／be 的「改綁」'
+    );
+    need(!!(await ctx.cdp.poll(() => window.__rp.paneState().rebinding, [], UI_TIMEOUT_MS)), '進入改綁模式（pane 列出現「綁定到這裡」）');
+    await clickProject(ctx, 'p');
+    await sleep(400);
+    const st = await paneState(ctx);
+    check((await snap(ctx)).shown === 'p', 'Factory Floor 顯示 p');
+    check(st.rebinding, '仍在改綁模式（「綁定到這裡」仍在）');
+    check(J(st.selected) === J(['win/wJ:p3']), `改綁模式中選定 p 不改變選定的 pane（仍為 win/wJ:p3；實際 ${J(st.selected)}）`);
+    check(st.outputTitle === 'win / wJ:p3', `Live Output 仍顯示 win / wJ:p3（實際 ${J(st.outputTitle)}）`);
+    noExceptions(ctx);
+  });
+}
+
+// scenario「右欄捲動到選定的 pane」：在 runtime win 最前面多一個 tab、30 個 pane，讓右欄 runtime 卡片超出可視範圍；sp-scroll
+// 唯一的工作線綁被擠到下方的 wJ:p5（見 addManyPanesAndScrollProject）。點左欄 sp-scroll → 右欄捲動，該列整列落在右欄捲動容器的可視範圍內；焦點留在 Project 項目、
+// 頁面上沒有 :focus-visible 的元素（捲動不搶焦點）。
+async function segScrollToChosenPane() {
+  const LAST = SCROLL_TARGET;
+  await withCockpit('psp-scroll', { windowSize: '1536,800' }, async (ctx) => {
+    await inject(ctx, await craft(ctx, addManyPanesAndScrollProject), '右欄多 30 個 pane、附加 sp-scroll');
+    const v0 = await ctx.cdp.run((p) => window.__rp.paneRowView('win', p), LAST);
+    need(v0.row && v0.scrollable, `前置：右欄捲動容器可捲動且有 ${LAST} 列（${J(v0)}）`);
+    need(!v0.inView, `前置：${LAST} 列在右欄可視範圍之外（${J(v0)}）`);
+    await clickProject(ctx, 'sp-scroll');
+    await expectPaneChosen(ctx, LAST, '點 sp-scroll');
+    const v1 = await ctx.cdp.poll((p) => { const v = window.__rp.paneRowView('win', p); return v.inView ? v : null; }, [LAST], UI_TIMEOUT_MS);
+    check(!!v1, `右欄捲動後 ${LAST} 列落在可視範圍內（${J(v1 || (await ctx.cdp.run((p) => window.__rp.paneRowView('win', p), LAST)))}）`);
+    const st = await paneState(ctx);
+    const s = await snap(ctx);
+    check(s.active && s.active.action === 'select-project' && s.active.project === 'sp-scroll', `焦點留在 sp-scroll 項目上（實際 ${J(s.active)}）`);
+    check(!st.focusOnPaneRow && !st.focusVisibleAnywhere, `捲動沒有移動焦點、頁面沒有 :focus-visible 的元素（focusOnPaneRow=${st.focusOnPaneRow} focusVisible=${st.focusVisibleAnywhere}）`);
+    // 之後的整頁重畫不把右欄捲回去（捲動位置跨重畫保留）。
+    await inject(ctx, await craft(ctx, () => {}), '再一份新投影');
+    const v2 = await ctx.cdp.run((p) => window.__rp.paneRowView('win', p), LAST);
+    check(v2.inView, `整頁重畫後 ${LAST} 列仍在可視範圍內（${J(v2)}）`);
+    noExceptions(ctx);
+  });
+}
+
+// fix round 1 I1：選定 Project 而選定 pane 時只捲右欄自己的捲動容器，不捲整頁。三種視窗：1536×800（固定一屏、右欄是有界的
+// 捲動容器）、900×800（雙欄、整頁捲動）、1300×600（三欄但高 <720、整頁捲動）。注入同「右欄捲動到選定的 pane」的 30 個 pane
+// 與 sp-scroll；先把 sp-scroll 項目捲進視野（nearest，之後 clickEl 的捲動就是 no-op）、記下 window.scrollY，點 sp-scroll →
+// 選定 wJ:p5 後 window.scrollY 不變；1536×800 下該列另需落在 .runtime-cards 的可視範圍內。
+async function segSelectProjectDoesNotScrollPage() {
+  for (const size of ['1536,800', '900,800', '1300,600']) {
+    await withCockpit(`psp-noscroll-${size.replace(',', 'x')}`, { windowSize: size }, async (ctx) => {
+      await inject(ctx, await craft(ctx, addManyPanesAndScrollProject), `${size}：右欄多 30 個 pane、附加 sp-scroll`);
+      const y0 = await ctx.cdp.run(() => {
+        const b = window.__rp.projectItem('sp-scroll');
+        if (b) b.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        return window.scrollY;
+      });
+      await clickProject(ctx, 'sp-scroll');
+      await expectPaneChosen(ctx, SCROLL_TARGET, `${size}：點 sp-scroll`);
+      await sleep(300);
+      const y1 = await ctx.cdp.run(() => window.scrollY);
+      check(y1 === y0, `${size}：點 Project 後整頁沒有捲動（window.scrollY ${y0} → ${y1}）`);
+      if (size === '1536,800') {
+        const v = await ctx.cdp.run((p) => window.__rp.paneRowView('win', p), SCROLL_TARGET);
+        check(v.inView, `${size}：右欄 ${SCROLL_TARGET} 列落在 .runtime-cards 的可視範圍內（${J(v)}）`);
+      }
+      noExceptions(ctx);
+    });
+  }
+}
+
+// fix round 1 M1：cockpit（be→wJ:p1 working）與 p（backend→wJ:p1 working）綁同一個 pane。wJ:p1 改為 long 模式（300+ 行），
+// 點 cockpit 選定 wJ:p1、等輸出到達後把 Live Output 內容框捲到中段；點 p → 選定的仍是 wJ:p1，之後 1 秒內每 25 ms 取樣，
+// 內容從未被清空，捲動位置保留在中段（沒有被重設成貼底）。
+async function segSamePaneKeepsLiveOutput() {
+  await withCockpit('psp-samepane', { env: { COCKPIT_PREVIEW_OUTPUT_MODES: 'wJ:p1=long' } }, async (ctx) => {
+    await clickProject(ctx, 'cockpit');
+    await expectPaneChosen(ctx, 'wJ:p1', '點 cockpit');
+    const filled = await ctx.cdp.poll(() => {
+      const pre = document.querySelector('#output .output-text');
+      return !!pre && pre.scrollHeight > pre.clientHeight * 2;
+    }, [], UI_TIMEOUT_MS);
+    need(!!filled, '前置：wJ:p1 的輸出已到達且內容框可捲動');
+    const mid = await ctx.cdp.run(() => {
+      const pre = document.querySelector('#output .output-text');
+      pre.scrollTop = Math.round((pre.scrollHeight - pre.clientHeight) / 2);
+      return pre.scrollTop;
+    });
+    await sleep(300);
+    need(await ctx.cdp.clickEl((p) => window.__rp.projectItem(p), ['p'], '左欄 Project p'), '點左欄 Project p');
+    let minLen = Infinity;
+    const start = Date.now();
+    while (Date.now() - start < 1000) {
+      const len = await ctx.cdp.run(() => (document.querySelector('#output .output-text') || { textContent: '' }).textContent.length);
+      minLen = Math.min(minLen, len);
+      await sleep(25);
+    }
+    check((await snap(ctx)).shown === 'p', 'Factory Floor 顯示 p');
+    const st = await paneState(ctx);
+    check(J(st.selected) === J(['win/wJ:p1']) && st.liveCurrent, `選定的仍是 wJ:p1、分頁區為 Live Output（實際 ${J(st.selected)}，${J(st.currentTab)}）`);
+    check(minLen > 0, `切到綁同一 pane 的 p 後 1 秒內 Live Output 內容從未被清空（最短 ${minLen} 字元）`);
+    const top = await ctx.cdp.run(() => document.querySelector('#output .output-text').scrollTop);
+    check(Math.abs(top - mid) <= 2, `Live Output 捲動位置保留在中段（${mid} → ${top}）`);
+    noExceptions(ctx);
+  });
+}
+
 const SEGMENTS = [
   { code: 'self/段落代號', fn: segSelfSegmentArg, self: true },
   { code: 'cockpit-dashboard/列出偵測到的 repo', fn: segListDetected },
@@ -2221,6 +2618,17 @@ const SEGMENTS = [
   { code: 'cockpit-dashboard/stages 已在別處變更時不送出', fn: segStaleDialogBlocked },
   { code: 'cockpit-dashboard/偵測區標題的焦點跨重畫保留', fn: segDetectedTitleFocusSurvivesRepaints },
   { code: 'cockpit-dashboard/Repo Project 工作線的 worktree 標註與固定 pane 無改綁鈕', fn: segWorktreeLabelAndPaneNoRebind },
+  // project-select-pane task 1.1
+  { code: 'cockpit-dashboard/選定 Project 時優先選 working 的已綁定工作線', fn: segSelectProjectPrefersWorking },
+  { code: 'cockpit-dashboard/沒有 working 時選第一條已綁定工作線', fn: segSelectProjectFirstBound },
+  { code: 'cockpit-dashboard/全部未綁定時選定的 pane 不變', fn: segSelectProjectAllUnbound },
+  { code: 'cockpit-dashboard/加入後自動選定新 Project 也選其 pane', fn: segAutoSelectAlsoSelectsPane },
+  { code: 'cockpit-dashboard/頁面載入不自動選 pane', fn: segPageLoadDoesNotSelectPane },
+  { code: 'cockpit-dashboard/改綁模式中不自動選 pane', fn: segRebindModeDoesNotSelectPane },
+  { code: 'cockpit-dashboard/右欄捲動到選定的 pane', fn: segScrollToChosenPane },
+  // project-select-pane fix round 1
+  { code: 'cockpit-dashboard/選定 Project 時不捲動整頁', fn: segSelectProjectDoesNotScrollPage },
+  { code: 'cockpit-dashboard/切到綁同一 pane 的 Project 不清空 Live Output', fn: segSamePaneKeepsLiveOutput },
 ];
 
 async function main() {

@@ -8,7 +8,7 @@
 對 `cockpit --example ui_preview`（固定 fixture 起的 dashboard，不需要 HERDR）驗證
 `openspec/specs/file-review/spec.md`「檔案並排」（與修改過的「檔案分頁」「自動更新」「分頁還原」）中屬於前端的 scenario。
 
-腳本共 47 段：2 段自我測試（`self/`）、1 段沒有並排時的基準（`baseline/`，重構與並排功能都不得讓它變紅）、44 段 spec
+腳本共 48 段：2 段自我測試（`self/`）、1 段沒有並排時的基準（`baseline/`，重構與並排功能都不得讓它變紅）、45 段 spec
 scenario 與設計審核的斷言（`file-review/`）。完整清單與每段的做法見下方「段落代號對照表」；加段落時表與腳本檔頭註解一起改。
 新斷言依 tasks.md 通則先在未修的程式上跑出紅，再修。
 
@@ -54,7 +54,7 @@ node docs/research/2026-10-04/split-check.js "self/鷹架,baseline/"        # �
 
 - **參數**：只有一個位置參數，內容是以逗號分隔的段落代號清單，沒有其他旗標。省略參數就跑全部段落。給第二個位置參數
   也算錯誤（`RESULT: FAIL (段落代號)`，exit 2）。
-- 段落代號含空白時整個參數要加引號；以 `<前綴>/` 結尾的代號選該前綴的全部段落（`file-review/` 選 44 段、
+- 段落代號含空白時整個參數要加引號；以 `<前綴>/` 結尾的代號選該前綴的全部段落（`file-review/` 選 45 段、
   `self/` 選 2 段、`baseline/` 選 1 段）。其餘代號必須與對照表逐字相同，含全形的「＋」。
 - 代號拼錯、參數是空字串或只有逗號時，在啟動任何行程之前印 `RESULT: FAIL (段落代號)`，exit 2。
 - **只跑某一段**：例如 `node docs/research/2026-10-04/split-check.js "file-review/窄視窗只顯示焦點欄"`。只跑少數段時
@@ -64,7 +64,7 @@ node docs/research/2026-10-04/split-check.js "self/鷹架,baseline/"        # �
 
 ### 跑一次要多久
 
-全部 47 段在前景跑一次要好幾分鐘，不是幾十秒：實測 372～427 秒（task 3.5 約 372 秒、task 3.6 的 46 段為 427 秒），
+全部 48 段在前景跑一次要好幾分鐘，不是幾十秒：實測 372～427 秒（task 3.5 約 372 秒、task 3.6 的 46 段為 427 秒），
 段落仍在增加，預期 7 分鐘以上，實際依機器負載而定。時間大多花在自動更新相關段落的真實等待（輪詢是每 2 秒一次，「只查詢可見的檔案分頁」依
 spec 有三個 10 秒觀察窗，輪詢類段落另各有 6 秒窗）。跑的人與呼叫它的 session 要預留逾時：背景或排程執行時，逾時至少給
 15 分鐘，不要用預設的 2 分鐘。
@@ -95,7 +95,8 @@ spec 有三個 10 秒觀察窗，輪詢類段落另各有 6 秒窗）。跑的�
 | `file-review/三欄並排不撐破頁面` | 檔案並排 scenario「三欄並排不撐破頁面」、design Risks 第一條；task 3.2 | 視窗 1280×900、推送間隔 1 秒。暫存副本寫 `long.txt`（第 2 行 300 個字元）。單欄的 `report.pdf` 先驗符合寬度並記下頁寬；`README.md`、`long.txt`、`report.pdf` 三欄並排後等一次整頁重畫。斷言：`checkLayout`；`long.txt` 的長行在欄內溢出且捲得動、面板本身沒有溢出；`report.pdf` 仍為符合寬度、頁寬比單欄小、捲動區沒有橫向溢出 |
 | `file-review/並排切換不重新載入 iframe` | design D4「不搬 DOM」的理由（搬動 iframe 會重新載入）；task 3.2 | 視窗 1280×900。`page.html`（html 檢視器）的 iframe 貼記號、掛 load 計數。並排 → Live Output → 回到並排 → 三欄 → 換焦點欄 → 移出 → 單欄顯示。斷言：iframe 仍是同一個節點、load 0 次、沒有 `page.html` 的 raw 請求、`#review` 子節點順序沒變 |
 | `file-review/整頁重畫不影響並排` | 檔案分頁 scenario「整頁重畫不影響並排」；task 3.2 | 視窗 1280×900、推送間隔 100 ms。`long.md`、`docs/design.md`（焦點欄）並排並各捲到中段，面板與內容節點貼記號；觀察 3 秒（重畫至少 10 次）。斷言：仍兩欄並排、焦點欄不變（含 `checkLayout`）、兩欄捲動位置不變、沒有重新讀取、內容節點與面板節點都沒換、子節點順序沒變 |
-| `file-review/切換 Project 不影響並排` | 檔案分頁 scenario「切換 Project 不影響並排」；task 3.2 | 前置與斷言同上（推送間隔維持 10 分鐘）；操作改為點左欄 Project 分頁中的另一個 Project |
+| `file-review/切換 Project 不影響並排` | 檔案分頁 scenario「切換 Project 不影響並排」；task 3.2 | 前置與斷言同上（推送間隔維持 10 分鐘）；操作改為以 `window.onState` 注入附加沒有可選 pane 的 `no-pane` 的投影、點左欄的 `no-pane`（project-select-pane task 1.1 起改用沒有可選 pane 的 Project） |
+| `file-review/切到有可選 pane 的 Project 不改變並排` | 檔案分頁 scenario「切到有可選 pane 的 Project 不改變並排」；project-select-pane task 1.1 | 前置與斷言同上；操作改為點左欄有已綁定工作線的 `p`：分頁區切到 Live Output（並排組合保留、只顯示 Live Output）、分頁沒有新增或關閉，再選回 `docs/design.md` |
 | `file-review/Ctrl＋點選加入並排` | 檔案並排「Ctrl＋點選加入並排」「並排鈕」；task 3.3 | 開 `README.md`、`docs/a.md`，選 `README.md`，按住 Ctrl 點選 `docs/a.md`。斷言同「加入並排」（兩欄、`docs/a.md` 為焦點欄、`README.md` 沒有重讀）；頁面收到恰一次 click、落在 `docs/a.md`、`ctrlKey` 為 true（驗 `clickEl()` 的 modifiers）。再按住 Ctrl 點選 `docs/a.md` → 等同按它的並排鈕：移出、並排解除，`README.md` 單欄 |
 | `file-review/鍵盤加入並排` | 檔案並排「鍵盤加入並排」、design D7 的 `preventDefault()`；task 3.3 | 點 `README.md`（焦點在它上面），按右方向鍵（只移焦點、不選定），按 Ctrl＋Enter。斷言：兩欄並排、`docs/a.md` 為焦點欄、鍵盤焦點仍在 `docs/a.md`；之後頁面沒有收到任何 click（只觸發一次動作）；頁面收到的 keydown 與送出的相同（驗 `pressKey()`）。再按 Ctrl＋Enter → 移出、解除，同樣沒有 click。最後選 Live Output、右方向鍵到 `README.md` 按 Ctrl＋Enter（並排鈕停用）→ 等同一般選定，`README.md` 單欄，沒有 click |
 | `file-review/並排鈕停用時 Ctrl＋點選等同一般選定` | 檔案並排「並排鈕停用時 Ctrl＋點選等同一般選定」；task 3.3 | 開 `README.md`、`docs/a.md`，目前 `docs/a.md`。斷言：`docs/a.md` 的並排鈕停用、`README.md` 的可用（`expectEnabled()`：沒有 `aria-disabled="true"`、`title` 為「並排」）；按住 Ctrl 點選 `docs/a.md` → 沒有並排、仍單欄。選 Live Output 後按住 Ctrl 點選 `README.md`（停用）→ `README.md` 單欄並為目前分頁 |
