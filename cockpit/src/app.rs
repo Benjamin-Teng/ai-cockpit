@@ -23,11 +23,11 @@
 //! 錯誤路徑）都會先走完它（Codex 最終 review finding 2）。獨立執行檔隨後就銷毀 runtime
 //! 所以看不出差別，但測試、嵌入與重複啟停會一路累積活著的 task。
 //!
-//! 有 project 時（task 3.4）：啟動先讀狀態檔（[`progress::load_progress`]）算出初始
-//! `DomainState`，`StoreHandle` 帶著它建立；再建 [`ProgressService`] 與投影任務之間的
-//! stale override channel（[`spawn_projector_with_stale_sink`]），並起一個背景任務持續把
-//! 投影判定失效的覆蓋交給寫入服務刪除（design D3）。沒有 project 時完全不碰狀態檔，行為
-//! 與 1b 相同（design Migration Plan）——`Components::progress_service` 就是 `None`。
+//! 狀態檔與寫入服務（task 3.4；repo-projects task 4.1，design D5）：有狀態檔路徑時啟動先讀它
+//! （[`progress::load_progress`]，不論設定裡有沒有 project）算出初始 `DomainState`，`StoreHandle` 帶著它建立；
+//! [`ProgressService`] 一律建立（沒有路徑時只更新記憶體），並接上它與投影任務之間的 stale override channel
+//! （[`spawn_projector_with_stale_sink`]），起一個背景任務持續把投影判定失效的覆蓋交給寫入服務刪除（design D3）。
+//! 沒有被接受的操作時不會建立狀態檔（寫入服務只在序列化內容改變時落檔）。
 //!
 //! 停止時，這個背景任務跟驅動器、投影任務一樣要「等它真的結束」：投影任務被
 //! [`shutdown_components`] abort＋await 之後，它持有的 stale channel 傳送端才會真的被
@@ -47,7 +47,7 @@ use anyhow::Context;
 use axum::Router;
 use cockpit_core::{
     AgentRuntime, DomainState, Policy, RuntimeId, RuntimeStore, StoreHandle, driver,
-    spawn_projector, spawn_projector_with_stale_sink,
+    spawn_projector_with_stale_sink,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
@@ -57,7 +57,8 @@ use crate::config::{Args, Config, ConfigSource, load};
 use crate::files::PathMapping;
 use crate::http::{AppState, ClientActivity, router};
 use crate::progress;
-use crate::progress_service::ProgressService;
+use crate::progress_service::{ProgressService, StateFileTarget};
+use crate::repo_resolver::{GitRepoLookup, WslRunningDistros, spawn_repo_resolver};
 use crate::runtimes;
 
 /// 組裝好、還沒開 port 的程序內部件。
@@ -78,14 +79,17 @@ pub struct Components {
     pub projector: JoinHandle<()>,
     /// 已經接上 [`Components::handle`] 訂閱端的完整路由表。
     pub router: Router,
-    /// 進度寫入服務；設定裡有 project 才建立，否則是 `None`（design Migration Plan：沒有
-    /// project 時不讀不寫狀態檔）。這裡只負責讓它在程序內可取得——接進 HTTP 寫入路由是
-    /// task 4.1 的事，這裡不建路由。
+    /// 進度寫入服務。[`build_components`] 一律建立（repo-projects task 4.1，design D5），所以一定是 `Some`；
+    /// 保留 `Option` 只為了讓測試能組出不帶寫入服務的假 `Components`。
     pub progress_service: Option<ProgressService>,
     /// 持續把投影判定失效的覆蓋交給 [`Components::progress_service`] 刪除的背景任務；跟
-    /// `progress_service` 同時有或同時沒有。[`run_with_shutdown`] 在
+    /// `progress_service` 同時有或同時沒有（[`build_components`] 一律建立）。[`run_with_shutdown`] 在
     /// [`shutdown_components`] 之後另外等它結束。
     pub stale_remover: Option<JoinHandle<()>>,
+    /// pane cwd → repo 的背景歸類工作（repo-projects task 4.3，design D2）。[`build_components`] 一律建立，所以一定是
+    /// `Some`；保留 `Option` 的理由同 [`Components::progress_service`]。它不會自己結束（投影的 watch 傳送端與
+    /// `StoreHandle` 同壽），由 [`shutdown_all`] `abort()` 再 `await`。
+    pub repo_resolver: Option<JoinHandle<()>>,
     /// 與 [`Components::router`] 內 `AppState::port` 共用同一個 `Arc`（task 4.1；design
     /// D6）：[`router`] 在監聽埠確定之前就已經組好，[`run_with_shutdown`] 開始
     /// `axum::serve` 之前透過這個把手把傳入 `listener` 的 `TcpListener::local_addr()`
@@ -123,7 +127,6 @@ pub struct Components {
 pub fn build_components(config: &Config) -> anyhow::Result<Components> {
     let entries = runtimes::build(config).context("組裝 runtime 失敗")?;
 
-    let has_project = !config.projects.is_empty();
     let domain = load_domain(config)?;
 
     // 先把全部 runtime 登記進 `RuntimeStore`，才用它建 `StoreHandle`：`new_with_domain`
@@ -140,23 +143,32 @@ pub fn build_components(config: &Config) -> anyhow::Result<Components> {
     }
     let handle = StoreHandle::new_with_domain(store, domain);
 
-    // 沒有 project 就不建寫入服務、不接 stale channel，行為與 1b 相同（design Migration
-    // Plan）——即使設定裡仍給了 `[state] path`，也不讀不寫。判斷依 project 是否為空，不
-    // 依路徑是否存在：`load_domain` 已經在有 project 卻沒有路徑時回錯，這裡才能放心
-    // `expect` 有路徑。
-    let (progress_service, stale_remover, projector) = if has_project {
-        let path = config
-            .state_path
-            .clone()
-            .expect("load_domain 成功時，有 project 必有狀態檔路徑");
-        let service = ProgressService::new(handle.clone(), path);
-        let (stale_tx, stale_rx) = mpsc::unbounded_channel();
-        let projector = spawn_projector_with_stale_sink(handle.clone(), stale_tx);
-        let stale_remover = service.spawn_stale_remover(stale_rx);
-        (Some(service), Some(stale_remover), projector)
-    } else {
-        (None, None, spawn_projector(handle.clone()))
-    };
+    // 寫入服務與失效覆蓋清除工作一律建立（repo-projects task 4.1，design D5）：畫面可以隨時加入 Repo
+    // Project，不論設定裡有沒有 project。沒有狀態檔路徑時服務只更新記憶體；有路徑時只有序列化內容改變
+    // 才落檔（design D3「何時寫檔」），所以沒有被接受的操作時不會建立檔案。零設定模式的資料夾在第一次
+    // 寫入時才建立。
+    let target = config.state_path.clone().map(|path| StateFileTarget {
+        path,
+        create_parent_dir: config.source == ConfigSource::ZeroConfig,
+    });
+    let service = ProgressService::with_target(handle.clone(), target);
+    let (stale_tx, stale_rx) = mpsc::unbounded_channel();
+    let projector = spawn_projector_with_stale_sink(handle.clone(), stale_tx);
+    let stale_remover = service.spawn_stale_remover(stale_rx);
+
+    // git 端點與 repo resolver 共用同一個 runner（repo-projects task 4.3，design D2）：「同時最多 4 支 git」的上限
+    // 對兩者一起生效；resolver 依序查詢，最多佔一個名額，不會拖慢左欄「變更」分頁。
+    let git_runner = Arc::new(cockpit_git::GitRunner::new());
+    let path_mappings = Arc::new(path_mappings(config));
+    let repo_resolver = spawn_repo_resolver(
+        handle.subscribe(),
+        Arc::clone(&path_mappings),
+        GitRepoLookup::new(Arc::clone(&git_runner)),
+        WslRunningDistros,
+        service.clone(),
+    );
+    let (progress_service, stale_remover, repo_resolver) =
+        (Some(service), Some(stale_remover), Some(repo_resolver));
 
     let policy = Policy {
         resnapshot: Duration::from_secs(config.polling.resnapshot_secs),
@@ -191,9 +203,9 @@ pub fn build_components(config: &Config) -> anyhow::Result<Components> {
         progress: progress_service.clone(),
         port: Arc::clone(&port),
         runtimes: Arc::clone(&runtimes),
-        path_mappings: Arc::new(path_mappings(config)),
+        path_mappings,
         files: Arc::new(crate::files::FileSettings::embedded()),
-        git_runner: Arc::new(cockpit_git::GitRunner::new()),
+        git_runner,
         activity: activity.clone(),
     });
 
@@ -205,6 +217,7 @@ pub fn build_components(config: &Config) -> anyhow::Result<Components> {
         router,
         progress_service,
         stale_remover,
+        repo_resolver,
         port,
         runtimes,
         activity,
@@ -226,29 +239,24 @@ fn path_mappings(config: &Config) -> HashMap<RuntimeId, PathMapping> {
         .collect()
 }
 
-/// 啟動時算出初始 `DomainState`（task 3.4）：`config.projects` 為空就是沒有任何 project，
-/// 不讀狀態檔、回傳空的 `DomainState`（design Migration Plan，行為與 1b 相同）；否則讀
-/// `config.state_path` 指到的狀態檔並套用到 `config.projects` 上（design D5，容錯規則見
-/// `progress` 模組文件）。
-///
-/// `config.state_path` 在有 project 時理論上必為 `Some`（`config::resolve_state_path`：只有
-/// `projects` 為空，或設定來源沒有檔案可依附時才會是 `None`；`cockpit::config::load` 的
-/// 三種真實來源——`--config`、工作目錄的 `cockpit.toml`、零設定——當中零設定不可能帶
-/// project）。萬一違反這個前提（例如直接建構 `Config` 的測試），視為不應該發生的內部矛盾，
-/// 回傳錯誤而不是靜默略過使用者的進度。
+/// 啟動時算出初始 `DomainState`（task 3.4；repo-projects task 4.1，design D5）：有狀態檔路徑就讀它並套用到
+/// `config.projects` 上——不論 project 清單是否為空，因為檔案可能含畫面加入的 Repo Project（容錯規則見
+/// `progress` 模組文件）；沒有路徑（內嵌設定、零設定模式找不到 `LOCALAPPDATA`）時狀態只存在記憶體，從設定的
+/// project 清單建初始狀態。零設定模式沒有路徑時記 warn。
 ///
 /// # Errors
 ///
-/// 有 project 但沒有狀態檔路徑（見上），或狀態檔存在但無法解析、`version` 不支援時回傳
-/// `Err`；[`progress::ProgressError`] 的訊息本身已含狀態檔路徑。
+/// 狀態檔存在但無法解析、內容不合規則或 `version` 不支援時回傳 `Err`；[`progress::ProgressError`] 的訊息本身
+/// 已含狀態檔路徑。
 fn load_domain(config: &Config) -> anyhow::Result<DomainState> {
-    if config.projects.is_empty() {
-        return Ok(DomainState::default());
-    }
-
-    let path = config.state_path.as_deref().ok_or_else(|| {
-        anyhow::anyhow!("設定含 project 卻沒有解出狀態檔路徑（不應該發生，請回報 bug）")
-    })?;
+    let Some(path) = config.state_path.as_deref() else {
+        if config.source == ConfigSource::ZeroConfig {
+            tracing::warn!(
+                "找不到環境變數 LOCALAPPDATA，沒有狀態檔：畫面加入的 Repo Project 與進度只存在記憶體，重啟後不保留"
+            );
+        }
+        return Ok(DomainState::from_projects(config.projects.clone()));
+    };
     let known_runtime_ids: HashSet<&str> = config
         .runtimes
         .iter()
@@ -297,6 +305,7 @@ pub async fn run(
                 components.drivers,
                 components.projector,
                 components.stale_remover,
+                components.repo_resolver,
                 DRIVER_SHUTDOWN_TIMEOUT,
             )
             .await;
@@ -373,6 +382,7 @@ pub async fn run_with_shutdown(
         handle: _handle,
         progress_service: _progress_service,
         stale_remover,
+        repo_resolver,
         port,
         runtimes: _runtimes,
         activity: _activity,
@@ -386,6 +396,7 @@ pub async fn run_with_shutdown(
                 drivers,
                 projector,
                 stale_remover,
+                repo_resolver,
                 DRIVER_SHUTDOWN_TIMEOUT,
             )
             .await;
@@ -423,6 +434,7 @@ pub async fn run_with_shutdown(
         drivers,
         projector,
         stale_remover,
+        repo_resolver,
         DRIVER_SHUTDOWN_TIMEOUT,
     )
     .await;
@@ -535,13 +547,22 @@ fn log_join(what: &'static str, joined: Result<(), tokio::task::JoinError>) {
 /// 之內沒收掉（傳送端仍活著），這個迴圈就永遠等不到 `None`——所以同樣以
 /// [`ABORT_AWAIT_TIMEOUT`] 為上限（design D11），逾時就 abort 它、再給一次上限，不讓
 /// 關機卡死。
+///
+/// repo resolver（repo-projects task 4.3）最先收：它不會自己結束（見 [`Components::repo_resolver`]），所以跟投影任務
+/// 一樣 `abort()` 再 `await`（[`ABORT_AWAIT_TIMEOUT`] 上限）。排在最前面讓它不再啟動新的 git 查詢；進行中的 git 子程序
+/// 隨 future 被 drop 而結束（`GitRunner` 設了 `kill_on_drop`），已交給寫入服務的交易在服務自己的 task 裡照常跑完。
 pub async fn shutdown_all(
     stops: Vec<oneshot::Sender<()>>,
     drivers: Vec<JoinHandle<()>>,
     projector: JoinHandle<()>,
     stale_remover: Option<JoinHandle<()>>,
+    repo_resolver: Option<JoinHandle<()>>,
     driver_timeout: Duration,
 ) {
+    if let Some(repo_resolver) = repo_resolver {
+        repo_resolver.abort();
+        await_bounded(repo_resolver, "repo resolver").await;
+    }
     shutdown_components(stops, drivers, projector, driver_timeout).await;
 
     if let Some(mut stale_remover) = stale_remover {

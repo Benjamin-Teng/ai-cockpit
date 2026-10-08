@@ -32,15 +32,18 @@ Cockpit 刻意把「HERDR 說的」與「Cockpit 自己認定的」分成兩層�
 
 | 名詞 | 定義 |
 |---|---|
-| Project | 一個被 Cockpit 管理的工作整體，含一條 Pipeline 與若干 Workstream。 |
+| Project | 一個被 Cockpit 管理的工作整體，含一條 Pipeline 與若干 Workstream。有兩種：手寫 Project（寫在 `cockpit.toml` 的 `[[project]]`，Workstream 與 Task 都由設定檔決定）與 Repo Project（見下一列，由畫面加入）。兩種並列顯示，id 撞名時手寫的優先。 |
+| Repo Project | 身分是一個 git repo 的 Project，由畫面從「偵測到的 repo」加入，定義與進度存在狀態檔（v3），不寫在 `cockpit.toml`。該 repo 的任一 worktree、任一 workspace 裡未 exited 的 pane，各自成為一條 Workstream。同一個 repo 以 git 的共同 `.git` 目錄判定（主 worktree 與所有 linked worktree 算同一個）；Windows 與 WSL（`/mnt/d/...`）開同一個資料夾會是兩個不同的 repo。 |
+| 偵測到的 repo | 目前有 pane 的 cwd 所屬、但尚未被任何 Repo Project 加入的 git repo，列在左欄 Project 分頁，各附「加入」鈕。每次啟動重新偵測，不持久化。 |
 | Pipeline | Project 的 Stage 線性序列（MVP）；Stage 之間沒有依賴型別，依賴改為 Task 之間的 Dependency。Stage 層級 DAG 留待之後 change，模型上 `stages` 先維持 `Vec`。 |
 | Stage | Pipeline 上的一站，例如 Spec、Plan、Implement、Test、Review。 |
 | Dependency | Task 之間的依賴（設定檔 `depends_on`，同一 Project 內的 task id 陣列）。依賴的 task 標記未達 `completed` 時，依賴它的 task 呈現 Pending，優先序高於綁定 agent 狀態。 |
-| Workstream | Project 內平行推進的一條線，例如 Backend、Frontend、Docs。**是 Cockpit 概念，不是 HERDR 的 Workspace**；兩者的對應由設定決定，MVP 為一對一（一條 Workstream 至多一個 binding，解析為至多一個 pane）。 |
+| Workstream | Project 內平行推進的一條線，例如 Backend、Frontend、Docs。**是 Cockpit 概念，不是 HERDR 的 Workspace**；兩者的對應由設定決定，MVP 為一對一（一條 Workstream 至多一個 binding，解析為至多一個 pane）。Repo Project 的 Workstream 不來自設定：由 pane 推導，一個 pane 一條，pane 從 HERDR 消失時連同它的 Task 一起移除。 |
 | Task | 一個 Workstream 在某個 Stage 的具體工作單位；隨進度操作（推進、退回、標 Completed、標 Failed、清除標記）在 Stage 之間移動，並帶人工標記 Mark。同一 Workstream 可有多個 Task，共用同一個 RuntimeBinding 解析結果；其中只有目前 task 會因綁定 agent 的狀態變成 Running／Blocked，其餘維持 Ready。 |
 | Artifact | Task 產出的東西：檔案、報告、測試結果。 |
 | Mark | Task 的人工標記，三選一：`none`、`completed`、`failed`，初值 `none`，只能經由進度操作改變。Runtime 層的任何狀態（含 AgentStatus 的 `Done`）都不得改變 Mark。 |
-| RuntimeBinding | Workstream 與 Runtime 層 pane 的對應，掛在 Workstream 上，同一 Workstream 內的 Task 共用同一份解析結果。至少含 RuntimeId；以穩定特徵（workspace 標籤、cwd、agent 種類）匹配，pane id 只是解析結果，不是設定中的鍵。 |
+| RuntimeBinding | Workstream 與 Runtime 層 pane 的對應，掛在 Workstream 上，同一 Workstream 內的 Task 共用同一份解析結果。至少含 RuntimeId；以穩定特徵（workspace 標籤、cwd、agent 種類）匹配，pane id 只是解析結果，不是設定中的鍵。Repo Project 的 Workstream 例外：用固定 pane 綁定（見下一列），不走穩定特徵比對。 |
+| 固定 pane 綁定 | Repo Project 的 Workstream 專用的 RuntimeBinding：直接指定「這個 runtime 的這個 pane」，解析來源標為 `pane`。pane 未 exited 時為 `bound`，runtime 斷線時為 `runtime_disconnected`。不接受畫面改綁（Override），畫面不顯示「改綁」鈕。 |
 | Override | 畫面對某條 Workstream 的 RuntimeBinding 臨時改綁，指定一個 runtime 與 pane，取代自動解析。存進狀態檔、重啟保留；runtime 不是 `connected` 時保留覆蓋、呈現 `runtime_disconnected`，並非失效。只有 runtime 為 `connected` 但 pane 不存在或已 exited 才視為失效，立即回到自動解析，刪除以非同步方式落檔（design D3）。 |
 | StageStatus | Cockpit 投影出的狀態：Pending、Ready、Running、Blocked、Failed、Completed。Running／Blocked 只會出現在 Workstream 的目前 task 上（綁定 agent 為 working／blocked 時）；Completed 只能來自 Cockpit 規則或人工，不可由 AgentStatus 推得。 |
 | 目前 task | 一條 Workstream 至多一個，表示綁定到它的 agent 正在做哪個 Task，由 agent 呼叫 start 或 advance 宣告；只能是同 Workstream、Mark 為 `none` 的 Task。目前 task 被標 Completed／Failed、或 Workstream 的 Override 改變時清除；推進、退回、清除標記不影響它。存進狀態檔（v2 的 `active`）、重啟保留。 |

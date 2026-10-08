@@ -687,6 +687,14 @@
     var wsNameEl = el("span", "ff-ws-name", workstream.name);
     wsNameEl.title = workstream.name; // 長字串換行顯示（design D3；direction-01-visual task 2.1）
     header.appendChild(wsNameEl);
+    // Repo Project 工作線的 worktree 標註（spec「Repo Project 工作線的 worktree 標註」；repo-projects
+    // task 5.3）：直接用投影的 `worktree` 欄位（linked worktree 的資料夾名稱，前端不複算），主 worktree
+    // 的工作線沒有該欄位（或空字串）就不畫。一律 textContent（el() 的文字節點），不以 HTML 插入。
+    if (typeof workstream.worktree === "string" && workstream.worktree !== "") {
+      var worktreeEl = el("span", "ff-worktree", workstream.worktree);
+      worktreeEl.title = t("render.row.worktree", { name: workstream.worktree });
+      header.appendChild(worktreeEl);
+    }
     header.appendChild(renderBindingSummary(workstream.binding));
     // 「工作中・未宣告 task」（spec「Factory Floor」；progress-model task 4.3、design D7）：
     // 完全由投影的 activity_undeclared 決定（整頁重畫不丟狀態）；只有 true 才畫，其他值
@@ -695,7 +703,10 @@
       header.appendChild(el("span", "ff-undeclared", t("render.row.undeclared")));
     }
 
-    // 列首操作：「改綁」一律有；binding.source 為 override 時另有「取消改綁」（spec「畫面操作」）。
+    // 列首操作：「改綁」除了 binding.source 為 pane（Repo Project 固定 pane 的工作線，覆蓋端點會回
+    // 409 not_overridable）之外都有；binding.source 為 override 時另有「取消改綁」（spec「畫面操作」；
+    // repo-projects task 5.3）。source 有 auto／override／pane 三個值：這裡只排除 pane，其餘維持舊行為
+    // （auto、未知值照舊顯示「改綁」）；「取消改綁」與「改綁」徽章是 === "override"，pane 自然不在內。
     var actions = el("div", "ff-row-actions");
     // 「看輸出」只在 binding 為 bound 時出現（spec live-output「選定一個 pane」）：按下選定它
     // 綁定的那個 runtime＋pane。
@@ -726,9 +737,11 @@
         })
       );
     }
-    actions.appendChild(
-      actionButton(t("render.row.rebind"), { action: "rebind", project: project.id, workstream: workstream.id })
-    );
+    if (workstream.binding.source !== "pane") {
+      actions.appendChild(
+        actionButton(t("render.row.rebind"), { action: "rebind", project: project.id, workstream: workstream.id })
+      );
+    }
     if (workstream.binding.source === "override") {
       actions.appendChild(
         actionButton(t("render.row.undoRebind"), {
@@ -1044,8 +1057,9 @@
   // 上下或左右相鄰時讀起來像同一句話說兩次，「在這裡看到」也沒有受詞），設計審核 M4 建議改成
   // 只講狀態，這裡採用：左欄只寫「沒有 Project」，不再重複 Factory Floor 那句的說明。
   // （字串在字典 render.projects.empty；繁中值逐字不變。）
-  // design D11「沒有 Project 的空狀態文案」逐字：「在 cockpit.toml 加入 [[project]] 區段即可
-  // 在這裡看到 Factory Floor，加入後需要重啟 cockpit」（字典 render.floor.empty 的繁中值）。
+  // Factory Floor 那則（字典 render.floor.empty）在 repo-projects task 5.1 改寫：spec「Project 切換」要求
+  // 空狀態指向左欄「偵測到的 repo」區（在那裡加入 repo 即可看到 Factory Floor），不得出現需要重啟的字樣
+  // ——加入 Repo Project 不需要重啟，原本 D11「改 cockpit.toml、需要重啟」的說明已不是主要路徑。
 
   function renderProjectsEmptyState() {
     return el("div", "projects-empty-state", t("render.projects.empty"));
@@ -1094,12 +1108,49 @@
     return item;
   }
 
+  // Repo Project 的管理選單（spec cockpit-dashboard「Project 切換」：`kind` 為 `repo` 的項目有「⋯」選單，手寫的
+  // 沒有；repo-projects design D9、task 5.2）。只有 `kind === "repo"` 才包一層 `.project-entry` 放「⋯」，其餘（`config`
+  // 與任何未知的新值）維持原本那顆 `.project-item` 按鈕，不加選單——新的 kind 不會被誤歸成可管理。
+  // 「⋯」是項目按鈕的兄弟節點（按鈕不能巢狀）：`data-action="project-menu"`，`aria-expanded`／`aria-controls` 表達
+  // 選單開關；選單開著時（actions.js 的 `ui.projectMenu`，模組狀態、不在 DOM，整頁重畫不會丟）在項目下方畫三顆按鈕
+  // `project-rename`／`project-edit-stages`／`project-remove`。按下的處理、Esc、點別處關閉、對話框都在 actions.js。
+  // 焦點還原依 data-* 身分自動涵蓋（data-action＋data-project）。
+  function projectMenuId(projectId) {
+    return "project-menu-" + encodeURIComponent(projectId);
+  }
+
+  function renderRepoProjectEntry(project, isSelected, menuOpen) {
+    var entry = el("div", "project-entry");
+    entry.appendChild(renderProjectItem(project, isSelected));
+    var toggle = actionButton("⋯", { action: "project-menu", project: project.id });
+    toggle.classList.add("project-menu-button");
+    toggle.setAttribute("aria-label", t("render.projectMenu.label", { name: project.name }));
+    toggle.title = t("render.projectMenu.label", { name: project.name });
+    toggle.setAttribute("aria-expanded", menuOpen ? "true" : "false");
+    toggle.setAttribute("aria-controls", projectMenuId(project.id));
+    entry.appendChild(toggle);
+    if (menuOpen) {
+      var menu = el("div", "project-menu");
+      menu.id = projectMenuId(project.id);
+      menu.setAttribute("data-project", project.id);
+      menu.setAttribute("role", "group");
+      menu.setAttribute("aria-label", t("render.projectMenu.label", { name: project.name }));
+      menu.appendChild(actionButton(t("render.projectMenu.rename"), { action: "project-rename", project: project.id }));
+      menu.appendChild(
+        actionButton(t("render.projectMenu.editStages"), { action: "project-edit-stages", project: project.id })
+      );
+      menu.appendChild(actionButton(t("render.projectMenu.remove"), { action: "project-remove", project: project.id }));
+      entry.appendChild(menu);
+    }
+    return entry;
+  }
+
   // 左欄（design D2 data-region="projects"；direction-01-visual task 2.1／3.1）：依
   // `state.projects` 順序列出每個 Project（spec「Project 切換」），`selectedProjectId` 是
   // `renderState()` 算好的「實際生效的選取」（已經套用過「找不到就用第一個」的退回規則，見
   // `resolveSelectedProject()`）——這裡只負責標示哪一項該顯示 `.selected`，不重算退回規則，
   // 避免兩處各自判斷、彼此不一致。投影沒有任何 Project 時顯示空狀態（spec「沒有 Project」）。
-  function renderProjectsRegion(state, selectedProjectId, hidden) {
+  function renderProjectsRegion(state, selectedProjectId, hidden, addingRepos, projectMenu) {
     var region = el("nav", "region-projects");
     region.setAttribute("data-region", "projects");
     // file-review task 4.1（design D6）：左欄目前分頁不是「Project」時整塊 hidden；左欄目前分頁是
@@ -1108,16 +1159,77 @@
 
     if (state.projects.length === 0) {
       region.appendChild(renderProjectsEmptyState());
-      return region;
+    } else {
+      var list = el("div", "project-list");
+      for (var i = 0; i < state.projects.length; i += 1) {
+        var project = state.projects[i];
+        var isSelected = project.id === selectedProjectId;
+        list.appendChild(
+          project.kind === "repo"
+            ? renderRepoProjectEntry(project, isSelected, projectMenu === project.id)
+            : renderProjectItem(project, isSelected)
+        );
+      }
+      region.appendChild(list);
     }
-
-    var list = el("div", "project-list");
-    for (var i = 0; i < state.projects.length; i += 1) {
-      var project = state.projects[i];
-      list.appendChild(renderProjectItem(project, project.id === selectedProjectId));
-    }
-    region.appendChild(list);
+    // repo-projects task 5.1：偵測區接在 Project 清單（或其空狀態）之後，沒有 Project 時也照畫——Factory Floor
+    // 的空狀態文字指向這裡。
+    region.appendChild(renderDetectedRepos(state.detected_repos, addingRepos));
     return region;
+  }
+
+  // 左欄「偵測到的 repo」區（spec cockpit-dashboard「Project 切換」；repo-projects design D9；task 5.1）：依投影
+  // `detected_repos` 的順序列出每個 repo 的 `name`、`pane_count` 與「加入」鈕。順序、名稱、數量一律照投影給的欄位，
+  // 不在前端重算（後端規則改了才不會漂移）。名稱以文字節點呈現（el() 的 textContent），不以 HTML 插入。
+  // 「加入」鈕帶 data-action="add-repo"／data-repo（repo key 原樣送回）：焦點還原依 data-* 身分自動涵蓋；按下的處理
+  // 與預設 stages 在 actions.js。沒有偵測到的 repo（或舊投影沒有這個欄位）時不列任何項目，只留標題與一行說明。
+  // addingRepos（actions.js 的 ui.addingRepos 快照，repo key → 狀態）列著的 repo，「加入」呈現停用：aria-disabled="true"
+  // ＋aria-busy="true"，不用 disabled 屬性——disabled 會讓焦點掉到 <body>，鍵盤使用者就失去位置（fix round 1）。
+  // 按下的略過在 actions.js（依同一份狀態，不看 DOM）。
+  function renderDetectedRepos(detectedRepos, addingRepos) {
+    var adding = addingRepos || {};
+    var repos = Array.isArray(detectedRepos) ? detectedRepos : [];
+    var section = el("section", "detected-repos");
+    var title = el("h2", "detected-repos-title", t("render.detected.title"));
+    // 程式焦點的落點（repo-projects task 5.2 fix round 1）：焦點所在的 Project 消失、又沒有任何 Project 時，焦點放在這裡
+    // （見 focusProjectFallback）。tabindex="-1"：可被程式聚焦、不進 Tab 順序。
+    title.tabIndex = -1;
+    // fix round 2：焦點還原認得 data-focus-id（identityFromElement／findByFocusIdentity），整頁重畫後焦點回到新的標題。
+    // 刻意不用 data-action：actions.js 的點擊委派以 [data-action] 判斷操作，按標題不能變成一次「畫面操作」。
+    title.setAttribute("data-focus-id", "detected-repos-title");
+    section.appendChild(title);
+    if (repos.length === 0) {
+      section.appendChild(el("p", "detected-repos-empty", t("render.detected.empty")));
+      return section;
+    }
+    var list = el("ul", "detected-repo-list");
+    for (var i = 0; i < repos.length; i += 1) {
+      var repo = repos[i];
+      var item = el("li", "detected-repo");
+      item.setAttribute("data-repo", repo.repo);
+      var text = el("div", "detected-repo-text");
+      var nameEl = el("span", "detected-repo-name", repo.name);
+      // 長名稱單行省略（style.css），完整內容放 title（design D3）。
+      nameEl.title = repo.name;
+      text.appendChild(nameEl);
+      text.appendChild(el("span", "detected-repo-count", tn("render.detected.paneCount", repo.pane_count)));
+      item.appendChild(text);
+      // 進行中（task 6.1 F1）：可見文字改「加入中…」、無障礙名稱改「加入中… <名稱>」（繁中以可見文字開頭，符合 label-in-name；
+      // 英文「Adding <名稱>」），與單純的停用分得開；
+      // style.css 給按鈕固定的 min-width，文字換了欄寬不跳動。
+      var isAdding = Object.prototype.hasOwnProperty.call(adding, repo.repo);
+      var add = actionButton(t(isAdding ? "render.detected.adding" : "render.detected.add"), { action: "add-repo", repo: repo.repo });
+      // 每列都是「加入」，無障礙名稱另帶 repo 名稱才分得出是哪一個（可見文字在名稱開頭，符合 label-in-name）。
+      add.setAttribute("aria-label", t(isAdding ? "render.detected.addingLabel" : "render.detected.addLabel", { name: repo.name }));
+      if (isAdding) {
+        add.setAttribute("aria-disabled", "true");
+        add.setAttribute("aria-busy", "true");
+      }
+      item.appendChild(add);
+      list.appendChild(item);
+    }
+    section.appendChild(list);
+    return section;
   }
 
   // 「選取跨重畫保留」「未選定過時預設選定第一個」「選定的 Project 已不在最新投影中時改為
@@ -1231,7 +1343,13 @@
     // grid-template-areas 決定的是視覺位置、不是 DOM 順序（direction-01-visual task 2.1），
     // 但兩者一致比較好理解、鍵盤 Tab 順序也比較合理。
     frag.appendChild(
-      renderProjectsRegion(state, selectedProject !== null ? selectedProject.id : null, leftTab !== "projects")
+      renderProjectsRegion(
+        state,
+        selectedProject !== null ? selectedProject.id : null,
+        leftTab !== "projects",
+        ui && ui.addingRepos ? ui.addingRepos : null,
+        ui && typeof ui.projectMenu === "string" ? ui.projectMenu : null
+      )
     );
 
     var banner = renderBannerRegion(state, error, rebind);
@@ -1326,7 +1444,8 @@
   // `data-project`／`data-workstream`）、「取消改綁」（`override-clear`，同兩個）、改綁提示的
   // 「取消」（`rebind-cancel`，只有 `data-action`）、錯誤訊息的「關閉」
   // （`error-dismiss`，只有 `data-action`）、頂列的通知鈴鐺（`notify-settings`，只有 `data-action`；
-  // desktop-launch-notify task 3.3）。沒有找到不帶 `data-action` 的可聚焦元素——若之後
+  // desktop-launch-notify task 3.3）、左欄偵測區的「加入」（`add-repo`，`data-repo`；repo-projects task 5.1）。
+  // 沒有找到不帶 `data-action` 的可聚焦元素——若之後
   // 新增這種元素，下面的身分規則需要重新檢討。Live Output 面板（`#output`）不在 `#app`
   // 底下、完全不受這裡影響，本來就不需要焦點還原（design D8）。
   //
@@ -1335,8 +1454,9 @@
   // 「足以指認」更不容易漏掉、也更不容易在之後新增 data-* 屬性時悄悄變得不準。找同一個對象時
   // 逐一比對 `dataset`（不組 CSS 屬性選擇器字串）——pane id 含冒號，組字串需要正確跳脫（見
   // brief），逐一比對天然沒有這個問題。
+  // repo-projects task 5.2 fix round 2：不是操作、但要能跨重畫保留焦點的節點（偵測區標題）帶 data-focus-id，同樣當作身分。
   function identityFromElement(el) {
-    if (!el || !el.dataset || !el.dataset.action) {
+    if (!el || !el.dataset || (!el.dataset.action && !el.dataset.focusId)) {
       return null;
     }
     var identity = {};
@@ -1396,7 +1516,33 @@
     pendingFocusTarget = el || null;
   }
 
-  window.cockpitFocusHint = { setPendingTarget: setPendingFocusTarget };
+  // 焦點所在的 Project 已消失時的落點（repo-projects task 5.2 fix round 1）：實際選定的 Project 項目（render 標
+  // aria-current="true" 的那一個）；沒有任何 Project 時落到偵測區標題。刻意不落在偵測區的「加入」：被移除的 repo 會回到
+  // 偵測區，焦點若落在它的「加入」上，連按 Enter 會立刻重新加入。經 output.js 的共用 helper，依最後輸入方式決定外框。
+  function focusProjectFallback(appEl, keepVisible) {
+    var target =
+      appEl.querySelector('[data-action="select-project"][aria-current="true"]') ||
+      appEl.querySelector('[data-region="projects"] .detected-repos-title');
+    if (target === null) {
+      return;
+    }
+    if (window.cockpitFocus && typeof window.cockpitFocus.focus === "function") {
+      window.cockpitFocus.focus(target, keepVisible === true);
+    } else {
+      target.focus({ preventScroll: true });
+    }
+  }
+
+  window.cockpitFocusHint = {
+    setPendingTarget: setPendingFocusTarget,
+    // actions.js：對話框關閉時「⋯」已不在（Project 已消失）就呼叫這裡。
+    focusProjectFallback: function () {
+      var appEl = document.getElementById("app");
+      if (appEl !== null) {
+        focusProjectFallback(appEl, false);
+      }
+    },
+  };
 
   function consumePendingFocusIdentity() {
     var target = pendingFocusTarget;
@@ -1427,7 +1573,7 @@
     if (identity === null) {
       return null;
     }
-    var candidates = appEl.querySelectorAll("[data-action]");
+    var candidates = appEl.querySelectorAll("[data-action], [data-focus-id]");
     for (var i = 0; i < candidates.length; i += 1) {
       if (matchesFocusIdentity(candidates[i], identity)) {
         return candidates[i];
@@ -1512,9 +1658,44 @@
     }
   }
 
+  // 投影的偵測區是否還列著這個 repo key（焦點還原判斷「加入」鈕是否還會在新畫面上）。
+  function latestStateHasDetectedRepo(state, repo) {
+    var repos = Array.isArray(state.detected_repos) ? state.detected_repos : [];
+    for (var i = 0; i < repos.length; i += 1) {
+      if (repos[i].repo === repo) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function latestStateHasProject(state, id) {
+    var projects = Array.isArray(state.projects) ? state.projects : [];
+    for (var i = 0; i < projects.length; i += 1) {
+      if (projects[i] && projects[i].id === id) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   function paint() {
     if (latestState === null) {
       return;
+    }
+    // repo-projects task 5.1（spec「Project 切換」：加入成功後，含新 Project id 的投影到達時自動選定它，只選一次）：
+    // 待選定的 id 存在 actions.js 的模組狀態裡，這裡每次重畫前交出最新投影讓它判斷；選定了就回傳該 id。
+    var autoSelected =
+      window.cockpitActions && typeof window.cockpitActions.applyPendingProjectSelection === "function"
+        ? window.cockpitActions.applyPendingProjectSelection(latestState)
+        : null;
+    // fix round 1：「加入」已成功的標記在偵測區不再列著該 repo 時刪掉（見 actions.js pruneAddingRepos）。
+    if (window.cockpitActions && typeof window.cockpitActions.pruneAddingRepos === "function") {
+      window.cockpitActions.pruneAddingRepos(latestState);
+    }
+    // repo-projects task 5.2：開著選單的 Project 已不在投影中（或不再是 Repo Project）時收起選單。
+    if (window.cockpitActions && typeof window.cockpitActions.pruneProjectMenu === "function") {
+      window.cockpitActions.pruneProjectMenu(latestState);
     }
     var ui =
       window.cockpitActions && typeof window.cockpitActions.uiSnapshot === "function"
@@ -1563,6 +1744,24 @@
       !!window.cockpitFocus &&
       typeof window.cockpitFocus.focusVisible === "function" &&
       window.cockpitFocus.focusVisible(document.activeElement);
+    // repo-projects task 5.1：鍵盤焦點原本在「加入」鈕上、這次重畫自動選定了新 Project 時，那顆鈕會隨 repo 離開
+    // 偵測區而消失，焦點改還原到新選定的 Project 項目上（不讓焦點掉回 <body>）。鈕還在（例如同時有別的 repo）就照舊。
+    if (
+      autoSelected !== null &&
+      focusIdentity !== null &&
+      focusIdentity.action === "add-repo" &&
+      !latestStateHasDetectedRepo(latestState, focusIdentity.repo)
+    ) {
+      focusIdentity = { action: "select-project", project: autoSelected };
+    }
+    // repo-projects task 5.2 fix round 1：焦點在某個 Project 自己的控制項上（項目、「⋯」、選單項目），而這份投影已沒有
+    // 這個 Project（例如移除成功、或在別處被移除），那些控制項都會消失；改落到 focusProjectFallback() 的落點，不讓焦點
+    // 掉回 <body>。
+    var focusOnVanishedProject =
+      focusIdentity !== null &&
+      typeof focusIdentity.project === "string" &&
+      /^(select-project|project-)/.test(focusIdentity.action || "") &&
+      !latestStateHasProject(latestState, focusIdentity.project);
     var savedScroll = captureScroll(appEl);
     // file-review task 4.1（design D6）：左欄目前分頁是 files.js 的模組狀態，每次重畫都重新讀。
     var leftTab =
@@ -1594,7 +1793,11 @@
     }
     restoringFocus = true;
     try {
-      restoreFocus(appEl, focusIdentity, keepFocusVisible);
+      if (focusOnVanishedProject) {
+        focusProjectFallback(appEl, keepFocusVisible);
+      } else {
+        restoreFocus(appEl, focusIdentity, keepFocusVisible);
+      }
     } finally {
       restoringFocus = false;
     }

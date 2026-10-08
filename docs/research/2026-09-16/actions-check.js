@@ -345,7 +345,10 @@ async function partPreview() {
       for (const w of project.workstreams) {
         const key = `${project.id}/${w.id}`;
         const actual = (domActions.ws[key] || []).slice().sort();
-        const expected = w.binding.source === 'override' ? ['override-clear', 'rebind'] : ['rebind'];
+        // repo-projects task 5.3：source 為 pane（Repo Project 固定 pane 的工作線）列首沒有「改綁」與「取消改綁」
+        //（spec cockpit-dashboard「畫面操作」）；其餘維持舊規則。
+        const expected =
+          w.binding.source === 'pane' ? [] : w.binding.source === 'override' ? ['override-clear', 'rebind'] : ['rebind'];
         check(
           JSON.stringify(actual) === JSON.stringify(expected),
           `workstream ${key}（binding ${w.binding.state}${w.binding.source ? '/' + w.binding.source : ''}）按鈕應該是 ${JSON.stringify(expected)}（實際 ${JSON.stringify(actual)}）`
@@ -449,8 +452,11 @@ async function partPreview() {
           'win/wJ:p3:綁定到這裡',
           'win/wJ:p4:綁定到這裡',
           'win/wJ:p5:綁定到這裡',
+          // repo-projects task 4.5：Repo Project `demo-app` 綁定的兩個未 exited pane（同在 tab wJ:t2）。
+          'win/wJ:p6:綁定到這裡',
+          'win/wJ:p7:綁定到這裡',
         ]),
-      `只有 connected runtime（win）未 exited 的 pane（wJ:p1、wJ:p3、wJ:p4、wJ:p5）有「綁定到這裡」（實際 ${JSON.stringify(mode.bind)}）`
+      `只有 connected runtime（win）未 exited 的 pane（wJ:p1、wJ:p3、wJ:p4、wJ:p5、wJ:p6、wJ:p7）有「綁定到這裡」（實際 ${JSON.stringify(mode.bind)}）`
     );
     check(requests.length === 0, `進入改綁模式本身不送請求（實際 ${JSON.stringify(requests)}）`);
     await cdp.click('[data-action="bind-here"][data-runtime="win"][data-pane="wJ:p3"]');

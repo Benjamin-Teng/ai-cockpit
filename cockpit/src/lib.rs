@@ -9,6 +9,7 @@ pub mod http;
 pub mod launch;
 pub mod progress;
 pub mod progress_service;
+pub mod repo_resolver;
 pub mod runtimes;
 pub mod source_check;
 pub mod update;

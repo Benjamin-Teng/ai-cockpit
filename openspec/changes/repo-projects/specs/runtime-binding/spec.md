@@ -1,0 +1,94 @@
+# runtime-binding（delta）
+
+## MODIFIED Requirements
+
+### Requirement: 解析結果種類
+
+系統必須為每條 workstream 產生恰好一種解析結果：`none`（沒有 binding 也沒有覆蓋）；
+`runtime_disconnected`（要使用的 runtime 目前不是 `connected`，附 `runtime` 與 `source`：該 workstream 有覆蓋時
+為 `override`，否則為 `auto`）；`bound`（附 `runtime`、
+`pane_id`、`source` 為 `auto` 或 `override`）；`unbound`（自動解析的候選為 0 個，附 `runtime`）；
+`ambiguous`（候選超過 1 個，附 `runtime` 與依狀態庫順序排列的候選 `pane_id` 清單）。runtime 未連線時
+不評估候選，也不沿用上次的解析結果。Repo Project 的 workstream 固定綁定到推導出它的 pane，不經上述自動解析（見 `repo-projects`「Repo Project 工作線的固定 pane 綁定」），它的解析結果只會是 `bound`、`unbound`（附 `runtime`）、`runtime_disconnected`（附 `runtime`）三種，`source` 一律為 `pane`，不會是 `none` 或 `ambiguous`；`bound` 的 `source` 因此除了 `auto`、`override`，還可以是 `pane`。
+
+#### Scenario: 恰好一個
+
+- **GIVEN** runtime `win` 為 `connected`，符合特徵的 pane 只有 `wJ:p1`
+- **WHEN** 解析
+- **THEN** 結果為 `bound`，`runtime` 為 `win`、`pane_id` 為 `wJ:p1`、`source` 為 `auto`
+
+#### Scenario: 對到多個
+
+- **GIVEN** binding 只有 `runtime` 與 `workspace`，該 workspace 有兩個未 exited 的 pane `wJ:p1`、`wJ:p2`
+- **WHEN** 解析
+- **THEN** 結果為 `ambiguous`，候選為 `["wJ:p1", "wJ:p2"]`
+
+#### Scenario: 對不到
+
+- **GIVEN** 沒有任何 workspace 的 label 等於 binding `workspace`
+- **WHEN** 解析
+- **THEN** 結果為 `unbound`
+
+#### Scenario: runtime 斷線
+
+- **GIVEN** 上一次解析為 `bound`，之後 runtime `wsl` 變成 `disconnected`
+- **WHEN** 解析
+- **THEN** 結果為 `runtime_disconnected`，`runtime` 為 `wsl`，`source` 為 `auto`
+
+#### Scenario: 覆蓋造成的斷線帶出覆蓋來源
+
+- **GIVEN** `be` 的覆蓋指向 `wsl`／`w1:p1`，之後 `wsl` 變成 `disconnected`
+- **WHEN** 解析
+- **THEN** 結果為 `runtime_disconnected`，`runtime` 為 `wsl`，`source` 為 `override`；覆蓋仍保留（見「畫面覆蓋」）
+
+#### Scenario: 固定 pane 的解析結果
+
+- **GIVEN** Repo Project 的 workstream `local~wJ:p1` 固定綁定到 runtime `local` 的 pane `wJ:p1`
+- **WHEN** `local` 為 `connected` 且 pane 未 exited；pane 已 exited 或不在 pane 樹（歸類尚未更新）；`local` 變成 `disconnected`
+- **THEN** 解析結果依序為 `bound`（`source` 為 `pane`，`pane_id` 為 `wJ:p1`）、`unbound`（`runtime` 為 `local`，`source` 為 `pane`）、
+  `runtime_disconnected`（`runtime` 為 `local`，`source` 為 `pane`）
+
+### Requirement: 畫面覆蓋
+
+系統必須允許為任一 workstream（不論有無 binding）設定覆蓋，覆蓋指定一個 runtime `id` 與 pane `id`；
+設定時該 runtime 必須為 `connected` 且狀態庫中有該 pane 且未 exited，否則拒絕。覆蓋存在時取代自動
+解析：覆蓋的 runtime 為 `connected` 且 pane 存在且未 exited → `bound`（`source` 為 `override`）；覆蓋的
+runtime 不是 `connected` → `runtime_disconnected`（保留覆蓋）；覆蓋的 runtime 為 `connected` 但 pane
+不存在或已 exited → 系統必須刪除該覆蓋並持久化刪除，該 workstream 回到自動解析。覆蓋可被取消，取消後
+回到自動解析。Repo Project 固定綁定到 pane 的 workstream 不接受覆蓋：設定與取消都被拒絕（`pipeline-progress`「綁定覆蓋端點」回 409，`code` 為 `not_overridable`），不產生也不改變任何覆蓋。
+
+#### Scenario: 覆蓋歧義
+
+- **GIVEN** workstream `be` 解析為 `ambiguous`，候選 `wJ:p1`、`wJ:p2`
+- **WHEN** 設定覆蓋為 `win`／`wJ:p2`
+- **THEN** `be` 為 `bound`，`pane_id` 為 `wJ:p2`、`source` 為 `override`
+
+#### Scenario: pane 消失即失效
+
+- **GIVEN** `be` 的覆蓋指向 `win`／`wJ:p2`，`win` 為 `connected`
+- **WHEN** 狀態庫移除 `wJ:p2`
+- **THEN** `be` 立即回到自動解析的結果；覆蓋的刪除寫入狀態檔，寫入完成後重啟也不存在
+
+#### Scenario: 斷線期間保留覆蓋
+
+- **GIVEN** `be` 的覆蓋指向 `wsl`／`w1:p1`
+- **WHEN** `wsl` 斷線後重新連上，snapshot 中仍有未 exited 的 `w1:p1`
+- **THEN** 斷線期間 `be` 為 `runtime_disconnected`；重連後 `be` 為 `bound`，`source` 為 `override`
+
+#### Scenario: 覆蓋指向不存在的 pane 被拒絕
+
+- **GIVEN** runtime `win` 為 `connected`，狀態庫沒有 `wJ:p9`
+- **WHEN** 設定 `be` 的覆蓋為 `win`／`wJ:p9`
+- **THEN** 拒絕，`be` 的解析結果不變
+
+#### Scenario: 取消覆蓋
+
+- **GIVEN** `be` 有覆蓋、自動解析會得到 `unbound`
+- **WHEN** 取消覆蓋
+- **THEN** `be` 為 `unbound`
+
+#### Scenario: 固定 pane 的 workstream 不接受覆蓋
+
+- **GIVEN** Repo Project 的 workstream `local~wJ:p1` 固定綁定到 `wJ:p1`，runtime `local` 為 `connected` 且有未 exited 的 pane `wJ:p2`
+- **WHEN** 設定該 workstream 的覆蓋為 `local`／`wJ:p2`，或取消它的覆蓋
+- **THEN** 兩者都被拒絕（`not_overridable`），解析結果仍為 `bound`、`pane_id` 為 `wJ:p1`、`source` 為 `pane`

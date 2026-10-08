@@ -112,10 +112,12 @@ cargo run -p cockpit
 
 Open <http://127.0.0.1:7770/>. Without a config file, Cockpit finds your local HERDR on its own.
 
-To describe your projects, copy the example config. Before running, replace its `<user>`
+To track a git repo, you do not need a config file: see [Add a repo as a project](#add-a-repo-as-a-project).
+To describe your projects by hand, copy the example config. Before running, replace its `<user>`
 placeholders, then list your HERDR runtimes, each project's stages and the pane every
 workstream runs in. Cockpit reads `cockpit.toml` from the working directory, or the file you
-pass with `--config`.
+pass with `--config`. Hand-written `[[project]]` sections keep working and sit next to the
+projects you add on screen; if both use the same project id, the hand-written one wins.
 
 ```powershell
 Copy-Item cockpit.example.toml cockpit.toml
@@ -141,9 +143,50 @@ cargo run -p cockpit --example ui_preview
 
 This opens the dashboard at <http://127.0.0.1:7770/> with sample data.
 
+## Add a repo as a project
+
+You can add a git repo from the dashboard, without editing `cockpit.toml` or restarting:
+
+1. Open a pane inside the repo in HERDR.
+2. In the left column, open the **Project** tab. The repo is listed under **Detected repos**.
+3. Click **Add**.
+
+From then on, every pane whose working directory is inside that repo becomes one workstream, in
+any worktree and any HERDR workspace, and each workstream gets one task card. A new project
+starts with four stages (Plan, Implement, Review, Complete, named in the dashboard's language).
+Use the project's **⋯** menu to rename it, edit its stages (rename, add, delete, reorder) or
+remove it; changes apply at once. A pane in a linked git worktree is labelled with the worktree
+folder's name. When you close a pane, its workstream and task progress go away with it. A pane that has exited but is still open in HERDR
+disappears from the dashboard, but its progress is kept until the pane is really closed.
+
+Things to know:
+
+- A pane's working directory is read from HERDR's snapshot, which Cockpit refreshes every 30
+  seconds by default. After you `cd` into another repo, the pane can take up to about 30 seconds
+  to move there.
+- Cockpit tells repos apart by their git common directory, so all worktrees of one repo are one
+  project. A folder opened from Windows and again from WSL (`/mnt/d/...`) is listed as two
+  repos.
+- Projects you add are saved in `cockpit.state.json`. Without a config file, that file is
+  `%LOCALAPPDATA%\ai-cockpit\cockpit.state.json`. This version writes state file version 3;
+  see the [changelog](CHANGELOG.md) before going back to an older release.
+
 ## Let agents report progress
 
-From inside an agent's own HERDR pane (Windows-side runtimes):
+From inside an agent's own HERDR pane (Windows-side runtimes). In a project you added from a
+repo, one line is enough: Cockpit finds the pane's task from the pane ID, so you do not need any
+project or task ID.
+
+```bash
+# finish this stage and move to the next (no project or task ID needed)
+curl -i -X POST http://127.0.0.1:7770/api/agent/advance -H "X-Herdr-Pane-Id: $HERDR_PANE_ID"
+```
+
+If Cockpit cannot find exactly one task to advance for the pane, the answer is 404
+`no_task_for_pane` (no workstream is bound to it, or it has several tasks and none is current) or
+409 `ambiguous_task` (several candidates). In both cases name the task explicitly, or `start` it
+first. Like the other agent endpoints, it does not work from panes of a WSL
+runtime. For hand-written projects you can also name the task explicitly:
 
 ```bash
 # list the tasks bound to this pane

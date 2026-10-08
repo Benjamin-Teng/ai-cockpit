@@ -31,6 +31,7 @@ fn connected_state() -> ConnectionState {
         server_version: "0.9.0".to_string(),
         protocol: 1,
         last_snapshot_at: SystemTime::UNIX_EPOCH,
+        settled: true,
         protocol_warning: None,
     }
 }
@@ -89,11 +90,13 @@ fn scenario_c_project() -> ProjectDef {
                     cwd: None,
                     agent: Some("claude".to_string()),
                 }),
+                pinned_pane: None,
             },
             WorkstreamDef {
                 id: WorkstreamId::new("fe"),
                 name: "fe".to_string(),
                 binding: None,
+                pinned_pane: None,
             },
         ],
         tasks: vec![
@@ -112,6 +115,7 @@ fn scenario_c_project() -> ProjectDef {
                 depends_on: vec![TaskId::new("A")],
             },
         ],
+        repo: None,
     }
 }
 
@@ -124,6 +128,8 @@ fn no_projects_projects_is_empty_array() {
     assert!(projected.projects.is_empty());
     let value = serde_json::to_value(&projected).expect("序列化應成功");
     assert_eq!(value["projects"], json!([]));
+    // repo-projects task 3.2：沒有 Project 也沒有偵測到的 repo 時，`detected_repos` 為 `[]`。
+    assert_eq!(value["detected_repos"], json!([]));
     let keys: Vec<&str> = value
         .as_object()
         .expect("頂層是物件")
@@ -135,11 +141,12 @@ fn no_projects_projects_is_empty_array() {
         "generated_at",
         "runtimes",
         "projects",
+        "detected_repos",
         "recent_events",
     ] {
         assert!(keys.contains(&key), "頂層應有 {key}");
     }
-    assert_eq!(keys.len(), 5, "頂層只應有五個欄位：{keys:?}");
+    assert_eq!(keys.len(), 6, "頂層只應有六個欄位：{keys:?}");
     assert_eq!(value["runtimes"][0]["id"], json!("win"));
 }
 
@@ -303,6 +310,7 @@ fn binding_variants_and_domain_fields_serialize() {
             cwd: None,
             agent: None,
         }),
+        pinned_pane: None,
     });
     project_def.workstreams.push(WorkstreamDef {
         id: WorkstreamId::new("many"),
@@ -314,12 +322,14 @@ fn binding_variants_and_domain_fields_serialize() {
             cwd: None,
             agent: None,
         }),
+        pinned_pane: None,
     });
     // 覆蓋指向未登記的 wsl → 同樣是 runtime_disconnected，但來源為 override。
     project_def.workstreams.push(WorkstreamDef {
         id: WorkstreamId::new("ovr"),
         name: "ovr".to_string(),
         binding: None,
+        pinned_pane: None,
     });
 
     let mut store = scenario_c_store(AgentStatus::Idle);

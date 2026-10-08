@@ -17,6 +17,17 @@
 //! 不改投影：每筆請求在 stdout 印一行 `write-request <METHOD> <PATH> <BODY>`，供瀏覽器驗收
 //! 腳本（`docs/research/2026-09-16/actions-check.js`）比對畫面送出了什麼（task 5.3）。
 //!
+//! Repo Project 的寫入端點（repo-projects task 4.5）同樣只記錄請求、不改投影：`POST /api/repo-projects` 回
+//! 201 加 `{"id": ...}`（id 由名稱或偵測區的預設名稱產生；本體以正式端點的型別與 core 的正規化規則驗證，
+//! 不合法時回與正式端點相同的 400 `invalid_body`／`invalid_name`／`invalid_stages`，repo-projects task 5.1）、`PATCH`／`DELETE /api/repo-projects/{pid}` 與 `POST /api/agent/advance` 回 204。
+//! 記錄行格式不變（`write-request <METHOD> <PATH> <BODY>`，不含標頭，所以 `X-Herdr-Pane-Id` 看不到）；
+//! `COCKPIT_PREVIEW_WRITE_RULES` 對新路徑也適用。
+//!
+//! 情境補充（repo-projects task 4.5）：fixture 多一個 Repo Project `demo-app`（`kind: repo`，排在最後；
+//! 兩條 `source: pane` 的工作線，其中一條位於 linked worktree `demo-app-wt`；綁定 `wJ:p6`／`wJ:p7`，
+//! 兩個新 pane 放在 tab `wJ:t2`）與兩個尚未加入的 repo（`detected_repos`）。路徑一律是中性的假路徑
+//! （`d:\work\...`），不含真實使用者或暫存目錄。見 [`apply_repo_project_scenario`]。
+//!
 //! 情境補充（ui-fixes task 4.1）：project `cockpit` 末尾的 workstream `ovr` 以覆蓋綁到斷線的 `wsl`
 //! （`runtime_disconnected`＋`source: override`），供驗收「斷線期間可取消改綁」。
 //!
@@ -24,7 +35,10 @@
 //! `<PATH>=<延遲毫秒>:<狀態碼>`，例如
 //! `COCKPIT_PREVIEW_WRITE_RULES=/api/projects/cockpit/tasks/be-1/fail=1500:409`。符合路徑的
 //! 請求照樣先記錄，再等指定延遲、回指定狀態碼（非 2xx 附 `{"error": ...}` 本體）；其他路徑
-//! 仍立即回 204（task 5.3 fix round 1）。
+//! 仍立即回 204（task 5.3 fix round 1）。規則比對只看路徑、不看方法。狀態碼後可再接 `:<code>`
+//! （小寫英數與底線），錯誤本體就多帶 `"code"`，例如
+//! `/api/repo-projects/demo-app=0:400:invalid_stages` 回 `{"error": ..., "code": "invalid_stages"}`，
+//! 供驗收「英文介面依 code 顯示」（repo-projects task 5.2）。
 //!
 //! ## 輸出讀取端點的假 `AgentRuntime`（live-output task 5.1）
 //!
@@ -110,13 +124,15 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{post, put};
-use cockpit::http::{AppState, router};
+use axum::routing::{patch, post, put};
+use cockpit::http::{AppState, parse_add_repo_project_body, router};
+use cockpit::progress_service::RepoProjectError;
 use cockpit_core::{
-    AgentRuntime, AgentStatus, BindingSource, Mark, PaneId, PaneOutput, ProjectId,
-    ProjectedBinding, ProjectedPane, ProjectedState, ProjectedTab, ProjectedTask,
-    ProjectedWorkstream, RuntimeError, RuntimeEvents, RuntimeId, RuntimeSnapshot, StageStatus,
-    TabId, TaskId, WorkstreamId,
+    AgentRuntime, AgentStatus, BindingSource, DetectedRepo, Mark, PaneId, PaneOutput, ProjectId,
+    ProjectKind, ProjectedBinding, ProjectedPane, ProjectedProject, ProjectedState, ProjectedTab,
+    ProjectedTask, ProjectedWorkstream, RepoKey, RuntimeError, RuntimeEvents, RuntimeId,
+    RuntimeSnapshot, StageStatus, TabId, TaskId, WorkstreamId, derive_repo_project_id,
+    normalize_repo_project_name, normalize_repo_project_stages,
 };
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -177,6 +193,8 @@ async fn main() -> anyhow::Result<()> {
         .context("file-review task 3.4：把 fixture pane 掛進假投影失敗")?;
     apply_progress_scenarios(&mut initial);
     apply_override_disconnected_scenario(&mut initial);
+    apply_repo_project_scenario(&mut initial)
+        .context("repo-projects task 4.5：掛上 Repo Project 情境失敗")?;
 
     // desktop-launch-notify task 3.1（design D9）：排程轉換；解析與目標檢查失敗都在啟動時回錯。
     let transitions = parse_transitions(env::var(TRANSITIONS_VAR).ok().as_deref())?;
@@ -249,18 +267,8 @@ async fn main() -> anyhow::Result<()> {
         activity: cockpit::http::ClientActivity::new(),
     };
 
-    // 寫入路由放外層、其餘交給真正的 dashboard router 當 fallback：`Router::merge` 遇到同一
-    // 路徑已有 POST／PUT／DELETE（http.rs 的正式寫入端點）會 panic，fallback 則只在外層沒有
-    // 符合的路徑時才轉交。外層路徑符合但方法不符（例如 GET）由外層回 405，跟正式路由一致。
-    let app = Router::new()
-        .route(
-            "/api/projects/{project}/tasks/{task}/{op}",
-            post(record_write_request),
-        )
-        .route(
-            "/api/projects/{project}/workstreams/{workstream}/override",
-            put(record_write_request).delete(record_write_request),
-        )
+    // 寫入路由放外層、其餘交給真正的 dashboard router 當 fallback（理由見 [`write_routes`]）。
+    let app = write_routes()
         .fallback_service(router(app_state))
         .with_state(write_rules);
 
@@ -1275,6 +1283,7 @@ fn apply_progress_scenarios(state: &mut ProjectedState) {
     p.workstreams.push(ProjectedWorkstream {
         id: WorkstreamId::new("undeclared"),
         name: "Undeclared".to_string(),
+        worktree: None,
         binding: ProjectedBinding::Bound {
             runtime: RuntimeId::new(OUTPUT_RUNTIME_ID),
             pane_id: PaneId::new("wJ:p1"),
@@ -1312,6 +1321,7 @@ fn apply_override_disconnected_scenario(state: &mut ProjectedState) {
     project.workstreams.push(ProjectedWorkstream {
         id: WorkstreamId::new("ovr"),
         name: "Override".to_string(),
+        worktree: None,
         binding: ProjectedBinding::RuntimeDisconnected {
             runtime: RuntimeId::new("wsl"),
             source: BindingSource::Override,
@@ -1319,6 +1329,143 @@ fn apply_override_disconnected_scenario(state: &mut ProjectedState) {
         active_task: None,
         activity_undeclared: false,
     });
+}
+
+/// Repo Project 情境的 id 與 repo key（repo-projects task 4.5）。repo key 是共同 `.git` 目錄的
+/// 正規化路徑；這裡一律用中性的假路徑，不放真實 `%TEMP%` 或 home 路徑（fixture 字串不得含使用者名稱）。
+const PREVIEW_REPO_PROJECT_ID: &str = "demo-app";
+const PREVIEW_REPO_KEY: &str = r"d:\work\demo-app\.git";
+
+/// 偵測到、尚未加入的 repo：`(repo key, 預設名稱, pane 數)`，已依投影規則排序（名稱不分大小寫）。
+/// 假的 `POST /api/repo-projects` 也用這張表查「沒給名稱時的預設名稱」。
+const PREVIEW_DETECTED_REPOS: [(&str, &str, usize); 2] = [
+    (r"d:\work\billing-api\.git", "billing-api", 2),
+    (r"d:\work\docs-site\.git", "Docs Site", 1),
+];
+
+/// Repo Project 情境（repo-projects task 4.5；design D8、Risks「`ui_preview` 沒有真的後端狀態」）：
+///
+/// 1. 在 tab `wJ:t2`（file-review 的兩個 pane 所在的 tab）末尾加兩個未 exited 的 pane：`wJ:p6`
+///    （主 worktree、claude working、label `api-worker`）與 `wJ:p7`（linked worktree `demo-app-wt`、
+///    codex idle、沒有 label）。不用既有 pane：`wJ:p1`／`wJ:p3`／`wJ:p4`／`wJ:p5` 的「綁定名稱」出現在
+///    通知內文（`notify-check.js` 逐字比對），多綁一條工作線會改變內文；`wJ:p2` 已 exited，
+///    固定 pane 不會是 `bound`。cwd 留空，不進檔案根目錄允許清單。
+/// 2. 附加 Repo Project `demo-app`（`kind: repo`）到所有 project 的**最後面**（Repo Project 本來就排在
+///    手寫 project 之後），含兩條 `source: pane` 的工作線與各自的 task（投影規則：工作線與 task 的名稱
+///    取 pane 的 label，空的話 agent 名稱，再空用 pane id；id 為 `<runtime>~<pane>`；目前 task 是
+///    `mark: none` 的那張）。
+/// 3. `detected_repos` 放兩個尚未加入的 repo（[`PREVIEW_DETECTED_REPOS`]）。
+///
+/// 這份 fixture 不放真的 git repo；投影是手工組的，寫入端點只記錄請求（[`write_routes`]），加入／
+/// 修改／移除 project 都不會改變之後推送的投影。
+///
+/// # Errors
+///
+/// 找不到 tab `wJ:t2`（要先套用 [`add_review_fixture_panes`]）時回傳錯誤。
+fn apply_repo_project_scenario(state: &mut ProjectedState) -> anyhow::Result<()> {
+    let updated_at = "2026-10-08T00:00:00Z".to_string();
+    let main_pane = PaneId::new("wJ:p6");
+    let linked_pane = PaneId::new("wJ:p7");
+
+    let tab = state
+        .runtimes
+        .iter_mut()
+        .find(|rt| rt.id.as_str() == OUTPUT_RUNTIME_ID)
+        .into_iter()
+        .flat_map(|rt| rt.workspaces.iter_mut())
+        .flat_map(|ws| ws.tabs.iter_mut())
+        .find(|tab| tab.id.as_str() == "wJ:t2")
+        .with_context(|| {
+            format!("fixture 投影裡找不到 runtime {OUTPUT_RUNTIME_ID:?} 的 tab wJ:t2")
+        })?;
+    tab.panes.push(ProjectedPane {
+        id: main_pane.clone(),
+        agent: Some("claude".to_string()),
+        agent_status: AgentStatus::Working,
+        title: Some("claude - working".to_string()),
+        cwd: None,
+        label: Some("api-worker".to_string()),
+        focused: false,
+        exited: false,
+        updated_at: updated_at.clone(),
+    });
+    tab.panes.push(ProjectedPane {
+        id: linked_pane.clone(),
+        agent: Some("codex".to_string()),
+        agent_status: AgentStatus::Idle,
+        title: Some("codex - idle".to_string()),
+        cwd: None,
+        label: None,
+        focused: false,
+        exited: false,
+        updated_at,
+    });
+
+    let runtime = RuntimeId::new(OUTPUT_RUNTIME_ID);
+    let item_id = |pane: &PaneId| format!("{}~{}", runtime.as_str(), pane.as_str());
+    let bound = |pane: &PaneId, agent: &str, agent_status: AgentStatus| ProjectedBinding::Bound {
+        runtime: runtime.clone(),
+        pane_id: pane.clone(),
+        source: BindingSource::Pane,
+        agent: Some(agent.to_string()),
+        agent_status,
+    };
+    let workstream =
+        |pane: &PaneId, name: &str, worktree: Option<&str>, binding| ProjectedWorkstream {
+            id: WorkstreamId::new(item_id(pane)),
+            name: name.to_string(),
+            worktree: worktree.map(str::to_string),
+            binding,
+            active_task: Some(TaskId::new(item_id(pane))),
+            activity_undeclared: false,
+        };
+    let task = |pane: &PaneId, title: &str, stage: &str, status| ProjectedTask {
+        id: TaskId::new(item_id(pane)),
+        title: title.to_string(),
+        workstream: WorkstreamId::new(item_id(pane)),
+        stage: stage.to_string(),
+        mark: Mark::None,
+        status,
+        depends_on: Vec::new(),
+    };
+
+    state.projects.push(ProjectedProject {
+        id: ProjectId::new(PREVIEW_REPO_PROJECT_ID),
+        name: "Demo App".to_string(),
+        kind: ProjectKind::Repo,
+        repo: Some(RepoKey::new(PREVIEW_REPO_KEY)),
+        stages: vec!["Plan".to_string(), "Build".to_string()],
+        warnings: Vec::new(),
+        warning_msgs: Vec::new(),
+        workstreams: vec![
+            workstream(
+                &main_pane,
+                "api-worker",
+                None,
+                bound(&main_pane, "claude", AgentStatus::Working),
+            ),
+            workstream(
+                &linked_pane,
+                "codex",
+                Some("demo-app-wt"),
+                bound(&linked_pane, "codex", AgentStatus::Idle),
+            ),
+        ],
+        tasks: vec![
+            task(&main_pane, "api-worker", "Build", StageStatus::Running),
+            task(&linked_pane, "codex", "Plan", StageStatus::Ready),
+        ],
+    });
+
+    state.detected_repos = PREVIEW_DETECTED_REPOS
+        .iter()
+        .map(|(repo, name, pane_count)| DetectedRepo {
+            repo: RepoKey::new(*repo),
+            name: (*name).to_string(),
+            pane_count: *pane_count,
+        })
+        .collect();
+    Ok(())
 }
 
 /// `COCKPIT_PREVIEW_PUSH_MS`（正整數毫秒）→ 推送間隔；未設定為 2 秒。
@@ -1335,18 +1482,26 @@ fn push_interval() -> anyhow::Result<Duration> {
     }
 }
 
-/// `COCKPIT_PREVIEW_WRITE_RULES` 的一條規則：路徑完全相符時延遲 `delay` 後回 `status`。
+/// `COCKPIT_PREVIEW_WRITE_RULES` 的一條規則：路徑完全相符時延遲 `delay` 後回 `status`；非 2xx 的錯誤本體
+/// 在 `code` 有值時另帶 `"code"`（repo-projects task 5.2：驗「英文介面依 code 顯示」）。
 struct WriteRule {
     path: String,
     delay: Duration,
     status: StatusCode,
+    code: Option<String>,
 }
 
 /// 解析 `COCKPIT_PREVIEW_WRITE_RULES`（格式見檔頭）；未設定為空。
 fn write_rules() -> anyhow::Result<Vec<WriteRule>> {
-    let Ok(raw) = env::var("COCKPIT_PREVIEW_WRITE_RULES") else {
-        return Ok(Vec::new());
-    };
+    match env::var("COCKPIT_PREVIEW_WRITE_RULES") {
+        Ok(raw) => parse_write_rules(&raw),
+        Err(_) => Ok(Vec::new()),
+    }
+}
+
+/// `;` 分隔的 `<PATH>=<延遲毫秒>:<狀態碼>[:<code>]`。`code` 選填（repo-projects task 5.2），只能是
+/// `[a-z0-9_]`（後端訊息代碼的形狀），空的或含其他字元時拒絕；沒有 `code` 的舊寫法照舊。
+fn parse_write_rules(raw: &str) -> anyhow::Result<Vec<WriteRule>> {
     raw.split(';')
         .filter(|entry| !entry.trim().is_empty())
         .map(|entry| {
@@ -1354,9 +1509,22 @@ fn write_rules() -> anyhow::Result<Vec<WriteRule>> {
                 .trim()
                 .rsplit_once('=')
                 .with_context(|| format!("規則缺 `=`：{entry:?}"))?;
-            let (delay_ms, status) = spec
+            let (delay_ms, rest) = spec
                 .split_once(':')
                 .with_context(|| format!("規則缺 `:`：{entry:?}"))?;
+            let (status, code) = match rest.split_once(':') {
+                Some((status, code)) => {
+                    anyhow::ensure!(
+                        !code.is_empty()
+                            && code
+                                .chars()
+                                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+                        "錯誤代碼只能是小寫英數與底線：{entry:?}"
+                    );
+                    (status, Some(code.to_string()))
+                }
+                None => (rest, None),
+            };
             Ok(WriteRule {
                 path: path.to_string(),
                 delay: Duration::from_millis(
@@ -1370,13 +1538,90 @@ fn write_rules() -> anyhow::Result<Vec<WriteRule>> {
                         .with_context(|| format!("狀態碼不是整數：{entry:?}"))?,
                 )
                 .with_context(|| format!("狀態碼不合法：{entry:?}"))?,
+                code,
             })
         })
         .collect()
 }
 
+/// 所有寫入端點的假路由（回應與記錄見 [`record_write_request`]）。放外層、其餘交給真正的 dashboard
+/// router 當 `fallback_service`：`Router::merge` 遇到同一路徑已有 POST／PUT／PATCH／DELETE（http.rs 的
+/// 正式寫入端點）會 panic，fallback 則只在外層沒有符合的路徑時才轉交。外層路徑符合但方法不符（例如 GET）
+/// 由外層回 405，跟正式路由一致。
+///
+/// repo-projects task 4.5 新增 `/api/repo-projects`（POST）、`/api/repo-projects/{pid}`（PATCH、DELETE）與
+/// `/api/agent/advance`（POST）。
+fn write_routes() -> Router<Arc<Vec<WriteRule>>> {
+    Router::new()
+        .route(
+            "/api/projects/{project}/tasks/{task}/{op}",
+            post(record_write_request),
+        )
+        .route(
+            "/api/projects/{project}/workstreams/{workstream}/override",
+            put(record_write_request).delete(record_write_request),
+        )
+        .route("/api/repo-projects", post(record_write_request))
+        .route(
+            "/api/repo-projects/{pid}",
+            patch(record_write_request).delete(record_write_request),
+        )
+        .route("/api/agent/advance", post(record_write_request))
+}
+
+/// 假的 `POST /api/repo-projects` 成功本體 `{"id": ...}`（規格：201）。本體的解析與驗證同正式端點
+/// （repo-projects task 5.1 前置修正與 fix round 1）：用正式端點同一個 `parse_add_repo_project_body` 解析
+/// （`deny_unknown_fields`），失敗回它給的 400 `invalid_body`；名稱與 stages 依序以 core 的 [`normalize_repo_project_name`]／
+/// [`normalize_repo_project_stages`] 驗證，失敗回 `RepoProjectError` 的 `IntoResponse`（與正式端點同一個對應），本體
+/// `{"error","code"}` 逐字相同。前端送錯形狀時 preview 也會失敗。
+/// 沒有狀態，所以不檢查 `repo_not_detected`／`repo_already_added`（要模擬用 `COCKPIT_PREVIEW_WRITE_RULES`）。
+/// id 的產生規則同正式後端（`derive_repo_project_id`）：正規化後的名稱有給就用它，否則用偵測區的預設名稱
+/// （[`PREVIEW_DETECTED_REPOS`]）；沒有現有 project 可撞名，所以不會加 `-2`。
+///
+/// 錯誤以 [`FakeAddRejection`] 表示，轉成回應見 [`fake_add_rejection_response`]。
+fn fake_created_repo_project(body: &[u8]) -> Result<String, FakeAddRejection> {
+    let request = parse_add_repo_project_body(body).map_err(FakeAddRejection::Body)?;
+    let name = request
+        .name
+        .as_deref()
+        .map(|raw| {
+            normalize_repo_project_name(raw)
+                .ok_or(FakeAddRejection::Rule(RepoProjectError::InvalidName))
+        })
+        .transpose()?;
+    if normalize_repo_project_stages(&request.stages).is_none() {
+        return Err(FakeAddRejection::Rule(RepoProjectError::InvalidStages));
+    }
+    let name = name
+        .or_else(|| {
+            PREVIEW_DETECTED_REPOS
+                .iter()
+                .find(|(key, _, _)| *key == request.repo)
+                .map(|(_, name, _)| (*name).to_string())
+        })
+        .unwrap_or_else(|| "repo".to_string());
+    let id = derive_repo_project_id(&name, |_| false);
+    Ok(serde_json::json!({ "id": id.as_str() }).to_string())
+}
+
+/// [`fake_created_repo_project`] 的拒絕原因：本體解析失敗（正式端點給的 400 `invalid_body` 回應），或名稱／stages
+/// 不合規則。
+enum FakeAddRejection {
+    Body(Box<Response>),
+    Rule(RepoProjectError),
+}
+
+/// [`FakeAddRejection`] → 與正式端點逐字相同的回應（本體與標頭）。
+fn fake_add_rejection_response(rejection: FakeAddRejection) -> Response {
+    match rejection {
+        FakeAddRejection::Body(response) => *response,
+        FakeAddRejection::Rule(error) => error.into_response(),
+    }
+}
+
 /// 寫入端點的替身：記錄請求（stdout 一行 `write-request <METHOD> <PATH> <BODY>`），不改投影
-/// ——畫面收到的新投影仍只來自推送迴圈（task 5.3）。預設立即回 204；路徑符合
+/// ——畫面收到的新投影仍只來自推送迴圈（task 5.3）。預設立即回 204（`POST /api/repo-projects` 回
+/// 201 加 `{"id": ...}`，本體不合法時回正式端點同樣的 400，見 [`fake_created_repo_project`]）；路徑符合
 /// `COCKPIT_PREVIEW_WRITE_RULES` 時延遲後回指定狀態碼（fix round 1）。
 async fn record_write_request(
     State(rules): State<Arc<Vec<WriteRule>>>,
@@ -1389,16 +1634,42 @@ async fn record_write_request(
         uri.path(),
         String::from_utf8_lossy(&body)
     );
-    let Some(rule) = rules.iter().find(|rule| rule.path == uri.path()) else {
-        return StatusCode::NO_CONTENT.into_response();
+    // `Some(..)`：成功時帶的 JSON 本體；`None`：成功無本體。本體不合法直接回正式端點同樣的錯誤。
+    let created = if method == Method::POST && uri.path() == "/api/repo-projects" {
+        match fake_created_repo_project(&body) {
+            Ok(json) => Some(json),
+            Err(rejection) => return fake_add_rejection_response(rejection),
+        }
+    } else {
+        None
+    };
+    let ok = |status: StatusCode| match &created {
+        Some(json) => (
+            status,
+            [(header::CONTENT_TYPE, "application/json")],
+            json.clone(),
+        )
+            .into_response(),
+        None => status.into_response(),
+    };
+    let rule = rules.iter().find(|rule| rule.path == uri.path());
+    let Some(rule) = rule else {
+        return if created.is_some() {
+            ok(StatusCode::CREATED)
+        } else {
+            ok(StatusCode::NO_CONTENT)
+        };
     };
     tokio::time::sleep(rule.delay).await;
     if rule.status.is_success() {
-        return rule.status.into_response();
+        return ok(rule.status);
     }
-    let body =
-        serde_json::json!({ "error": format!("ui_preview 模擬回應 {}", rule.status.as_u16()) })
-            .to_string();
+    let mut body =
+        serde_json::json!({ "error": format!("ui_preview 模擬回應 {}", rule.status.as_u16()) });
+    if let Some(code) = &rule.code {
+        body["code"] = serde_json::Value::String(code.clone());
+    }
+    let body = body.to_string();
     (
         rule.status,
         [(header::CONTENT_TYPE, "application/json")],
@@ -1675,7 +1946,8 @@ fn ansi_sample() -> String {
 /// 會立即判「pane 已不存在」並清掉選取，檔案樹跟著回到空狀態）。
 fn default_output_modes() -> HashMap<PaneId, OutputMode> {
     let mut modes = HashMap::new();
-    for pane in ["wJ:p1", "wJ:p4", "wJ:p5"] {
+    // repo-projects task 4.5：`wJ:p6`／`wJ:p7` 是 Repo Project 情境的固定 pane，選定後輸出端點不能 404。
+    for pane in ["wJ:p1", "wJ:p4", "wJ:p5", "wJ:p6", "wJ:p7"] {
         modes.insert(
             PaneId::new(pane),
             OutputMode::Growing {
@@ -2206,10 +2478,10 @@ mod tests {
     #[test]
     fn parse_output_modes_none_returns_defaults() {
         let modes = parse_output_modes(None).expect("未設定應該成功回傳預設值");
-        assert_eq!(modes.len(), 5);
+        assert_eq!(modes.len(), 7);
         // file-review task 4.2：檔案樹的兩個 fixture pane 可被選定，輸出端點不能回 404（否則
         // Live Output 立即判「pane 已不存在」、清掉選取，檔案樹也跟著回到空狀態）。
-        for pane in ["wJ:p4", "wJ:p5"] {
+        for pane in ["wJ:p4", "wJ:p5", "wJ:p6", "wJ:p7"] {
             assert!(
                 matches!(
                     modes.get(&PaneId::new(pane)),
@@ -2717,7 +2989,9 @@ mod tests {
 
     #[test]
     fn validate_known_panes_rejects_unknown_output_mode_pane() {
-        let known = known_ids(&["wJ:p1", "wJ:p2", "wJ:p3", "wJ:p4", "wJ:p5"]);
+        let known = known_ids(&[
+            "wJ:p1", "wJ:p2", "wJ:p3", "wJ:p4", "wJ:p5", "wJ:p6", "wJ:p7",
+        ]);
         let modes = parse_output_modes(Some("wJ:p9=ticker")).expect("合法規則應該解析成功");
         let error = validate_known_panes(&modes, &None, &known)
             .expect_err("COCKPIT_PREVIEW_OUTPUT_MODES 指到不存在的 pane id 應該回錯");
@@ -2734,7 +3008,9 @@ mod tests {
 
     #[test]
     fn validate_known_panes_rejects_unknown_vanish_pane() {
-        let known = known_ids(&["wJ:p1", "wJ:p2", "wJ:p3", "wJ:p4", "wJ:p5"]);
+        let known = known_ids(&[
+            "wJ:p1", "wJ:p2", "wJ:p3", "wJ:p4", "wJ:p5", "wJ:p6", "wJ:p7",
+        ]);
         let modes = default_output_modes();
         let vanish = parse_vanish_pane(Some("wJ:p9=5000")).expect("合法設定應該解析成功");
         let error = validate_known_panes(&modes, &vanish, &known)
@@ -2752,7 +3028,9 @@ mod tests {
 
     #[test]
     fn validate_known_panes_accepts_defaults() {
-        let known = known_ids(&["wJ:p1", "wJ:p2", "wJ:p3", "wJ:p4", "wJ:p5"]);
+        let known = known_ids(&[
+            "wJ:p1", "wJ:p2", "wJ:p3", "wJ:p4", "wJ:p5", "wJ:p6", "wJ:p7",
+        ]);
         let modes = default_output_modes();
         assert!(validate_known_panes(&modes, &None, &known).is_ok());
     }
@@ -3489,6 +3767,482 @@ mod tests {
         let error = add_review_fixture_panes(&mut state, &fixture)
             .expect_err("runtime 或 workspace 不存在時應該回錯，而不是靜默什麼都不做");
         assert!(format!("{error:#}").contains(OUTPUT_RUNTIME_ID));
+    }
+
+    // -----------------------------------------------------------------------
+    // repo-projects task 4.5：Repo Project fixture 與假路由
+    // -----------------------------------------------------------------------
+
+    /// fixture 投影加上 file-review 的兩個 pane（tab `wJ:t2`）之後，再套用 Repo Project 情境。
+    fn state_with_repo_project() -> ProjectedState {
+        let mut state: ProjectedState =
+            serde_json::from_str(FIXTURE).expect("fixture 應該能反序列化");
+        let fixture = ReviewFixture {
+            temp_root: PathBuf::from(r"C:\fake"),
+            review_repo: PathBuf::from(r"C:\fake\review-repo"),
+            other_repo: PathBuf::from(r"C:\fake\other-repo"),
+        };
+        add_review_fixture_panes(&mut state, &fixture).expect("掛 review pane 應成功");
+        apply_repo_project_scenario(&mut state).expect("Repo Project 情境應成功");
+        state
+    }
+
+    #[test]
+    fn repo_project_scenario_appends_a_repo_project_after_the_hand_written_ones() {
+        let before: ProjectedState = serde_json::from_str(FIXTURE).unwrap();
+        let state = state_with_repo_project();
+
+        assert_eq!(state.projects.len(), before.projects.len() + 1);
+        let ids: Vec<&str> = state.projects.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["cockpit", "p", PREVIEW_REPO_PROJECT_ID],
+            "Repo Project 排在手寫的後面"
+        );
+        for project in &state.projects[..before.projects.len()] {
+            assert_eq!(project.kind, ProjectKind::Config);
+            assert!(project.repo.is_none());
+        }
+
+        let project = state.projects.last().unwrap();
+        assert_eq!(project.kind, ProjectKind::Repo);
+        assert_eq!(
+            project.repo.as_ref().map(RepoKey::as_str),
+            Some(PREVIEW_REPO_KEY)
+        );
+    }
+
+    #[test]
+    fn repo_project_scenario_has_a_linked_worktree_workstream_and_a_main_worktree_one() {
+        let state = state_with_repo_project();
+        let project = state.projects.last().unwrap();
+
+        assert_eq!(project.workstreams.len(), 2);
+        assert_eq!(project.tasks.len(), 2, "每條工作線一張 task");
+        let linked: Vec<_> = project
+            .workstreams
+            .iter()
+            .filter(|w| w.worktree.is_some())
+            .collect();
+        assert_eq!(linked.len(), 1, "恰好一條位於 linked worktree");
+        assert_eq!(linked[0].worktree.as_deref(), Some("demo-app-wt"));
+
+        for ws in &project.workstreams {
+            let ProjectedBinding::Bound {
+                runtime,
+                pane_id,
+                source,
+                ..
+            } = &ws.binding
+            else {
+                panic!("固定 pane 的工作線應為 bound：{:?}", ws.binding);
+            };
+            assert_eq!(*source, BindingSource::Pane, "{}", ws.id);
+            // 綁定的 pane 要真的在假投影的 pane 樹裡，而且沒有 exited。
+            let pane = state
+                .runtimes
+                .iter()
+                .filter(|rt| rt.id == *runtime)
+                .flat_map(|rt| &rt.workspaces)
+                .flat_map(|w| &w.tabs)
+                .flat_map(|t| &t.panes)
+                .find(|p| p.id == *pane_id)
+                .unwrap_or_else(|| panic!("pane {pane_id} 不在 pane 樹"));
+            assert!(!pane.exited);
+            // 目前 task 就是該工作線自己的 task（mark 為 none）。
+            let task = project
+                .tasks
+                .iter()
+                .find(|t| t.workstream == ws.id)
+                .expect("工作線有 task");
+            assert_eq!(ws.active_task.as_ref(), Some(&task.id));
+            assert_eq!(task.mark, Mark::None);
+            assert!(!ws.activity_undeclared);
+            assert!(project.stages.contains(&task.stage));
+        }
+    }
+
+    #[test]
+    fn repo_project_scenario_lists_two_detected_repos_not_yet_added() {
+        let state = state_with_repo_project();
+
+        assert_eq!(state.detected_repos.len(), 2);
+        let added = state.projects.last().unwrap().repo.clone().unwrap();
+        for detected in &state.detected_repos {
+            assert_ne!(detected.repo, added, "已加入的 repo 不再列在偵測區");
+            assert!(detected.pane_count >= 1);
+        }
+    }
+
+    #[test]
+    fn repo_project_scenario_strings_use_neutral_fake_paths() {
+        let state = state_with_repo_project();
+        let project = serde_json::to_string(state.projects.last().unwrap()).unwrap();
+        let detected = serde_json::to_string(&state.detected_repos).unwrap();
+        let mut forbidden: Vec<String> = ["USERNAME", "USER"]
+            .iter()
+            .filter_map(|v| env::var(v).ok())
+            .filter(|v| !v.trim().is_empty())
+            .collect();
+        forbidden.push(env::temp_dir().to_string_lossy().into_owned());
+        for text in [&project, &detected] {
+            for bad in &forbidden {
+                assert!(
+                    !text.to_lowercase().contains(&bad.to_lowercase()),
+                    "fixture 字串不得含 {bad:?}：{text}"
+                );
+            }
+        }
+        assert!(
+            detected.contains(r"d:\\work\\"),
+            "偵測區用中性假路徑：{detected}"
+        );
+    }
+
+    #[test]
+    fn repo_project_scenario_panes_get_a_default_output_mode() {
+        let state = state_with_repo_project();
+        let modes = default_output_modes();
+        let project = state.projects.last().unwrap();
+        for ws in &project.workstreams {
+            let ProjectedBinding::Bound { pane_id, .. } = &ws.binding else {
+                panic!("應為 bound");
+            };
+            assert!(
+                matches!(
+                    modes.get(pane_id),
+                    Some(OutputMode::Growing { start_lines: 0, delay }) if delay.is_zero()
+                ),
+                "{pane_id} 選定後輸出端點不能 404"
+            );
+        }
+    }
+
+    #[test]
+    fn repo_project_scenario_errs_when_review_tab_is_missing() {
+        let mut state: ProjectedState = serde_json::from_str(FIXTURE).unwrap();
+        let error = apply_repo_project_scenario(&mut state)
+            .expect_err("沒有 tab wJ:t2 時應回錯，不靜默略過");
+        assert!(format!("{error:#}").contains("wJ:t2"));
+    }
+
+    async fn call(app: Router, method: &str, path: &str, body: &str) -> (StatusCode, String) {
+        use http_body_util::BodyExt as _;
+        use tower::ServiceExt as _;
+        let request = axum::http::Request::builder()
+            .method(method)
+            .uri(path)
+            .header("x-herdr-pane-id", "wJ:p6")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    fn preview_write_app(rules: Vec<WriteRule>) -> Router {
+        write_routes().with_state(Arc::new(rules))
+    }
+
+    #[tokio::test]
+    async fn post_repo_projects_returns_201_with_the_derived_id() {
+        let app = preview_write_app(Vec::new());
+        let body = serde_json::json!({
+            "repo": PREVIEW_DETECTED_REPOS[1].0,
+            "stages": ["Plan", "Build"],
+        })
+        .to_string();
+        let (status, text) = call(app, "POST", "/api/repo-projects", &body).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        // 沒給名稱時用偵測區的預設名稱（`Docs Site`）產生 id，規則同正式後端。
+        assert_eq!(json, serde_json::json!({ "id": "Docs-Site" }));
+    }
+
+    /// repo-projects task 7.2（真機冒煙發現 1）：本體開頭一個 UTF-8 BOM 照常接受，與正式端點共用同一個解析函式。
+    #[tokio::test]
+    async fn post_repo_projects_accepts_one_leading_utf8_bom() {
+        let app = preview_write_app(Vec::new());
+        let body = format!(
+            "\u{FEFF}{}",
+            serde_json::json!({
+                "repo": PREVIEW_DETECTED_REPOS[1].0,
+                "stages": ["Plan", "Build"],
+            })
+        );
+        let (status, text) = call(app, "POST", "/api/repo-projects", &body).await;
+        assert_eq!(status, StatusCode::CREATED, "{text}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&text).unwrap(),
+            serde_json::json!({ "id": "Docs-Site" })
+        );
+    }
+
+    #[tokio::test]
+    async fn post_repo_projects_with_a_name_derives_the_id_from_the_name() {
+        let app = preview_write_app(Vec::new());
+        let body = r#"{"repo":"d:\\work\\billing-api\\.git","stages":["A"],"name":"App 前端 v2"}"#;
+        let (status, text) = call(app, "POST", "/api/repo-projects", body).await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&text).unwrap(),
+            serde_json::json!({ "id": "App-v2" })
+        );
+    }
+
+    #[tokio::test]
+    async fn post_repo_projects_with_a_malformed_body_is_400_invalid_body() {
+        for body in [
+            "",
+            "not json",
+            "[]",
+            r#"{"stages":["A"]}"#,
+            r#"{"repo":"x"}"#,
+        ] {
+            let app = preview_write_app(Vec::new());
+            let (status, text) = call(app, "POST", "/api/repo-projects", body).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body:?}");
+            let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(json["code"], "invalid_body", "{body:?}");
+        }
+    }
+
+    /// repo-projects task 5.1 前置修正（4.5 審查）：假 POST 的本體驗證與正式端點相同——未知欄位、型別不對
+    /// 一律 400 `invalid_body`，名稱與 stages 依 core 的正規化規則回 `invalid_name`／`invalid_stages`，錯誤本體
+    /// 與正式端點逐字相同（`{"error","code"}`）。前端送錯形狀時 preview 也要失敗。
+    #[tokio::test]
+    async fn post_repo_projects_rejects_bodies_the_real_endpoint_rejects() {
+        let real = |error: cockpit::progress_service::RepoProjectError| serde_json::json!({ "error": error.to_string(), "code": error.code() });
+        let cases: Vec<(&str, StatusCode, Option<serde_json::Value>)> = vec![
+            (
+                r#"{"repo":"d:\\work\\billing-api\\.git","stages":["A"],"extra":1}"#,
+                StatusCode::BAD_REQUEST,
+                None,
+            ),
+            (
+                r#"{"repo":1,"stages":["A"]}"#,
+                StatusCode::BAD_REQUEST,
+                None,
+            ),
+            (
+                r#"{"repo":"d:\\work\\billing-api\\.git","stages":[1]}"#,
+                StatusCode::BAD_REQUEST,
+                None,
+            ),
+            (
+                r#"{"repo":"d:\\work\\billing-api\\.git","stages":["A"],"name":5}"#,
+                StatusCode::BAD_REQUEST,
+                None,
+            ),
+            (
+                r#"{"repo":"d:\\work\\billing-api\\.git","stages":[]}"#,
+                StatusCode::BAD_REQUEST,
+                Some(real(
+                    cockpit::progress_service::RepoProjectError::InvalidStages,
+                )),
+            ),
+            (
+                r#"{"repo":"d:\\work\\billing-api\\.git","stages":["A","A"]}"#,
+                StatusCode::BAD_REQUEST,
+                Some(real(
+                    cockpit::progress_service::RepoProjectError::InvalidStages,
+                )),
+            ),
+            (
+                r#"{"repo":"d:\\work\\billing-api\\.git","stages":["A"],"name":"   "}"#,
+                StatusCode::BAD_REQUEST,
+                Some(real(
+                    cockpit::progress_service::RepoProjectError::InvalidName,
+                )),
+            ),
+        ];
+        for (body, status, expected) in cases {
+            let app = preview_write_app(Vec::new());
+            let (got, text) = call(app, "POST", "/api/repo-projects", body).await;
+            assert_eq!(got, status, "{body}");
+            let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+            match expected {
+                Some(expected) => assert_eq!(json, expected, "{body}"),
+                None => assert_eq!(json["code"], "invalid_body", "{body}"),
+            }
+        }
+    }
+
+    /// 同上：`invalid_body` 的本體與正式端點逐字相同（不是 preview 自己的另一句話）。
+    #[tokio::test]
+    async fn post_repo_projects_invalid_body_matches_the_real_endpoint_text() {
+        let preview = preview_write_app(Vec::new());
+        let (_, preview_text) = call(preview, "POST", "/api/repo-projects", "not json").await;
+        let state = AppState::new(watch::channel(Arc::new(fixture_state())).1);
+        state.port.store(7770, Ordering::SeqCst);
+        let real = router(state);
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/repo-projects")
+            .header("host", "127.0.0.1:7770")
+            .body(axum::body::Body::from("not json"))
+            .unwrap();
+        let response = {
+            use tower::ServiceExt as _;
+            real.oneshot(request).await.unwrap()
+        };
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = {
+            use http_body_util::BodyExt as _;
+            response.into_body().collect().await.unwrap().to_bytes()
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&preview_text).unwrap(),
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn patch_and_delete_repo_project_and_agent_advance_return_204() {
+        for (method, path, body) in [
+            ("PATCH", "/api/repo-projects/demo-app", r#"{"name":"x"}"#),
+            ("DELETE", "/api/repo-projects/demo-app", ""),
+            ("POST", "/api/agent/advance", ""),
+        ] {
+            let app = preview_write_app(Vec::new());
+            let (status, text) = call(app, method, path, body).await;
+            assert_eq!(status, StatusCode::NO_CONTENT, "{method} {path}");
+            assert!(text.is_empty(), "{method} {path}：{text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn new_routes_reject_other_methods_with_405() {
+        for (method, path) in [
+            ("GET", "/api/repo-projects"),
+            ("PUT", "/api/repo-projects"),
+            ("GET", "/api/repo-projects/demo-app"),
+            ("POST", "/api/repo-projects/demo-app"),
+            ("GET", "/api/agent/advance"),
+            ("DELETE", "/api/agent/advance"),
+        ] {
+            let app = preview_write_app(Vec::new());
+            let (status, _) = call(app, method, path, "").await;
+            assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED, "{method} {path}");
+        }
+    }
+
+    #[test]
+    fn write_rules_without_code_keep_the_old_format() {
+        let rules =
+            parse_write_rules("/api/projects/cockpit/tasks/be-1/fail=1500:409; /a=0:204").unwrap();
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].path, "/api/projects/cockpit/tasks/be-1/fail");
+        assert_eq!(rules[0].delay, Duration::from_millis(1500));
+        assert_eq!(rules[0].status, StatusCode::CONFLICT);
+        assert_eq!(rules[0].code, None);
+        assert_eq!(rules[1].path, "/a");
+        assert_eq!(rules[1].status, StatusCode::NO_CONTENT);
+        assert_eq!(rules[1].code, None);
+    }
+
+    #[test]
+    fn write_rules_accept_an_optional_error_code() {
+        let rules = parse_write_rules("/api/repo-projects/demo-app=0:400:invalid_stages").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].path, "/api/repo-projects/demo-app");
+        assert_eq!(rules[0].status, StatusCode::BAD_REQUEST);
+        assert_eq!(rules[0].code.as_deref(), Some("invalid_stages"));
+    }
+
+    #[test]
+    fn write_rules_reject_an_empty_or_malformed_code() {
+        for raw in [
+            "/a=0:400:",
+            "/a=0:400: ",
+            "/a=0:400:bad code",
+            "/a=0:400:a:b",
+        ] {
+            assert!(parse_write_rules(raw).is_err(), "{raw:?} 應該被拒絕");
+        }
+    }
+
+    #[tokio::test]
+    async fn write_rule_with_code_puts_the_code_in_the_error_body() {
+        let rules = vec![WriteRule {
+            path: "/api/repo-projects/demo-app".to_string(),
+            delay: Duration::ZERO,
+            status: StatusCode::BAD_REQUEST,
+            code: Some("invalid_stages".to_string()),
+        }];
+        let (status, text) = call(
+            preview_write_app(rules),
+            "PATCH",
+            "/api/repo-projects/demo-app",
+            r#"{"stages":[{"name":"A","from":null}]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(json["code"], "invalid_stages");
+        assert!(json["error"].is_string());
+    }
+
+    #[tokio::test]
+    async fn write_rule_without_code_has_no_code_in_the_error_body() {
+        let rules = vec![WriteRule {
+            path: "/api/repo-projects/demo-app".to_string(),
+            delay: Duration::ZERO,
+            status: StatusCode::CONFLICT,
+            code: None,
+        }];
+        let (status, text) = call(
+            preview_write_app(rules),
+            "DELETE",
+            "/api/repo-projects/demo-app",
+            "",
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(json.get("code").is_none(), "{json}");
+        assert!(json["error"].is_string());
+    }
+
+    #[tokio::test]
+    async fn write_rules_apply_to_the_new_routes_too() {
+        let rules = || {
+            vec![
+                WriteRule {
+                    path: "/api/repo-projects".to_string(),
+                    delay: Duration::ZERO,
+                    status: StatusCode::CONFLICT,
+                    code: None,
+                },
+                WriteRule {
+                    path: "/api/repo-projects/demo-app".to_string(),
+                    delay: Duration::ZERO,
+                    status: StatusCode::NOT_FOUND,
+                    code: None,
+                },
+            ]
+        };
+        let ok_body = r#"{"repo":"d:\\work\\billing-api\\.git","stages":["A"]}"#;
+        let (status, _) = call(
+            preview_write_app(rules()),
+            "POST",
+            "/api/repo-projects",
+            ok_body,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let (status, _) = call(
+            preview_write_app(rules()),
+            "DELETE",
+            "/api/repo-projects/demo-app",
+            "",
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        // 沒有規則的路徑照常回成功碼。
+        let (status, _) = call(preview_write_app(rules()), "POST", "/api/agent/advance", "").await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
     }
 
     // -----------------------------------------------------------------------

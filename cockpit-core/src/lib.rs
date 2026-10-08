@@ -10,17 +10,20 @@ pub mod store;
 pub mod types;
 
 pub use domain::{
-    BindingResolution, BindingSource, BindingSpec, DomainState, Mark, Override, ProgressOp,
-    ProjectDef, ProjectId, Rejection, StageStatus, TaskDef, TaskId, TaskProgress, WorkstreamDef,
-    WorkstreamId,
+    BindingResolution, BindingSource, BindingSpec, DomainState, Mark, Override, PaneRepo,
+    PaneRepos, PinnedPane, ProgressOp, ProjectDef, ProjectId, Rejection, RepoExpansion, RepoKey,
+    RepoProjectDef, StageEdit, StageRemap, StageStatus, TaskDef, TaskId, TaskProgress,
+    WorkstreamDef, WorkstreamId, apply_stage_edits, derive_repo_project_id, expand_repo_projects,
+    is_disallowed_label_char, is_valid_repo_project_id, normalize_repo_project_name,
+    normalize_repo_project_stages, pane_item_id, split_pane_item_id,
 };
 pub use driver::{Policy, run};
 pub use handle::{StoreHandle, spawn_projector, spawn_projector_with_stale_sink};
 pub use message::{Message, MessageCode};
 pub use projection::{
-    ProjectedBinding, ProjectedConnection, ProjectedEvent, ProjectedPane, ProjectedProject,
-    ProjectedRuntime, ProjectedState, ProjectedTab, ProjectedTask, ProjectedWorkspace,
-    ProjectedWorkstream, StaleOverride, project, project_with_stale,
+    DetectedRepo, ProjectKind, ProjectedBinding, ProjectedConnection, ProjectedEvent,
+    ProjectedPane, ProjectedProject, ProjectedRuntime, ProjectedState, ProjectedTab, ProjectedTask,
+    ProjectedWorkspace, ProjectedWorkstream, StaleOverride, project, project_with_stale,
 };
 pub use runtime::{
     AgentRuntime, AnsiColor, OutputFormat, OutputSegment, PaneOutput, READ_OUTPUT_FAILED_PREFIX,

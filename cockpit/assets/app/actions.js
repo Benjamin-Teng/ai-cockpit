@@ -69,6 +69,17 @@
     error: null, // null | string
     selected: null, // null | { runtime, paneId }（design D8）
     selectedProject: null, // null | string（design D6；direction-01-visual task 3.1）
+    // 加入成功、等待含它的投影到達後自動選定的 Project id（repo-projects task 5.1）。只存在這裡（不在 DOM 上），
+    // 整頁重畫不會丟掉；render.js 的 paint() 每次重畫前呼叫 applyPendingProjectSelection() 判斷。
+    pendingProjectSelection: null, // null | string
+    // 「加入」的進行狀態（repo-projects task 5.1 fix round 1；審查 Important 1）：repo key → "sending"（請求進行中）或
+    // "added"（已回 201、投影的偵測區還列著它）。有標記的 repo 的「加入」呈現停用（aria-disabled，render.js），再按
+    // 直接略過——連點兩下不會送出第二筆、被 409 repo_already_added 拒絕而與成功並存。只存在這裡（不在 DOM），整頁
+    // 重畫不會丟掉。失敗即刪；"added" 由 pruneAddingRepos() 在投影的偵測區不再列著它時刪。
+    addingRepos: {},
+    // 開著「⋯」選單的 Repo Project id（repo-projects task 5.2）。只存在這裡（不在 DOM），整頁重畫不會丟；render.js 依它
+    // 畫選單。開關選單不是「畫面操作」（不遞增 latestOp、不清錯誤）——真正的寫入是對話框送出的那一次。
+    projectMenu: null, // null | string
   };
 
   function uiSnapshot() {
@@ -77,6 +88,8 @@
       error: ui.error,
       selected: ui.selected === null ? null : { runtime: ui.selected.runtime, paneId: ui.selected.paneId },
       selectedProject: ui.selectedProject,
+      addingRepos: Object.assign({}, ui.addingRepos),
+      projectMenu: ui.projectMenu,
     };
   }
 
@@ -171,10 +184,75 @@
     return true;
   }
 
+  // 加入 Repo Project 成功後的自動選定（spec cockpit-dashboard「Project 切換」：加入成功——回 201 與新 Project 的
+  // `id`——後，畫面在含該 `id` 的投影到達時自動選定這個新 Project，只選取一次，之後使用者可自由切換；repo-projects
+  // task 5.1）。render.js 的 paint() 在每次重畫前呼叫，交出最新投影：待選定的 id 已在 `projects` 裡就改成選定它並清掉
+  // 待選定（之後的投影不會再把選取拉回來），回傳該 id；否則回傳 null、待選定保留到下一份投影。投影比 201 回應先到時，
+  // 回應到達後的那次重畫（見 add-repo 的成功回呼）就會選定。跟 setSelectedProject() 一樣只改狀態、不另外 repaint()
+  // （呼叫端正在重畫）。
+  function applyPendingProjectSelection(state) {
+    var id = ui.pendingProjectSelection;
+    if (id === null || !state || !Array.isArray(state.projects)) {
+      return null;
+    }
+    for (var i = 0; i < state.projects.length; i += 1) {
+      if (state.projects[i] && state.projects[i].id === id) {
+        ui.selectedProject = id;
+        ui.pendingProjectSelection = null;
+        return id;
+      }
+    }
+    return null;
+  }
+
+  // 「加入」已成功（"added"）的標記，在最新投影的偵測區不再列著該 repo 時刪掉（repo-projects task 5.1 fix round 1）：
+  // 新 Project 出現、repo 離開偵測區，之後若它被移除又回到偵測區，「加入」就恢復可按。"sending" 不在這裡刪——請求還沒有
+  // 結果，由 send() 的結果決定。render.js 的 paint() 每次重畫前呼叫；只改狀態、不 repaint()。
+  function pruneAddingRepos(state) {
+    var detected = state && Array.isArray(state.detected_repos) ? state.detected_repos : [];
+    for (var repo in ui.addingRepos) {
+      if (!Object.prototype.hasOwnProperty.call(ui.addingRepos, repo) || ui.addingRepos[repo] !== "added") {
+        continue;
+      }
+      var listed = false;
+      for (var i = 0; i < detected.length; i += 1) {
+        if (detected[i] && detected[i].repo === repo) {
+          listed = true;
+          break;
+        }
+      }
+      if (!listed) {
+        delete ui.addingRepos[repo];
+      }
+    }
+  }
+
+  // 投影中這個 id 的 Project 是不是 Repo Project（`kind === "repo"`；config 與任何未知的新值都不是）。是就回傳它。
+  function repoProjectIn(state, id) {
+    var projects = state && Array.isArray(state.projects) ? state.projects : [];
+    for (var i = 0; i < projects.length; i += 1) {
+      if (projects[i] && projects[i].id === id) {
+        return projects[i].kind === "repo" ? projects[i] : null;
+      }
+    }
+    return null;
+  }
+
+  // 開著選單的 Project 已不在投影中、或不再是 Repo Project 時收起選單（repo-projects task 5.2），之後它回來也不會自己
+  // 打開。render.js 的 paint() 每次重畫前呼叫；只改狀態、不 repaint()。
+  function pruneProjectMenu(state) {
+    if (ui.projectMenu !== null && repoProjectIn(state, ui.projectMenu) === null) {
+      ui.projectMenu = null;
+    }
+  }
+
   window.cockpitActions = {
     uiSnapshot: uiSnapshot,
     clearSelected: clearSelected,
     setSelectedProject: setSelectedProject,
+    applyPendingProjectSelection: applyPendingProjectSelection,
+    pruneAddingRepos: pruneAddingRepos,
+    pruneProjectMenu: pruneProjectMenu,
     selectPane: selectPane,
   };
 
@@ -186,9 +264,10 @@
   // 的操作之後才失敗時，它的錯誤已經過期，不得蓋掉畫面（task 5.3 fix round 1）。
   var latestOp = 0;
 
-  // 送出一個寫入請求。2xx 呼叫 onSuccess（若有）；非 2xx 或請求失敗、且 op 仍是最近一次操作時，
-  // 把錯誤訊息放進 UI 狀態，直到下一次操作或使用者按「關閉」（spec「畫面操作」）。
-  function send(op, method, url, body, onSuccess) {
+  // 送出一個寫入請求。2xx 呼叫 onSuccess（若有，參數是 fetch 的 Response，本體尚未讀取）；非 2xx 或請求失敗時呼叫
+  // onFailure（若有；不論 op 是不是最近一次操作；參數是要顯示的錯誤訊息，repo-projects task 5.2 的對話框拿它顯示在
+  // 對話框內），且 op 仍是最近一次操作時，把錯誤訊息放進 UI 狀態，直到下一次操作或使用者按「關閉」（spec「畫面操作」）。
+  function send(op, method, url, body, onSuccess, onFailure) {
     var init = { method: method };
     if (body !== undefined) {
       init.headers = { "Content-Type": "application/json" };
@@ -199,7 +278,7 @@
       function (response) {
         if (response.ok) {
           if (onSuccess) {
-            onSuccess();
+            onSuccess(response);
           }
           return undefined;
         }
@@ -217,16 +296,22 @@
           if (reason === null) {
             reason = text === "" ? response.statusText : text;
           }
-          showError(op, t("actions.error.http", { status: response.status, label: label, reason: reason }));
+          fail(t("actions.error.http", { status: response.status, label: label, reason: reason }));
+        }, function () {
+          // 本體讀不到（連線中途斷掉）：仍算失敗，原因用狀態文字。
+          fail(t("actions.error.http", { status: response.status, label: label, reason: response.statusText }));
         });
       },
       function (err) {
-        showError(
-          op,
-          t("actions.error.network", { label: label, reason: err && err.message ? err.message : err })
-        );
+        fail(t("actions.error.network", { label: label, reason: err && err.message ? err.message : err }));
       }
     );
+    function fail(message) {
+      if (onFailure) {
+        onFailure(message);
+      }
+      showError(op, message);
+    }
   }
 
   function showError(op, message) {
@@ -246,6 +331,681 @@
   }
 
   var TASK_OPS = { advance: true, retreat: true, complete: true, fail: true, clear: true };
+
+  // 「加入」送出的預設 stages（spec cockpit-dashboard「Project 切換」：依介面語言，繁中「規劃、實作、審查、完成」，
+  // 英文 Plan、Implement、Review、Complete；repo-projects design D9、task 5.1）。文字在 i18n.js 字典，按下當時才查——
+  // 介面語言載入時決定、切換一律重新載入頁面，所以每次查到的都是目前語言。
+  function defaultStages() {
+    return [
+      t("actions.defaultStage.plan"),
+      t("actions.defaultStage.implement"),
+      t("actions.defaultStage.review"),
+      t("actions.defaultStage.complete"),
+    ];
+  }
+
+  // 「加入」成功（201 `{"id": ...}`）後記下待自動選定的 id，再重畫一次：投影若已先含這個 id，這次重畫就會選定
+  // （見 applyPendingProjectSelection）。本體讀不到或沒有字串 id 時不做事——請求本身已成功，不顯示錯誤。
+  function onRepoProjectAdded(response) {
+    response.json().then(
+      function (body) {
+        if (body && typeof body.id === "string" && body.id !== "") {
+          ui.pendingProjectSelection = body.id;
+          repaint();
+        }
+      },
+      function () {
+        /* 本體不是 JSON：沒有 id 可選，略過 */
+      }
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Repo Project 的管理選單與對話框（spec cockpit-dashboard「Project 切換」；repo-projects design D6／D9、task 5.2）
+  // -------------------------------------------------------------------------
+  //
+  // 對話框是一個 body 底下、#app 之外的 <dialog>（比照 notify.js 的設定面板，design D8）：整頁重畫只換 #app 的子節點，
+  // 對話框的節點、已輸入的內容、焦點與游標位置都不受影響（spec「對話框跨重畫保留」；專案 memory「整頁重畫會丟掉只存在
+  // DOM 上的狀態」）。內容另存在 `dlg`（模組狀態）：輸入時同步寫進 `dlg`，新增、刪除、排序這類結構改變才依 `dlg` 重建列。
+  // 以 showModal() 開啟：頁面其餘部分在開啟期間 inert；Tab／Shift+Tab 在對話框內循環（對話框的 keydown，見
+  // dialogFocusables）；Esc（cancel 事件）與「取消」關閉且不送請求；關閉後焦點回到觸發的「⋯」（依最後輸入方式決定要不要
+  // 外框，見 focusEl）。
+  //
+  // 送出（「儲存」／「移除」）才是「畫面操作」：遞增 latestOp、清錯誤，經 send() 送出 PATCH／DELETE；成功（2xx）關閉對話框，
+  // 畫面不自行改投影、等 /ws 推送；失敗時對話框不關、內容保留，原因同時顯示在對話框內與頁面錯誤橫幅（send() 的 showError，
+  // 英文介面依 code 翻譯）。進行中「儲存」呈 aria-disabled＋aria-busy（不用 disabled：焦點不能掉），再送直接略過。
+  //
+  // 送出前只做不依後端細節的基本提示（空白名稱、空白或重複的 stage 名稱、沒有 stage）：長度、字元等其餘規則一律交給後端，
+  // 以回應的 code 顯示（專案 memory「前端複算後端規則來比對，後端規則一改就靜默誤報」）。名稱與 stage 名稱原樣送出，去除前後
+  // 空白由後端做。stages 本體依對話框列的身分送 `from`：原有的列帶它開啟時的 stage 名稱（逐字），新增的列為 null；順序即
+  // 列的順序，被刪除的列不送（spec「編輯 stage」）。名稱一律經 textContent／input.value 呈現，不以 HTML 插入。
+
+  var DIALOG_KIND = {
+    "project-rename": "rename",
+    "project-edit-stages": "stages",
+    "project-remove": "remove",
+  };
+
+  // 程式焦點一律經 output.js 的共用 helper：最後輸入是滑鼠時不畫焦點外框（專案 memory「滑鼠操作沒聚焦任何元素時，之後的
+  // 程式 focus() 會被 Chrome 判成 :focus-visible」）。只載 render.js／actions.js 的精簡 harness 退回原生 focus()。
+  function focusEl(node) {
+    if (!node || typeof node.focus !== "function") {
+      return;
+    }
+    if (window.cockpitFocus && typeof window.cockpitFocus.focus === "function") {
+      window.cockpitFocus.focus(node);
+    } else {
+      node.focus({ preventScroll: true });
+    }
+  }
+
+  // #app 裡帶這個 data-action 與 data-project 的第一個元素（逐一比對屬性，不組選擇器字串：id 可能含任何字元）。
+  function findProjectControl(action, projectId) {
+    var nodes = root.querySelectorAll("[data-action]");
+    for (var i = 0; i < nodes.length; i += 1) {
+      if (nodes[i].getAttribute("data-action") === action && nodes[i].getAttribute("data-project") === projectId) {
+        return nodes[i];
+      }
+    }
+    return null;
+  }
+
+  function focusFirstMenuItem(projectId) {
+    focusEl(findProjectControl("project-rename", projectId));
+  }
+
+  // 選單開著時按 Esc 收起（焦點原本在選單或「⋯」上時回到「⋯」）；點選單與「⋯」以外的地方也收起。對話框開著時不處理
+  // （頁面其餘部分 inert，Esc 歸對話框）。掛在 document：焦點不在 #app 內時也收得到。
+  document.addEventListener("keydown", function (event) {
+    if (event.defaultPrevented || ui.projectMenu === null || dlg !== null) {
+      return;
+    }
+    if (event.key !== "Escape" && event.key !== "Esc") {
+      return;
+    }
+    var projectId = ui.projectMenu;
+    var active = document.activeElement;
+    var hadFocus =
+      !!active &&
+      root.contains(active) &&
+      active.getAttribute("data-project") === projectId &&
+      /^project-/.test(active.getAttribute("data-action") || "");
+    event.preventDefault();
+    ui.projectMenu = null;
+    repaint();
+    if (hadFocus) {
+      focusEl(findProjectControl("project-menu", projectId));
+    }
+  });
+
+  // 掛在 document 的冒泡階段，晚於 #app 上的 pointerdown 委派：按到「⋯」或選單項目時委派已經處理（切換、開對話框），
+  // 這裡略過；其他位置（含別的按鈕）收起選單。被委派同步重畫換掉的舊節點仍能以 closest() 找到它原本所在的舊選單。
+  document.addEventListener("pointerdown", function (event) {
+    if (ui.projectMenu === null) {
+      return;
+    }
+    var target = event.target;
+    if (
+      target instanceof Element &&
+      (target.closest(".project-menu") !== null || target.closest('[data-action="project-menu"]') !== null)
+    ) {
+      return;
+    }
+    ui.projectMenu = null;
+    repaint();
+  });
+
+  var dialogEl = document.createElement("dialog");
+  dialogEl.className = "project-dialog";
+  dialogEl.setAttribute("aria-labelledby", "project-dialog-title");
+  document.body.appendChild(dialogEl);
+
+  // 開著的對話框：null，或 { kind, project, projectName, name（改名輸入框的值）, rows（stage 列：{ key, from, value }）,
+  // error（對話框內顯示的原因，null 為沒有）, invalid（error 指向的輸入框焦點目標，null 為不標任何輸入框）, sending }。
+  var dlg = null;
+  var rowSeq = 0;
+
+  // 三種對話框；其他值一律不開（fix round 1：新增種類時不會被歸到 else 而變成移除）。
+  var DIALOG_KINDS = { rename: true, stages: true, remove: true };
+
+  function openDialog(kind, projectId) {
+    var project = repoProjectIn(
+      typeof window.cockpitLatestState === "function" ? window.cockpitLatestState() : null,
+      projectId
+    );
+    if (DIALOG_KINDS[kind] !== true || project === null) {
+      return;
+    }
+    if (dlg !== null) {
+      closeDialog(false);
+    }
+    var stages = Array.isArray(project.stages) ? project.stages : [];
+    dlg = {
+      kind: kind,
+      project: projectId,
+      projectName: project.name,
+      name: project.name,
+      rows: stages.map(function (stage) {
+        rowSeq += 1;
+        return { key: rowSeq, from: stage, value: stage };
+      }),
+      // 開啟時的 stages 快照（fix round 1）：送出前與最新投影比對，別處改過就不送（見 staleProblem）。
+      openedStages: stages.slice(),
+      error: null,
+      invalid: null,
+      sending: false,
+    };
+    buildDialog();
+    if (!dialogEl.open) {
+      dialogEl.showModal();
+    }
+    if (kind === "rename") {
+      var input = dialogEl.querySelector("input.project-dialog-name");
+      focusEl(input);
+      input.select();
+    } else if (kind === "stages") {
+      focusDialogPart(dlg.rows.length > 0 ? { row: dlg.rows[0].key, part: "input" } : { op: "add" });
+    } else {
+      // 移除確認：焦點先放在「取消」，誤按 Enter 不會刪掉。
+      focusDialogPart({ op: "cancel" });
+    }
+  }
+
+  // 關閉對話框；restoreFocus 為 true 時焦點回到觸發的「⋯」（找不到——例如 Project 已從投影消失——就不動）。
+  function closeDialog(restoreFocus) {
+    if (dlg === null) {
+      return;
+    }
+    var projectId = dlg.project;
+    dlg = null;
+    if (dialogEl.open) {
+      dialogEl.close();
+    }
+    dialogEl.replaceChildren();
+    dialogEl.removeAttribute("data-dialog");
+    if (restoreFocus) {
+      var trigger = findProjectControl("project-menu", projectId);
+      if (trigger !== null) {
+        focusEl(trigger);
+      } else if (window.cockpitFocusHint && typeof window.cockpitFocusHint.focusProjectFallback === "function") {
+        // fix round 1：「⋯」已不在（Project 在對話框開著時消失）時落到選定的 Project 項目，不讓焦點掉回 <body>。
+        window.cockpitFocusHint.focusProjectFallback();
+      }
+    }
+  }
+
+  function dialogNode(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) {
+      node.className = className;
+    }
+    if (text !== undefined && text !== null) {
+      node.textContent = text;
+    }
+    return node;
+  }
+
+  function dialogButton(label, attrName, attrValue, type) {
+    var button = dialogNode("button", "action-button", label);
+    button.type = type || "button";
+    button.setAttribute(attrName, attrValue);
+    return button;
+  }
+
+  // 依 dlg 重建整個對話框內容（開啟時與 stage 列的結構改變時）。
+  function buildDialog() {
+    dialogEl.setAttribute("data-dialog", dlg.kind);
+    dialogEl.setAttribute("role", dlg.kind === "remove" ? "alertdialog" : "dialog");
+    var form = dialogNode("form", "project-dialog-form");
+    form.noValidate = true;
+    var title;
+    if (dlg.kind === "rename") {
+      title = t("actions.dialog.rename.title", { name: dlg.projectName });
+    } else if (dlg.kind === "stages") {
+      title = t("actions.dialog.stages.title", { name: dlg.projectName });
+    } else if (dlg.kind === "remove") {
+      title = t("actions.dialog.remove.title");
+    }
+    var titleEl = dialogNode("h2", "project-dialog-title", title);
+    titleEl.id = "project-dialog-title";
+    form.appendChild(titleEl);
+
+    if (dlg.kind === "rename") {
+      var field = dialogNode("label", "project-dialog-field");
+      field.appendChild(dialogNode("span", "project-dialog-label", t("actions.dialog.rename.label")));
+      var input = dialogNode("input", "project-dialog-input project-dialog-name");
+      input.type = "text";
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.value = dlg.name;
+      field.appendChild(input);
+      form.appendChild(field);
+    } else if (dlg.kind === "stages") {
+      var hint = dialogNode("p", "project-dialog-text", t("actions.dialog.stages.hint"));
+      hint.id = "project-dialog-text";
+      form.appendChild(hint);
+      form.appendChild(buildStageList());
+      form.appendChild(dialogButton(t("actions.dialog.stages.add"), "data-stage-op", "add"));
+    } else if (dlg.kind === "remove") {
+      var text = dialogNode("p", "project-dialog-text", t("actions.dialog.remove.text", { name: dlg.projectName }));
+      text.id = "project-dialog-text";
+      form.appendChild(text);
+    }
+    if (dlg.kind === "remove") {
+      dialogEl.setAttribute("aria-describedby", "project-dialog-text");
+    } else {
+      dialogEl.removeAttribute("aria-describedby");
+    }
+
+    var error = dialogNode("p", "project-dialog-error");
+    error.id = "project-dialog-error";
+    error.setAttribute("role", "alert");
+    form.appendChild(error);
+
+    var actions = dialogNode("div", "project-dialog-actions");
+    actions.appendChild(dialogButton(t("actions.dialog.cancel"), "data-dialog-op", "cancel"));
+    actions.appendChild(
+      dialogButton(
+        dlg.kind === "remove" ? t("actions.dialog.remove.confirm") : t("actions.dialog.save"),
+        "data-dialog-op",
+        "submit",
+        "submit"
+      )
+    );
+    form.appendChild(actions);
+    dialogEl.replaceChildren(form);
+    syncDialogStatus();
+  }
+
+  function buildStageList() {
+    var list = dialogNode("ol", "stage-list");
+    var count = dlg.rows.length;
+    for (var i = 0; i < count; i += 1) {
+      var row = dlg.rows[i];
+      var n = i + 1;
+      var item = dialogNode("li", "stage-row");
+      item.setAttribute("data-row", String(row.key));
+      var input = dialogNode("input", "project-dialog-input stage-name");
+      input.type = "text";
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.value = row.value;
+      input.setAttribute("aria-label", t("actions.dialog.stages.nameLabel", { n: n }));
+      item.appendChild(input);
+      var buttons = dialogNode("div", "stage-row-actions");
+      var up = dialogButton(t("actions.dialog.stages.up"), "data-stage-op", "up");
+      up.setAttribute("aria-label", t("actions.dialog.stages.upLabel", { n: n }));
+      if (i === 0) {
+        up.setAttribute("aria-disabled", "true");
+      }
+      var down = dialogButton(t("actions.dialog.stages.down"), "data-stage-op", "down");
+      down.setAttribute("aria-label", t("actions.dialog.stages.downLabel", { n: n }));
+      if (i === count - 1) {
+        down.setAttribute("aria-disabled", "true");
+      }
+      var del = dialogButton(t("actions.dialog.stages.delete"), "data-stage-op", "delete");
+      del.setAttribute("aria-label", t("actions.dialog.stages.deleteLabel", { n: n }));
+      buttons.appendChild(up);
+      buttons.appendChild(down);
+      buttons.appendChild(del);
+      item.appendChild(buttons);
+      var note = dialogNode("span", "stage-row-note");
+      item.appendChild(note);
+      syncRowNote(note, row);
+      list.appendChild(item);
+    }
+    return list;
+  }
+
+  // 列下方的小字：新增的列標「新增的 stage」，改過名的原有列標「原為 <原名稱>」，其餘不顯示。
+  function syncRowNote(note, row) {
+    var text = "";
+    if (row.from === null) {
+      text = t("actions.dialog.stages.added");
+    } else if (row.value.trim() !== row.from) {
+      text = t("actions.dialog.stages.from", { from: row.from });
+    }
+    note.textContent = text;
+    note.hidden = text === "";
+  }
+
+  // 對話框內的錯誤訊息與「儲存」的忙碌狀態（不重建其他節點，輸入框的焦點與游標不受影響）。
+  function syncDialogStatus() {
+    var error = dialogEl.querySelector(".project-dialog-error");
+    if (error !== null) {
+      error.textContent = dlg.error === null ? "" : dlg.error;
+      error.hidden = dlg.error === null;
+    }
+    // task 6.1 F4：出錯的輸入框標 aria-invalid＋aria-describedby（指向上面的錯誤訊息）。每次都先清再標，錯誤清掉
+    // （dlg.error 為 null）時屬性跟著移除，不會殘留在已修正的欄位上。
+    var inputs = dialogEl.querySelectorAll("input");
+    for (var k = 0; k < inputs.length; k += 1) {
+      inputs[k].removeAttribute("aria-invalid");
+      inputs[k].removeAttribute("aria-describedby");
+    }
+    if (dlg.error !== null && dlg.invalid !== null) {
+      var bad = invalidInputNode(dlg.invalid);
+      if (bad !== null) {
+        bad.setAttribute("aria-invalid", "true");
+        bad.setAttribute("aria-describedby", "project-dialog-error");
+      }
+    }
+    var submit = dialogEl.querySelector('[data-dialog-op="submit"]');
+    if (submit !== null) {
+      if (dlg.sending) {
+        submit.setAttribute("aria-disabled", "true");
+        submit.setAttribute("aria-busy", "true");
+      } else {
+        submit.removeAttribute("aria-disabled");
+        submit.removeAttribute("aria-busy");
+      }
+    }
+    // fix round 1：請求已送出就不能「取消」（關掉對話框看起來像取消了，PATCH／DELETE 其實照樣生效）。進行中「取消」停用、
+    // Esc 不關閉（見 cancel／close 事件），請求結束後恢復。
+    var cancel = dialogEl.querySelector('[data-dialog-op="cancel"]');
+    if (cancel !== null) {
+      if (dlg.sending) {
+        cancel.setAttribute("aria-disabled", "true");
+      } else {
+        cancel.removeAttribute("aria-disabled");
+      }
+    }
+  }
+
+  function rowIndexByKey(key) {
+    for (var i = 0; i < dlg.rows.length; i += 1) {
+      if (dlg.rows[i].key === key) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  // 焦點目標：{ row: key, part: "input" | "up" | "down" | "delete" }、{ op: "add" | "cancel" | "submit" } 或 { name: true }。
+  function focusDialogPart(spec) {
+    var node = null;
+    if (spec.name) {
+      node = dialogEl.querySelector("input.project-dialog-name");
+    } else if (spec.row !== undefined) {
+      var rows = dialogEl.querySelectorAll(".stage-row");
+      for (var i = 0; i < rows.length; i += 1) {
+        if (rows[i].getAttribute("data-row") === String(spec.row)) {
+          node = spec.part === "input" ? rows[i].querySelector("input") : rows[i].querySelector('[data-stage-op="' + spec.part + '"]');
+          break;
+        }
+      }
+    } else if (spec.op === "add") {
+      node = dialogEl.querySelector('[data-stage-op="add"]');
+    } else if (spec.op) {
+      node = dialogEl.querySelector('[data-dialog-op="' + spec.op + '"]');
+    }
+    focusEl(node);
+  }
+
+  // 錯誤指向的輸入框：焦點目標是改名輸入框或某一列的輸入框時才標（焦點在按鈕上的提示不標任何輸入框）。
+  function invalidInputNode(spec) {
+    if (spec.name) {
+      return dialogEl.querySelector("input.project-dialog-name");
+    }
+    if (spec.row !== undefined && spec.part === "input") {
+      var rows = dialogEl.querySelectorAll(".stage-row");
+      for (var i = 0; i < rows.length; i += 1) {
+        if (rows[i].getAttribute("data-row") === String(spec.row)) {
+          return rows[i].querySelector("input");
+        }
+      }
+    }
+    return null;
+  }
+
+  function setDialogError(message, focusSpec) {
+    dlg.error = message;
+    dlg.invalid = focusSpec ? focusSpec : null;
+    syncDialogStatus();
+    if (focusSpec) {
+      focusDialogPart(focusSpec);
+    }
+  }
+
+  // stage 列的結構操作（上移、下移、刪除、新增）：改 dlg.rows、重建、焦點跟著列走。停用（aria-disabled）的鈕不動作。
+  function stageOp(op, button) {
+    if (button.getAttribute("aria-disabled") === "true") {
+      return;
+    }
+    var rowEl = button.closest(".stage-row");
+    var key = rowEl !== null ? Number(rowEl.getAttribute("data-row")) : null;
+    var index = key === null ? -1 : rowIndexByKey(key);
+    var focus = null;
+    if (op === "add") {
+      rowSeq += 1;
+      dlg.rows.push({ key: rowSeq, from: null, value: "" });
+      focus = { row: rowSeq, part: "input" };
+    } else if (index === -1) {
+      return;
+    } else if (op === "up" && index > 0) {
+      dlg.rows.splice(index - 1, 0, dlg.rows.splice(index, 1)[0]);
+      focus = { row: key, part: "up" };
+    } else if (op === "down" && index < dlg.rows.length - 1) {
+      dlg.rows.splice(index + 1, 0, dlg.rows.splice(index, 1)[0]);
+      focus = { row: key, part: "down" };
+    } else if (op === "delete") {
+      dlg.rows.splice(index, 1);
+      // 焦點移到原位置的下一列（沒有就上一列）的「刪除」，都沒有就到「新增 stage」。
+      var next = dlg.rows[index] || dlg.rows[index - 1];
+      focus = next ? { row: next.key, part: "delete" } : { op: "add" };
+    } else {
+      return;
+    }
+    dlg.error = null;
+    dlg.invalid = null;
+    buildDialog();
+    focusDialogPart(focus);
+  }
+
+  // 送出前的基本提示（見區塊開頭）；有問題時回傳 { message, focus }，沒有回傳 null。
+  function dialogProblem() {
+    if (dlg.kind === "rename") {
+      return dlg.name.trim() === "" ? { message: t("actions.dialog.invalid.blankName"), focus: { name: true } } : null;
+    }
+    if (dlg.kind !== "stages") {
+      return null;
+    }
+    if (dlg.rows.length === 0) {
+      return { message: t("actions.dialog.invalid.noStages"), focus: { op: "add" } };
+    }
+    var seen = {};
+    for (var i = 0; i < dlg.rows.length; i += 1) {
+      var name = dlg.rows[i].value.trim();
+      if (name === "") {
+        return { message: t("actions.dialog.invalid.blankStage", { n: i + 1 }), focus: { row: dlg.rows[i].key, part: "input" } };
+      }
+      if (Object.prototype.hasOwnProperty.call(seen, name)) {
+        return { message: t("actions.dialog.invalid.duplicateStage", { name: name }), focus: { row: dlg.rows[i].key, part: "input" } };
+      }
+      seen[name] = true;
+    }
+    return null;
+  }
+
+  // 對話框開著期間 Project 在別處被移除、或 stages 在別處被改過（fix round 1）：以最新投影比對，不同就不送——stages 的
+  // from 是開啟時的名稱，照送會覆寫別處的修改或被拒絕。
+  function staleProblem() {
+    var latest = repoProjectIn(
+      typeof window.cockpitLatestState === "function" ? window.cockpitLatestState() : null,
+      dlg.project
+    );
+    if (latest === null) {
+      return { message: t("actions.dialog.stale.gone"), focus: { op: "cancel" } };
+    }
+    // fix round 2：投影的 stages 缺欄位或不是陣列時不比對（無從判斷是否在別處變更），交給後端以 code 回應。
+    if (
+      dlg.kind === "stages" &&
+      Array.isArray(latest.stages) &&
+      JSON.stringify(latest.stages) !== JSON.stringify(dlg.openedStages)
+    ) {
+      return { message: t("actions.dialog.stale.stages"), focus: { op: "cancel" } };
+    }
+    return null;
+  }
+
+  function submitDialog() {
+    if (dlg === null || dlg.sending) {
+      return;
+    }
+    var problem = dialogProblem() || staleProblem();
+    if (problem !== null) {
+      setDialogError(problem.message, problem.focus);
+      return;
+    }
+    var current = dlg;
+    var url = "/api/repo-projects/" + seg(current.project);
+    var method = "PATCH";
+    var body;
+    if (current.kind === "rename") {
+      body = { name: current.name };
+    } else if (current.kind === "stages") {
+      body = {
+        stages: current.rows.map(function (row) {
+          return { name: row.value, from: row.from };
+        }),
+      };
+    } else if (current.kind === "remove") {
+      method = "DELETE";
+      body = undefined;
+    } else {
+      return;
+    }
+    // 「畫面操作」：遞增 latestOp、清掉上一次的錯誤。
+    var op = (latestOp += 1);
+    ui.error = null;
+    current.sending = true;
+    current.error = null;
+    syncDialogStatus();
+    repaint();
+    send(
+      op,
+      method,
+      url,
+      body,
+      function () {
+        if (dlg === current) {
+          closeDialog(true);
+        }
+      },
+      function (message) {
+        if (dlg === current) {
+          current.sending = false;
+          setDialogError(message, null);
+        }
+      }
+    );
+  }
+
+  // 輸入：寫回 dlg（不重建，游標與焦點不動），清掉對話框內的提示。
+  dialogEl.addEventListener("input", function (event) {
+    var target = event.target;
+    if (dlg === null || !(target instanceof HTMLInputElement)) {
+      return;
+    }
+    if (target.classList.contains("project-dialog-name")) {
+      dlg.name = target.value;
+    } else if (target.classList.contains("stage-name")) {
+      var rowEl = target.closest(".stage-row");
+      var index = rowEl !== null ? rowIndexByKey(Number(rowEl.getAttribute("data-row"))) : -1;
+      if (index === -1) {
+        return;
+      }
+      dlg.rows[index].value = target.value;
+      var note = rowEl.querySelector(".stage-row-note");
+      if (note !== null) {
+        syncRowNote(note, dlg.rows[index]);
+      }
+    }
+    if (dlg.error !== null) {
+      dlg.error = null;
+      dlg.invalid = null;
+      syncDialogStatus();
+    }
+  });
+
+  // 「儲存」與輸入框裡的 Enter 都走表單送出。
+  dialogEl.addEventListener("submit", function (event) {
+    event.preventDefault();
+    submitDialog();
+  });
+
+  dialogEl.addEventListener("click", function (event) {
+    var target = event.target instanceof Element ? event.target.closest("[data-stage-op], [data-dialog-op]") : null;
+    if (dlg === null || target === null || !dialogEl.contains(target)) {
+      return;
+    }
+    if (target.hasAttribute("data-stage-op")) {
+      stageOp(target.getAttribute("data-stage-op"), target);
+    } else if (target.getAttribute("data-dialog-op") === "cancel" && !dlg.sending) {
+      closeDialog(true);
+    }
+  });
+
+  // Esc：取消（不送請求）。自己關閉以便把焦點還原到「⋯」。
+  dialogEl.addEventListener("cancel", function (event) {
+    event.preventDefault();
+    if (dlg !== null && !dlg.sending) {
+      closeDialog(true);
+    }
+  });
+
+  // 瀏覽器在沒有經過 cancel 的情況下直接關閉（例如連按 Esc 時 Chrome 的關閉請求規則）時同樣收尾。
+  // 自己呼叫 close() 時 dlg 已先清掉；close 事件是排進佇列的，所以另看 dialogEl.open，免得蓋到緊接著開的下一個對話框。
+  dialogEl.addEventListener("close", function () {
+    if (dlg === null || dialogEl.open) {
+      return;
+    }
+    if (dlg.sending) {
+      // 請求進行中被瀏覽器強制關閉（連按 Esc 不經可取消的 cancel）：重新開啟，結果仍顯示在這個對話框。
+      dialogEl.showModal();
+      focusDialogPart({ op: "submit" });
+      return;
+    }
+    closeDialog(true);
+  });
+
+  // Tab／Shift+Tab 在對話框內循環：modal 讓頁面其餘部分 inert，但最後一個元素再按 Tab 仍可能跑到瀏覽器介面。
+  function dialogFocusables() {
+    var all = dialogEl.querySelectorAll("input, button");
+    var out = [];
+    for (var i = 0; i < all.length; i += 1) {
+      if (!all[i].disabled && all[i].getClientRects().length > 0) {
+        out.push(all[i]);
+      }
+    }
+    return out;
+  }
+
+  dialogEl.addEventListener("keydown", function (event) {
+    if ((event.key === "Escape" || event.key === "Esc") && dlg !== null && dlg.sending) {
+      // 請求進行中：Esc 不關閉（fix round 1）。在 keydown 就取消預設動作，瀏覽器不會發出關閉請求——只靠 cancel 事件的
+      // preventDefault 不夠，連按 Esc 時 Chrome 的關閉請求規則會跳過可取消的 cancel 直接關閉。
+      event.preventDefault();
+      return;
+    }
+    if (event.key !== "Tab" || event.altKey || event.ctrlKey || event.metaKey) {
+      return;
+    }
+    var items = dialogFocusables();
+    if (items.length === 0) {
+      return;
+    }
+    var active = document.activeElement;
+    var first = items[0];
+    var last = items[items.length - 1];
+    if (event.shiftKey && (active === first || !dialogEl.contains(active))) {
+      event.preventDefault();
+      focusEl(last);
+    } else if (!event.shiftKey && (active === last || !dialogEl.contains(active))) {
+      event.preventDefault();
+      focusEl(first);
+    }
+  });
 
   function perform(el) {
     var data = el.dataset;
@@ -285,6 +1045,10 @@
       // 「頁面顯示錯誤訊息……直到下一次操作或使用者關閉」與「Project 切換」「選定 Project
       // 不是『畫面操作』：不得清除最近一次操作的錯誤訊息……不得離開改綁模式」。
       ui.selectedProject = data.project;
+      // repo-projects task 5.1 fix round 1（控制端裁決：使用者明確選擇優先）：加入成功、新 Project 的投影還沒到時使用者
+      // 自己選了某個 Project，就取消待自動選定，投影到達後不把選取切走。只在這裡清——paint() 的「選定的 Project 已不在
+      // 投影中時退回第一個」也會呼叫 setSelectedProject()，那不是使用者的選擇。
+      ui.pendingProjectSelection = null;
       repaint();
       return;
     }
@@ -300,6 +1064,34 @@
         window.liveOutput.select(data.runtime, data.pane);
       }
       repaint();
+      return;
+    }
+
+    if (action === "project-menu") {
+      // Repo Project 的「⋯」（spec「Project 切換」；repo-projects task 5.2）：開關選單不是「畫面操作」，比照 select-project
+      // 提早處理（不遞增 latestOp、不清錯誤、不碰改綁模式）。打開時焦點移到第一個選單項目（滑鼠按的不呈現外框，見
+      // focusEl）；收起時焦點由 paint() 照被按的「⋯」還原。
+      var menuProject = data.project;
+      var opening = ui.projectMenu !== menuProject;
+      ui.projectMenu = opening ? menuProject : null;
+      repaint();
+      if (opening) {
+        focusFirstMenuItem(menuProject);
+      }
+      return;
+    }
+
+    if (action === "project-rename" || action === "project-edit-stages" || action === "project-remove") {
+      // 選單項目：收起選單、開對話框（同樣不是「畫面操作」；送出時才是）。對話框在 #app 之外，見下方 openDialog()。
+      ui.projectMenu = null;
+      repaint();
+      openDialog(DIALOG_KIND[action], data.project);
+      return;
+    }
+
+    if (action === "add-repo" && Object.prototype.hasOwnProperty.call(ui.addingRepos, data.repo)) {
+      // 這個 repo 的「加入」進行中或已成功、投影尚未反映（按鈕呈 aria-disabled）：不送第二筆、不算一次「畫面操作」——
+      // 不遞增 latestOp、不清錯誤（比照 select-project 的提早處理；repo-projects task 5.1 fix round 1）。
       return;
     }
 
@@ -333,6 +1125,28 @@
       }
     } else if (action === "override-clear") {
       send(op, "DELETE", overrideUrl(data.project, data.workstream));
+    } else if (action === "add-repo") {
+      // 加入 Repo Project（spec「Project 切換」；repo-projects task 5.1）：本體只有 repo（投影 detected_repos 的值原樣
+      // 送回）與依介面語言的預設 stages，不帶 name（用 repo 的預設名稱）。是「畫面操作」：上面已遞增 latestOp、清錯誤，
+      // 失敗時 send() 顯示錯誤（英文介面依 code 翻譯），成功後畫面不自行改投影，等 /ws 推送。
+      var addingRepo = data.repo;
+      ui.addingRepos[addingRepo] = "sending";
+      send(
+        op,
+        "POST",
+        "/api/repo-projects",
+        { repo: addingRepo, stages: defaultStages() },
+        function (response) {
+          // 成功：保留標記到投影的偵測區不再列著它（pruneAddingRepos），避免真後端合併投影前再按一次被 409 拒絕。
+          ui.addingRepos[addingRepo] = "added";
+          onRepoProjectAdded(response);
+        },
+        function () {
+          // 失敗：恢復可按（錯誤訊息由 send() 照「畫面操作」顯示）。
+          delete ui.addingRepos[addingRepo];
+          repaint();
+        }
+      );
     } else if (action !== "error-dismiss") {
       return;
     }

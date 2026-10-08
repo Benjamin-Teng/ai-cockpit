@@ -1026,8 +1026,11 @@ stages = ["Spec"]
     );
 }
 
+/// repo-projects task 4.1 改寫（原 `no_project_means_no_state_path`）：設定檔沒有 project 時仍解出預設位置，
+/// 因為狀態檔可能含畫面加入的 Repo Project（spec `pipeline-config`「狀態檔位置」「沒有 project 仍讀取既有狀態檔」）；
+/// 「沒有被接受的操作就不建檔」由 `cockpit/tests/app.rs` 驗。
 #[test]
-fn no_project_means_no_state_path() {
+fn no_project_still_resolves_default_state_path() {
     let dir = TempDir::new("state-no-project");
     let file = dir.write(
         "cockpit.toml",
@@ -1044,11 +1047,16 @@ kind = "herdr"
 
     let config = config::load(&args, dir.path(), &no_env).expect("沒有 project 應該載入成功");
 
-    assert_eq!(config.state_path, None, "沒有 project 就不該有狀態檔路徑");
+    assert_eq!(
+        config.state_path,
+        Some(dir.path().join("cockpit.state.json"))
+    );
 }
 
+/// repo-projects task 4.1 改寫（原 `zero_config_has_no_state_path`）：零設定模式、`LOCALAPPDATA` 不存在 →
+/// 沒有狀態檔（spec「沒有 LOCALAPPDATA」）。空字串視同不存在。
 #[test]
-fn zero_config_has_no_state_path() {
+fn zero_config_without_localappdata_has_no_state_path() {
     let dir = TempDir::new("state-zero-config");
     let args = Args {
         config: None,
@@ -1056,7 +1064,68 @@ fn zero_config_has_no_state_path() {
     };
 
     let config = config::load(&args, dir.path(), &no_env).expect("零設定應該載入成功");
+    assert_eq!(config.state_path, None);
 
+    let empty = |key: &str| (key == "LOCALAPPDATA").then(String::new);
+    let config = config::load(&args, dir.path(), &empty).expect("零設定應該載入成功");
+    assert_eq!(config.state_path, None);
+}
+
+/// spec「零設定模式的位置」：`%LOCALAPPDATA%\ai-cockpit\cockpit.state.json`；決定位置不建立任何資料夾。
+/// `LOCALAPPDATA` 以注入值指到測試暫存目錄，不碰使用者真的資料夾。
+#[test]
+fn zero_config_state_path_is_under_localappdata() {
+    let dir = TempDir::new("state-zero-config-local");
+    let local = dir.path().join("Local");
+    let local_text = local.display().to_string();
+    let env = move |key: &str| (key == "LOCALAPPDATA").then(|| local_text.clone());
+    let args = Args {
+        config: None,
+        exit_when_idle: false,
+    };
+
+    let config = config::load(&args, dir.path(), &env).expect("零設定應該載入成功");
+
+    assert_eq!(config.source, ConfigSource::ZeroConfig);
+    assert_eq!(
+        config.state_path,
+        Some(local.join("ai-cockpit").join("cockpit.state.json"))
+    );
+    assert!(!local.exists(), "決定位置時不建立任何資料夾");
+}
+
+/// 有設定檔時不看 `LOCALAPPDATA`。
+#[test]
+fn config_file_state_path_ignores_localappdata() {
+    let dir = TempDir::new("state-config-ignores-local");
+    let file = dir.write("cockpit.toml", "");
+    let env = |key: &str| (key == "LOCALAPPDATA").then(|| r"C:\elsewhere".to_string());
+    let args = Args {
+        config: Some(file),
+        exit_when_idle: false,
+    };
+
+    let config = config::load(&args, dir.path(), &env).expect("載入成功");
+
+    assert_eq!(
+        config.state_path,
+        Some(dir.path().join("cockpit.state.json"))
+    );
+}
+
+/// spec「內嵌設定沒有狀態檔」：程式內嵌的設定（`parse_toml`）即使有 project 也沒有狀態檔路徑。
+#[test]
+fn inline_config_has_no_state_path() {
+    let config = config::parse_toml(
+        r#"
+[[project]]
+id = "p"
+stages = ["Spec"]
+"#,
+    )
+    .expect("inline 設定應該解析成功");
+
+    assert_eq!(config.source, ConfigSource::Inline);
     assert_eq!(config.state_path, None);
 }
 

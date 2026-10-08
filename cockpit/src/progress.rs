@@ -19,19 +19,27 @@
 //! - v1 舊檔沒有 `active`（有就是損毀，含 `null`）、v2 每個 project 都必須有 `active` 物件（缺或 `null` 就是損毀）；
 //!   `active` 的無效項目（workstream／task 不存在、task 不屬於該 workstream、載入後標記不是
 //!   none）忽略並 warn（progress-model task 3.1，design D5）。
+//! - v3（repo-projects task 4.1，design D5）：`projects` 同 v2，另有必填的 `repo_projects`（可為空物件）；v1、v2
+//!   出現 `repo_projects`（含 `null`）即損毀。Repo Project 的 id／名稱／stages 不合 D6 規則、或兩個 Repo Project
+//!   的 `repo` 相同即損毀；task 的 stage 不在 stages → 第一個 stage＋warning；task id 的 runtime（最後一個 `~`
+//!   之前）不是設定中的 runtime → 忽略並 warn。Repo Project 的 task 全部讀入，不經 [`resolve_tasks`]（D4）。
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use cockpit_core::{
-    DomainState, Mark, Message, Override, PaneId, ProjectDef, ProjectId, RuntimeId, TaskId,
-    TaskProgress, WorkstreamId,
+    DomainState, Mark, Message, Override, PaneId, ProjectDef, ProjectId, RepoKey, RepoProjectDef,
+    RuntimeId, TaskId, TaskProgress, WorkstreamId, is_valid_repo_project_id,
+    normalize_repo_project_name, normalize_repo_project_stages, split_pane_item_id,
 };
 use serde::{Deserialize, Serialize};
 
-/// 狀態檔寫出時的 `version`（含目前 task 的 v2；progress-model task 3.1）。
-pub const STATE_FILE_VERSION: u64 = 2;
+/// 狀態檔寫出時的 `version`（加上 `repo_projects` 的 v3；repo-projects task 4.1，design D5）。
+pub const STATE_FILE_VERSION: u64 = 3;
+
+/// 含目前 task、沒有 `repo_projects` 的舊版（progress-model task 3.1）。
+const V2_STATE_FILE_VERSION: u64 = 2;
 
 /// 仍可讀取的舊版 `version`：沒有 `active` 欄位，載入後所有 workstream 沒有目前 task。
 const LEGACY_STATE_FILE_VERSION: u64 = 1;
@@ -58,8 +66,8 @@ pub enum ProgressError {
         /// 底層解析器的錯誤訊息。
         message: String,
     },
-    /// `version` 不是 1 或 [`STATE_FILE_VERSION`]。
-    #[error("狀態檔版本不支援（{}）：期望 1 或 {STATE_FILE_VERSION}，收到 {version}", path.display())]
+    /// `version` 不是 1、2 或 [`STATE_FILE_VERSION`]。
+    #[error("狀態檔版本不支援（{}）：期望 1、2 或 {STATE_FILE_VERSION}，收到 {version}", path.display())]
     UnsupportedVersion {
         /// 出錯的檔案路徑。
         path: PathBuf,
@@ -88,6 +96,36 @@ pub enum ProgressError {
 pub(crate) struct StateFile {
     pub(crate) version: u64,
     pub(crate) projects: BTreeMap<String, StateProject>,
+    /// 畫面加入的 Repo Project（v3；repo-projects task 4.1，design D5）。雙層 `Option` 的理由同
+    /// [`StateProject::active`]：缺席＝`None`（v1、v2 必須如此）、`null`＝`Some(None)`（任何版本都損毀）、
+    /// 有值＝`Some(Some(_))`（v3 必須如此）。寫出一律 `Some(Some(_))`。
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_repo_projects",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) repo_projects: Option<Option<BTreeMap<String, StateRepoProject>>>,
+}
+
+/// 單一 Repo Project 在狀態檔中的內容（design D5）：四個欄位皆必填；不保存 `overrides` 與 `active`
+/// （`deny_unknown_fields` 讓它們出現即損毀）。
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StateRepoProject {
+    pub(crate) name: String,
+    pub(crate) repo: String,
+    pub(crate) stages: Vec<String>,
+    pub(crate) tasks: BTreeMap<String, StateTask>,
+}
+
+/// 同 [`deserialize_present_active`]：欄位出現（含 `null`）就包成 `Some`。
+fn deserialize_present_repo_projects<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<BTreeMap<String, StateRepoProject>>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<BTreeMap<String, StateRepoProject>>::deserialize(deserializer).map(Some)
 }
 
 /// 單一 project 在狀態檔中的內容；`tasks`／`overrides` 均為必填（理由見 [`StateFile`]）。
@@ -165,30 +203,152 @@ pub fn load_progress(
         }
     };
 
-    let state_file: StateFile =
+    let mut state_file: StateFile =
         serde_json::from_str(&text).map_err(|error| ProgressError::Parse {
             path: path.to_path_buf(),
             message: error.to_string(),
         })?;
 
     check_version_shape(path, &state_file)?;
+    let repo_projects = state_file
+        .repo_projects
+        .take()
+        .flatten()
+        .unwrap_or_default();
+    let repo = resolve_repo_projects(path, repo_projects, known_runtime_ids)?;
 
-    Ok(apply_state_file(
-        path,
-        projects,
-        state_file,
-        known_runtime_ids,
-    ))
+    let mut domain = apply_state_file(path, projects, state_file, known_runtime_ids);
+    // 被同 id 手寫 project 隱藏的 Repo Project 沒有投影；它的 stage 警告不掛到手寫 project 上（兩邊互不影響），
+    // 只留操作記錄。
+    for (project, list) in repo.warnings {
+        if domain.projects.iter().any(|p| p.id == project) {
+            tracing::warn!(
+                path = %path.display(),
+                project = %project,
+                warnings = ?list,
+                "被同 id 手寫 project 隱藏的 Repo Project 載入時有 stage 警告",
+            );
+        } else {
+            domain.warnings.entry(project).or_default().extend(list);
+        }
+    }
+    domain.repo_projects = repo.defs;
+    domain.repo_progress = repo.progress;
+    domain.refresh_projects();
+    Ok(domain)
 }
 
-/// 依 `version` 檢查 `active` 欄位有無：v1 不得有（含 `null`）、v2 每個 project 都必須有且非 `null`；
-/// 其他版本不支援。
+/// [`resolve_repo_projects`] 的結果。
+struct ResolvedRepoProjects {
+    defs: Vec<RepoProjectDef>,
+    progress: HashMap<ProjectId, HashMap<TaskId, TaskProgress>>,
+    warnings: HashMap<ProjectId, Vec<String>>,
+}
+
+/// 解出 `repo_projects` 區段（design D4、D5）：定義不合 D6 規則或 `repo` 重複 → 損毀；task 全部讀入（不經
+/// [`resolve_tasks`]、不以目前展開的 task 過濾），stage 不在 stages → 第一個 stage＋warning，runtime（task id
+/// 最後一個 `~` 之前）不是設定中的 runtime → 忽略並 warn。
+fn resolve_repo_projects(
+    path: &Path,
+    repo_projects: BTreeMap<String, StateRepoProject>,
+    known_runtime_ids: &HashSet<&str>,
+) -> Result<ResolvedRepoProjects, ProgressError> {
+    let corrupt = |message: String| ProgressError::Parse {
+        path: path.to_path_buf(),
+        message,
+    };
+    let mut resolved = ResolvedRepoProjects {
+        defs: Vec::with_capacity(repo_projects.len()),
+        progress: HashMap::new(),
+        warnings: HashMap::new(),
+    };
+    let mut seen_repos: HashMap<String, String> = HashMap::new();
+
+    for (id, entry) in repo_projects {
+        if !is_valid_repo_project_id(&id) {
+            return Err(corrupt(format!(
+                "repo_projects 的 id 不合法（{id:?}；只能由英數字、_、- 組成）"
+            )));
+        }
+        let name = normalize_repo_project_name(&entry.name).ok_or_else(|| {
+            corrupt(format!(
+                "repo_projects.{id} 的 name 不合法（去除前後空白後須為 1～64 個字元、不含控制字元或不可見的格式字元）"
+            ))
+        })?;
+        let stages = normalize_repo_project_stages(&entry.stages).ok_or_else(|| {
+            corrupt(format!(
+                "repo_projects.{id} 的 stages 不合法（須為 1～12 個互不相同、去除前後空白後 1～32 個字元且不含控制字元或不可見格式字元的名稱）"
+            ))
+        })?;
+        if let Some(other) = seen_repos.insert(entry.repo.clone(), id.clone()) {
+            return Err(corrupt(format!(
+                "repo_projects.{other} 與 repo_projects.{id} 的 repo 相同（{}）",
+                entry.repo
+            )));
+        }
+
+        let project_id = ProjectId::new(id.clone());
+        let mut tasks = HashMap::with_capacity(entry.tasks.len());
+        for (task_id, state_task) in entry.tasks {
+            let runtime_known = split_pane_item_id(&task_id)
+                .is_some_and(|(runtime, _)| known_runtime_ids.contains(runtime.as_str()));
+            if !runtime_known {
+                tracing::warn!(
+                    path = %path.display(),
+                    project = %id,
+                    task = %task_id,
+                    "狀態檔中 Repo Project 的 task 指向設定檔沒有的 runtime，忽略",
+                );
+                continue;
+            }
+            let stage = if stages.contains(&state_task.stage) {
+                state_task.stage
+            } else {
+                resolved
+                    .warnings
+                    .entry(project_id.clone())
+                    .or_default()
+                    .push(
+                        Message::TaskStageReset {
+                            task: task_id.clone(),
+                            stage: state_task.stage,
+                            start: stages[0].clone(),
+                        }
+                        .text(),
+                    );
+                stages[0].clone()
+            };
+            tasks.insert(
+                TaskId::new(task_id),
+                TaskProgress {
+                    stage,
+                    mark: state_task.mark,
+                },
+            );
+        }
+        if !tasks.is_empty() {
+            resolved.progress.insert(project_id.clone(), tasks);
+        }
+        resolved.defs.push(RepoProjectDef {
+            id: project_id,
+            name,
+            repo: RepoKey::new(entry.repo),
+            stages,
+        });
+    }
+    Ok(resolved)
+}
+
+/// 依 `version` 檢查 `active` 與 `repo_projects` 欄位有無：v1 不得有 `active`（含 `null`）、v2／v3 每個
+/// project 都必須有非 `null` 的 `active`；v1／v2 不得有 `repo_projects`（含 `null`）、v3 必須有非 `null` 的
+/// `repo_projects`（design D5）。其他版本不支援。
 fn check_version_shape(path: &Path, state_file: &StateFile) -> Result<(), ProgressError> {
     let parse_error = |message: String| ProgressError::Parse {
         path: path.to_path_buf(),
         message,
     };
-    match state_file.version {
+    let version = state_file.version;
+    match version {
         LEGACY_STATE_FILE_VERSION => {
             if let Some((id, _)) = state_file.projects.iter().find(|(_, p)| p.active.is_some()) {
                 return Err(parse_error(format!(
@@ -196,14 +356,14 @@ fn check_version_shape(path: &Path, state_file: &StateFile) -> Result<(), Progre
                 )));
             }
         }
-        STATE_FILE_VERSION => {
+        V2_STATE_FILE_VERSION | STATE_FILE_VERSION => {
             if let Some((id, _)) = state_file
                 .projects
                 .iter()
                 .find(|(_, p)| !matches!(p.active, Some(Some(_))))
             {
                 return Err(parse_error(format!(
-                    "version 2 的狀態檔每個 project 的 active 都必須是物件（project {id} 缺少該欄位或為 null）"
+                    "version {version} 的狀態檔每個 project 的 active 都必須是物件（project {id} 缺少該欄位或為 null）"
                 )));
             }
         }
@@ -214,7 +374,15 @@ fn check_version_shape(path: &Path, state_file: &StateFile) -> Result<(), Progre
             });
         }
     }
-    Ok(())
+    match (&state_file.repo_projects, version == STATE_FILE_VERSION) {
+        (Some(Some(_)), true) | (None, false) => Ok(()),
+        (_, true) => Err(parse_error(format!(
+            "version {version} 的狀態檔必須有 repo_projects 物件（缺少該欄位或為 null）"
+        ))),
+        (Some(_), false) => Err(parse_error(format!(
+            "version {version} 的狀態檔不應有 repo_projects 欄位"
+        ))),
+    }
 }
 
 /// 把解析成功的狀態檔套到 `projects` 上；純函數（不再碰檔案系統），容錯規則見模組文件。
@@ -286,6 +454,8 @@ fn apply_state_file(
         overrides,
         active,
         warnings,
+        // Repo Project 由 `load_progress` 另外解出後補上（repo-projects task 4.1）。
+        ..DomainState::default()
     }
 }
 
@@ -454,6 +624,7 @@ mod tests {
                     active: Some(Some(BTreeMap::new())),
                 },
             )]),
+            repo_projects: Some(Some(BTreeMap::new())),
         };
 
         let json = serde_json::to_string(&state).expect("序列化應成功");
@@ -465,6 +636,10 @@ mod tests {
         assert!(
             json.contains("\"overrides\":{}"),
             "空 overrides 應明確輸出為 {{}}，不能被省略：{json}"
+        );
+        assert!(
+            json.contains("\"repo_projects\":{}"),
+            "空 repo_projects 應明確輸出為 {{}}：{json}"
         );
         assert!(
             json.contains("\"active\":{}"),

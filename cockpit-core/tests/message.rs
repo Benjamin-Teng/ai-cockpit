@@ -153,6 +153,12 @@ fn catalog() -> Vec<Sample> {
             ],
         ),
         (
+            Message::RepoProjectIdConflict { id: s("app") },
+            "Repo Project「app」與設定檔中的 project id 相同，已隱藏；只能經 API（/api/repo-projects）改名或移除",
+            "repo_project_id_conflict",
+            vec![("id", "app")],
+        ),
+        (
             Message::Raw {
                 text: s("os error 10061"),
             },
@@ -188,6 +194,7 @@ fn catalog_covers_every_variant() {
             | DriftPaneNotFound { .. }
             | DriftRuntimeNotRegistered { .. }
             | EventPayloadUnparsable { .. }
+            | RepoProjectIdConflict { .. }
             | Raw { .. } => {}
         }
         // 每個樣本的代碼唯一（一個變體一個代碼）。
@@ -197,8 +204,8 @@ fn catalog_covers_every_variant() {
             "{code} 在目錄裡只能有一筆"
         );
     }
-    // 18 個變體各一筆；數字不一致代表上面的 match 與樣本表對不上。
-    assert_eq!(table.len(), 18);
+    // 19 個變體各一筆；數字不一致代表上面的 match 與樣本表對不上。
+    assert_eq!(table.len(), 19);
 }
 
 #[test]
@@ -257,6 +264,9 @@ fn classify_does_not_swallow_near_misses() {
         "tab a b 不存在",
         "payload 無法解析：x",
         "兩 個 payload 無法解析：x",
+        // 撞名警告的 id 不能是空的。
+        "Repo Project「」與設定檔中的 project id 相同，已隱藏；只能經 API（/api/repo-projects）改名或移除",
+        "Repo Project「app」與設定檔中的 project id 相同",
     ] {
         assert_eq!(
             Message::classify(text),

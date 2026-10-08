@@ -27,6 +27,7 @@ fn sample_project() -> ProjectDef {
             id: WorkstreamId::new("be"),
             name: "be".to_string(),
             binding: None,
+            pinned_pane: None,
         }],
         tasks: vec![TaskDef {
             id: TaskId::new("t1"),
@@ -35,6 +36,7 @@ fn sample_project() -> ProjectDef {
             stage: "Plan".to_string(),
             depends_on: vec![],
         }],
+        repo: None,
     }
 }
 

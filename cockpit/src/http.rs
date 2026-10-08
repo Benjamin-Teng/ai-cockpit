@@ -24,6 +24,12 @@
 //! 這裡的處理常式本身完全不管請求從哪裡來——那是 middleware 的事，擋下的請求根本不會進到
 //! 這幾個 handler。
 //!
+//! Repo Project 管理端點（repo-projects task 4.4；spec `repo-projects` 管理端點；design D6）：`POST
+//! /api/repo-projects`（201 `{"id"}`）、`PATCH`／`DELETE /api/repo-projects/{pid}`（204），本體一律以 `Bytes` 讀入再解析
+//! （不檢查 Content-Type，同覆蓋端點）；`invalid_body` 由這裡判定，其餘驗證與型別化錯誤（[`RepoProjectError`]）
+//! 在 [`ProgressService`]。覆蓋端點對固定 pane 的工作線回 409 `not_overridable`（[`WriteError::NotOverridable`]，
+//! 在寫入鎖內判定）。`POST /api/agent/advance` 的處理常式在 [`crate::agent`]。
+//!
 //! 輸出讀取端點（live-output task 4.2／4.3；spec `live-output`「輸出讀取端點」「輸出端點只接受
 //! 本機同源請求」；design D2、D4、D6、D7）：`GET
 //! /api/runtimes/{runtime}/panes/{pane}/output`。以常數 200 行呼叫
@@ -102,16 +108,18 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::http::{HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{get, patch, post, put};
 use cockpit_core::{
     AgentRuntime, OutputFormat, Override, PaneId, ProgressOp, ProjectId, ProjectedState,
-    READ_OUTPUT_FAILED_PREFIX, RuntimeError, RuntimeId, TaskId, WorkstreamId,
+    READ_OUTPUT_FAILED_PREFIX, RepoKey, RuntimeError, RuntimeId, StageEdit, TaskId, WorkstreamId,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
 use crate::files;
-use crate::progress_service::{ProgressService, WriteError};
+use crate::progress_service::{
+    NewRepoProject, ProgressService, RepoProjectError, RepoProjectPatch, WriteError,
+};
 use crate::source_check::source_check;
 
 /// 路由共用的狀態：訂閱 [`cockpit_core::StoreHandle`] 廣播的投影（design D9），外加寫入服務、
@@ -126,9 +134,9 @@ pub struct AppState {
     /// 目前投影的訂閱端；`/api/state` 用 `borrow()` 讀現況，`/ws` 每個連線各自
     /// `clone()` 一份自己追（1.6 的 `StoreHandle::subscribe`）。
     pub state: watch::Receiver<Arc<ProjectedState>>,
-    /// 進度與覆蓋的寫入服務；沒有任何 project 時是 `None`（design Migration Plan）——這時
-    /// 任何 project／task／workstream 引用本來就等於「不存在」，寫入端點統一回 404，不需要
-    /// 特別區分「沒有寫入服務」與「project 不存在」。
+    /// 進度與覆蓋的寫入服務。`cockpit::app::build_components` 一律建立（repo-projects task 4.1）；
+    /// `None` 只出現在不帶寫入服務的測試與 `ui_preview`——這時任何 project／task／workstream 引用都等於
+    /// 「不存在」，寫入端點統一回 404，不需要特別區分「沒有寫入服務」與「project 不存在」。
     pub progress: Option<ProgressService>,
     /// 服務實際監聽的埠（`TcpListener::local_addr()`，design D6）。路由表在監聽埠確定之前就
     /// 已經組好（`cockpit::app::build_components` 早於 `bind`），所以用 `Arc<AtomicU16>`：
@@ -309,6 +317,28 @@ pub fn router(app: AppState) -> Router {
         .route(
             "/api/agent/projects/{project}/tasks/{task}/{op}",
             post(crate::agent::agent_op)
+                .fallback(write_method_not_allowed)
+                .route_layer(source_check_layer.clone()),
+        )
+        // 免帶 id 推進（repo-projects task 4.4；design D7）：身分判定與其他 agent 端點相同，沒有路徑參數。
+        .route(
+            "/api/agent/advance",
+            post(crate::agent::advance)
+                .fallback(write_method_not_allowed)
+                .route_layer(source_check_layer.clone()),
+        )
+        // Repo Project 管理端點（repo-projects task 4.4；design D6）：同寫入端點的掛法，本體為 JSON、
+        // 不檢查 Content-Type（同覆蓋端點，design D6 否決把它當防線）。
+        .route(
+            "/api/repo-projects",
+            post(add_repo_project)
+                .fallback(write_method_not_allowed)
+                .route_layer(source_check_layer.clone()),
+        )
+        .route(
+            "/api/repo-projects/{pid}",
+            patch(update_repo_project)
+                .delete(remove_repo_project)
                 .fallback(write_method_not_allowed)
                 .route_layer(source_check_layer.clone()),
         )
@@ -615,7 +645,7 @@ async fn progress_op(
         return invalid_op_response(&format!("不是合法的操作：{op}"), &op);
     };
     let Some(progress) = &app.progress else {
-        // 沒有任何 project 時（design Migration Plan）任何 project 引用都等於「不存在」；
+        // 沒有寫入服務時（只在測試與 ui_preview；app 一律建立）任何 project 引用都等於「不存在」；
         // 借用 WriteError::UnknownProject 的 Display，跟寫入服務判定「project 不存在」時
         // 回的本體用同一套措辭，不要另開一種說法（Codex fix round 1 finding 3：404 也要有
         // `{"error": ...}` 本體）。
@@ -711,6 +741,173 @@ async fn clear_override(
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => write_error_response(error),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Repo Project 管理端點（repo-projects task 4.4；spec `repo-projects`「加入 Repo Project」「修改 Repo Project
+// 名稱與 stages」「移除 Repo Project」「Repo Project 的輸入驗證」；design D6）
+// ---------------------------------------------------------------------------
+
+/// `POST /api/repo-projects` 的本體。未知欄位、缺欄位、型別不對一律解析失敗，回 400 `invalid_body`
+/// （見 [`parse_add_repo_project_body`]）。
+///
+/// 公開（`doc(hidden)`）只因為它是 [`parse_add_repo_project_body`] 的回傳型別：`ui_preview` 的假端點用同一個函式解析
+/// （repo-projects task 5.1 fix round 1），其餘程式碼只在本模組使用。
+#[doc(hidden)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AddRepoProjectRequest {
+    /// repo key（投影 `detected_repos[].repo` 的原值）。
+    pub repo: String,
+    /// stage 清單（尚未正規化）。
+    pub stages: Vec<String>,
+    /// 顯示名稱（選填，尚未正規化）。
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// `PATCH` 本體中的一個 stage：`from` 省略與 `null` 都表示新增的 stage。
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StageEditRequest {
+    name: String,
+    #[serde(default)]
+    from: Option<String>,
+}
+
+/// `PATCH /api/repo-projects/{pid}` 的本體：`name`、`stages` 皆選填，但至少要給一個。
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateRepoProjectRequest {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    stages: Option<Vec<StageEditRequest>>,
+}
+
+/// 400 `invalid_body`：本體不是合法 JSON 物件、欄位缺漏或型別不對、有未知欄位、`PATCH` 兩個欄位都沒給。
+/// 一個固定原文（不回顯本體內容），英文介面以字典範本顯示。
+fn invalid_body_response() -> Response {
+    coded_error_response(
+        StatusCode::BAD_REQUEST,
+        "invalid_body",
+        "請求本體不合法：不是有效的 JSON 物件，或欄位不符合格式",
+    )
+}
+
+/// [`RepoProjectError`] → HTTP 回應（design D6）：`RepoNotDetected`／`UnknownProject` 404、`RepoAlreadyAdded`／
+/// `NotRepoProject` 409、`InvalidName`／`InvalidStages` 400，`Write` 沿用 [`write_error_response`]。
+fn repo_project_error_response(error: RepoProjectError) -> Response {
+    let status = match error {
+        RepoProjectError::Write(write) => return write_error_response(write),
+        RepoProjectError::RepoNotDetected(_) | RepoProjectError::UnknownProject(_) => {
+            StatusCode::NOT_FOUND
+        }
+        RepoProjectError::RepoAlreadyAdded(_) | RepoProjectError::NotRepoProject(_) => {
+            StatusCode::CONFLICT
+        }
+        RepoProjectError::InvalidName | RepoProjectError::InvalidStages => StatusCode::BAD_REQUEST,
+    };
+    coded_error_response_with_params(status, error.code(), &error.to_string(), error.params())
+}
+
+/// 解析 `POST /api/repo-projects` 的本體；不合法時回 400 `invalid_body` 的回應（Box 起來，避免 `Result` 的 Err 過大）。
+/// 正式端點與 `ui_preview` 的假端點共用這一個函式（repo-projects task 5.1 fix round 1），前端送錯形狀時 preview 也會失敗。
+#[doc(hidden)]
+pub fn parse_add_repo_project_body(body: &[u8]) -> Result<AddRepoProjectRequest, Box<Response>> {
+    serde_json::from_slice(strip_utf8_bom(body)).map_err(|_| Box::new(invalid_body_response()))
+}
+
+/// 去掉本體開頭的**一個** UTF-8 BOM（`EF BB BF`），其餘原樣交給 JSON 解析。Windows PowerShell 5.1 在 UTF-8 主控台把
+/// here-string 經標準輸入交給 `curl.exe` 時會多送 BOM（repo-projects task 7.3 真機冒煙實測），`serde_json` 不接受。
+/// Repo Project 管理端點的 POST 與 PATCH 共用。
+fn strip_utf8_bom(body: &[u8]) -> &[u8] {
+    body.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(body)
+}
+
+/// [`RepoProjectError`] 的 HTTP 回應（同 [`repo_project_error_response`]）：讓 `ui_preview` 的假端點產生與正式端點
+/// 逐字相同的錯誤本體，而不必公開回應函式（repo-projects task 5.1 fix round 1）。
+impl IntoResponse for RepoProjectError {
+    fn into_response(self) -> Response {
+        repo_project_error_response(self)
+    }
+}
+
+/// `POST /api/repo-projects`：加入 Repo Project，成功回 201 `{"id": "<新 Project 的 id>"}`。沒有寫入服務時
+/// （只在測試與 `ui_preview`）沒有任何偵測到的 repo，等同 `repo_not_detected`。
+async fn add_repo_project(State(app): State<AppState>, body: Bytes) -> Response {
+    let request = match parse_add_repo_project_body(&body) {
+        Ok(request) => request,
+        Err(response) => return *response,
+    };
+    let repo = RepoKey::new(request.repo);
+    let Some(progress) = &app.progress else {
+        return repo_project_error_response(RepoProjectError::RepoNotDetected(repo));
+    };
+    let new_project = NewRepoProject {
+        repo,
+        stages: request.stages,
+        name: request.name,
+    };
+    match progress.add_repo_project(new_project).await {
+        Ok(id) => with_no_store_headers(
+            (
+                StatusCode::CREATED,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::json!({ "id": id }).to_string(),
+            )
+                .into_response(),
+        ),
+        Err(error) => repo_project_error_response(error),
+    }
+}
+
+/// `PATCH /api/repo-projects/{pid}`：改名稱與（或）stages，成功回 204。兩個欄位都沒給屬 `invalid_body`，
+/// 由這裡判定（服務收到兩欄皆 `None` 只做 pid 查找）。沒有寫入服務時任何 pid 都等於不存在。
+async fn update_repo_project(
+    State(app): State<AppState>,
+    Path(pid): Path<String>,
+    body: Bytes,
+) -> Response {
+    let Ok(request) = serde_json::from_slice::<UpdateRepoProjectRequest>(strip_utf8_bom(&body))
+    else {
+        return invalid_body_response();
+    };
+    if request.name.is_none() && request.stages.is_none() {
+        return invalid_body_response();
+    }
+    let project = ProjectId::new(pid);
+    let Some(progress) = &app.progress else {
+        return repo_project_error_response(RepoProjectError::UnknownProject(project));
+    };
+    let patch = RepoProjectPatch {
+        name: request.name,
+        stages: request.stages.map(|edits| {
+            edits
+                .into_iter()
+                .map(|edit| StageEdit {
+                    name: edit.name,
+                    from: edit.from,
+                })
+                .collect()
+        }),
+    };
+    match progress.update_repo_project(&project, patch).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => repo_project_error_response(error),
+    }
+}
+
+/// `DELETE /api/repo-projects/{pid}`：移除 Repo Project（定義與所有 task 的進度），成功回 204。
+async fn remove_repo_project(State(app): State<AppState>, Path(pid): Path<String>) -> Response {
+    let project = ProjectId::new(pid);
+    let Some(progress) = &app.progress else {
+        return repo_project_error_response(RepoProjectError::UnknownProject(project));
+    };
+    match progress.remove_repo_project(&project).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => repo_project_error_response(error),
     }
 }
 
@@ -887,7 +1084,7 @@ pub(crate) fn with_no_store_headers(mut response: Response) -> Response {
     response
 }
 
-/// [`WriteError`] → HTTP 回應：`Unknown*` 404、`Rejected` 409、`Persist`／`Internal` 500，
+/// [`WriteError`] → HTTP 回應：`Unknown*`／`NoTaskForPane` 404、`Rejected`／`NotOverridable`／`AmbiguousTask` 409、`Persist`／`Internal` 500，
 /// 本體一律是 `{"error": "<原因>"}`（task 4.1 原文「錯誤本體 `{"error": ...}`」——不是只有
 /// 409／500，Codex fix round 1 finding 3：先前 404 回空本體，跟 tasks.md 4.1 明定的形狀
 /// 不符；axum 自己判定路徑完全不匹配的 404（例如未知路徑）不在此限，那種情況根本不會進到
@@ -896,9 +1093,12 @@ pub(crate) fn write_error_response(error: WriteError) -> Response {
     let status = match &error {
         WriteError::UnknownProject(_)
         | WriteError::UnknownTask(_)
-        | WriteError::UnknownWorkstream(_) => StatusCode::NOT_FOUND,
+        | WriteError::UnknownWorkstream(_)
+        | WriteError::NoTaskForPane => StatusCode::NOT_FOUND,
         WriteError::PaneNotBound => StatusCode::FORBIDDEN,
-        WriteError::Rejected(_) => StatusCode::CONFLICT,
+        WriteError::Rejected(_) | WriteError::NotOverridable | WriteError::AmbiguousTask => {
+            StatusCode::CONFLICT
+        }
         WriteError::Persist { .. } | WriteError::Internal(_) => {
             tracing::error!(%error, "寫入端點：狀態檔寫入失敗");
             StatusCode::INTERNAL_SERVER_ERROR

@@ -72,7 +72,10 @@ async function main() {
     // 新增的 tab `wJ:t2`，供瀏覽器驗收腳本測檔案瀏覽），pane 列數從 3 變成 5；這兩個新 pane 是
     // `exited: true`，不影響本情境驗的「未知 agent_status 不破壞畫面」（`panes[0]` 仍是
     // `wJ:p1`，`summary[0]` 仍對得上）。
-    check(rows.length === 5, `pane 列數為 5（${rows.length}）`);
+    // repo-projects task 4.5：fixture 再多兩個未 exited 的 pane（`wJ:p6`／`wJ:p7`，同樣掛在 tab `wJ:t2`，
+    // 是 Repo Project `demo-app` 兩條固定 pane 工作線所綁定的 pane），pane 列數從 5 變成 7；
+    // `panes[0]` 仍是 `wJ:p1`，`summary[0]` 仍對得上。
+    check(rows.length === 7, `pane 列數為 7（${rows.length}）`);
     const summary = rows.map((row) => {
       const cls = (row.match(/status status-([a-z]+)/) || [])[1];
       const text = (row.match(/class="status[^"]*"[^>]*>([^<]*)</) || [])[1];

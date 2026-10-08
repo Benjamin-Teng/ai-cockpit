@@ -4,15 +4,17 @@
 //! 填入（1.6 的投影任務負責決定何時遞增）。所有時間欄位以 `chrono` 轉成 RFC 3339
 //! （UTC、秒精度），格式固定 `YYYY-MM-DDTHH:MM:SSZ`。
 
+use std::collections::BTreeMap;
 use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::binding::{BindingResolution, BindingSource, Override, resolve_binding};
-use crate::domain::config::ProjectDef;
+use crate::domain::config::{PinnedPane, ProjectDef, TaskDef};
 use crate::domain::ids::{ProjectId, TaskId, WorkstreamId};
 use crate::domain::progress::{Mark, TaskProgress};
+use crate::domain::repo::RepoKey;
 use crate::domain::state::DomainState;
 use crate::domain::status::{StageStatus, derive_status};
 use crate::message::{Message, MessageCode};
@@ -33,6 +35,10 @@ pub struct ProjectedState {
     pub runtimes: Vec<ProjectedRuntime>,
     /// 所有 Project，依設定檔順序；沒有 Project 時為空陣列（spec 「Project 投影」）。
     pub projects: Vec<ProjectedProject>,
+    /// 偵測到、尚未被任何 Repo Project 加入的 repo（repo-projects task 3.2，design D8）；依 `name` 不分大小寫
+    /// 排序、同名依 `repo`；沒有時為空陣列。舊 JSON 缺這個欄位時為空陣列。
+    #[serde(default)]
+    pub detected_repos: Vec<DetectedRepo>,
     /// 所有 runtime 的最近事件合併結果，最新在前，最多
     /// [`RECENT_EVENTS_CAPACITY`] 筆。
     pub recent_events: Vec<ProjectedEvent>,
@@ -44,8 +50,31 @@ impl ProjectedState {
     pub fn content_eq(&self, other: &ProjectedState) -> bool {
         self.runtimes == other.runtimes
             && self.projects == other.projects
+            && self.detected_repos == other.detected_repos
             && self.recent_events == other.recent_events
     }
+}
+
+/// 一個偵測到、尚未加入的 repo（spec `repo-projects`「偵測到的 repo 清單」）。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DetectedRepo {
+    /// repo key（共同 `.git` 目錄的正規化路徑）。
+    pub repo: RepoKey,
+    /// 預設名稱。
+    pub name: String,
+    /// 歸入該 repo 的 pane 數。
+    pub pane_count: usize,
+}
+
+/// Project 的種類（spec `state-projection`「Project 投影」）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectKind {
+    /// 手寫於設定檔。
+    #[default]
+    Config,
+    /// 畫面加入的 Repo Project。
+    Repo,
 }
 
 /// 一個 Project 的投影（spec `state-projection` 「Project 投影」）。
@@ -55,6 +84,12 @@ pub struct ProjectedProject {
     pub id: ProjectId,
     /// 顯示名稱。
     pub name: String,
+    /// 種類：手寫 `config`、Repo Project `repo`；舊 JSON 缺這個欄位時為 `config`。
+    #[serde(default)]
+    pub kind: ProjectKind,
+    /// Repo Project 的 repo key；手寫 project 沒有這個欄位（序列化時省略）。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub repo: Option<RepoKey>,
     /// Stage 的線性順序（設定順序）。
     pub stages: Vec<String>,
     /// 載入狀態檔時產生的 warning；沒有就是空陣列。
@@ -73,8 +108,12 @@ pub struct ProjectedProject {
 pub struct ProjectedWorkstream {
     /// workstream id。
     pub id: WorkstreamId,
-    /// 顯示名稱。
+    /// 顯示名稱。固定 pane 的工作線（Repo Project）在投影時取自當下的 pane：label，空的話 agent 名稱，
+    /// 再空用 pane id。
     pub name: String,
+    /// pane 位於 linked worktree 時的資料夾名稱；其餘工作線沒有這個欄位（序列化時省略）。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub worktree: Option<String>,
     /// 這次投影即時解析出的綁定。
     pub binding: ProjectedBinding,
     /// 目前 task 的 id；沒有就序列化為 `null`，不省略（progress-model task 2.3）。
@@ -109,17 +148,21 @@ pub enum ProjectedBinding {
         runtime: RuntimeId,
         /// 綁定的 pane id。
         pane_id: PaneId,
-        /// 自動解析（`auto`）或畫面覆蓋（`override`）。
+        /// 自動解析（`auto`）、畫面覆蓋（`override`）或 Repo Project 的固定 pane（`pane`）。
         source: BindingSource,
         /// 綁定 pane 目前的 agent 名稱；`None` 序列化為 `null`，不省略。
         agent: Option<String>,
         /// 綁定 pane 目前的 agent 狀態。
         agent_status: AgentStatus,
     },
-    /// 自動解析的候選為 0 個。
+    /// 自動解析的候選為 0 個，或 Repo Project 的固定 pane 不在 pane 樹／已 exited。
     Unbound {
         /// 嘗試解析的 runtime id。
         runtime: RuntimeId,
+        /// 只有固定 pane 才有，值為 `pane`；自動解析的 `unbound` 沒有這個欄位（序列化時省略，既有形狀不變；
+        /// repo-projects task 3.1）。
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        source: Option<BindingSource>,
     },
     /// 自動解析的候選超過 1 個。
     Ambiguous {
@@ -353,21 +396,93 @@ pub fn project_with_stale(
         generated_at: to_rfc3339(now),
         runtimes,
         projects,
+        detected_repos: detected_repos(domain),
         recent_events,
     };
     (state, stale)
 }
 
+/// 偵測到、尚未被任何 Repo Project 加入的 repo（design D8）：`pane_repos` 依 repo 分組，扣掉 `repo_projects`
+/// 的 repo（含因 id 撞名而沒展開的）。`name` 取 `pane_repos` 順序（runtime id、pane id）最前的 pane 的預設名稱，
+/// 同一 repo 的 pane 名稱不同時結果也固定；排序為 `name` 不分大小寫、同名依 `repo`。
+fn detected_repos(domain: &DomainState) -> Vec<DetectedRepo> {
+    let mut grouped: BTreeMap<&RepoKey, (&str, usize)> = BTreeMap::new();
+    for pane_repo in domain.pane_repos.values() {
+        if domain
+            .repo_projects
+            .iter()
+            .any(|added| added.repo == pane_repo.repo)
+        {
+            continue;
+        }
+        grouped
+            .entry(&pane_repo.repo)
+            .or_insert((pane_repo.default_name.as_str(), 0))
+            .1 += 1;
+    }
+    let mut repos: Vec<DetectedRepo> = grouped
+        .into_iter()
+        .map(|(repo, (name, pane_count))| DetectedRepo {
+            repo: repo.clone(),
+            name: name.to_string(),
+            pane_count,
+        })
+        .collect();
+    repos.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.repo.cmp(&b.repo))
+    });
+    repos
+}
+
+/// 固定 pane 工作線的顯示名稱（design D3）：pane 的 label，空的話 agent 名稱，再空用 pane id；pane 不在
+/// pane 樹（歸類更新前的空窗）時用 pane id。
+fn pinned_name(store: &RuntimeStore, pinned: &PinnedPane) -> String {
+    let pane = store
+        .state(&pinned.runtime)
+        .and_then(|state| state.panes.get(&pinned.pane_id));
+    let non_empty = |text: &&String| !text.trim().is_empty();
+    pane.and_then(|p| p.label.as_ref().filter(non_empty))
+        .or_else(|| pane.and_then(|p| p.agent.as_ref().filter(non_empty)))
+        .cloned()
+        .unwrap_or_else(|| pinned.pane_id.as_str().to_string())
+}
+
+/// 固定 pane 工作線的排序鍵（design D3）：runtime 在設定中的順序（登記順序，未登記排最後），再依 pane 在
+/// snapshot 的順序（`pane_seq`，不在狀態庫排最後），最後依 runtime／pane id 讓結果固定。
+fn pinned_sort_key<'a>(
+    store: &RuntimeStore,
+    runtime_ids: &[RuntimeId],
+    pinned: &'a PinnedPane,
+) -> (usize, u64, &'a RuntimeId, &'a PaneId) {
+    let runtime_order = runtime_ids
+        .iter()
+        .position(|id| *id == pinned.runtime)
+        .unwrap_or(usize::MAX);
+    let pane_order = store
+        .state(&pinned.runtime)
+        .and_then(|state| state.pane_seq.get(&pinned.pane_id).copied())
+        .unwrap_or(u64::MAX);
+    (runtime_order, pane_order, &pinned.runtime, &pinned.pane_id)
+}
+
 /// 一個 Project：每條 workstream 解析一次綁定（同 workstream 的多個 task 共用），再逐 task
 /// 推導 StageStatus；失效覆蓋附加到 `stale`。
+///
+/// Repo Project（`def.repo` 有值，repo-projects task 3.2）與手寫 project 的差異只有四處：進度讀
+/// `repo_progress`（design D3）；固定 pane 的工作線名稱與 task 標題取自當下的 pane、工作線與 task 依
+/// runtime／pane 順序排列；目前 task 是「標記為 none 的那張」，不看 `active`（design D4）。
 fn project_project(
     store: &RuntimeStore,
     domain: &DomainState,
     def: &ProjectDef,
     stale: &mut Vec<StaleOverride>,
 ) -> ProjectedProject {
+    let is_repo = def.repo.is_some();
     let overrides = domain.overrides.get(&def.id);
-    let progress = domain.progress.get(&def.id);
+    let progress = domain.progress_for(def);
     let progress_of = |task_id: &TaskId| progress.and_then(|map| map.get(task_id));
 
     // 與 `def.workstreams` 同序：(解析結果, 綁定的 pane)。
@@ -389,18 +504,61 @@ fn project_project(
         })
         .collect();
 
-    let workstreams = def
+    // 目前 task：Repo Project 是該工作線標記為 none 的 task（沒有進度紀錄視為初始進度＝none）；手寫 project
+    // 讀 `active`。
+    let active_of = |workstream: &WorkstreamId| -> Option<TaskId> {
+        if !is_repo {
+            return domain.active_task(&def.id, workstream).cloned();
+        }
+        def.tasks
+            .iter()
+            .find(|task| task.workstream == *workstream)
+            .filter(|task| progress_of(&task.id).is_none_or(|p| p.mark == Mark::None))
+            .map(|task| task.id.clone())
+    };
+
+    // 輸出順序（`def.workstreams` 的索引）：手寫 project 照設定順序；固定 pane 的工作線依 runtime、pane 順序。
+    let runtime_ids = store.runtime_ids();
+    let mut order: Vec<usize> = (0..def.workstreams.len()).collect();
+    if is_repo {
+        order.sort_by(|&a, &b| {
+            let key = |i: usize| {
+                def.workstreams[i]
+                    .pinned_pane
+                    .as_ref()
+                    .map(|pinned| pinned_sort_key(store, &runtime_ids, pinned))
+            };
+            // 有固定 pane 的排前面；理論上 Repo Project 的工作線都有，沒有的保持原順序排最後。
+            match (key(a), key(b)) {
+                (Some(x), Some(y)) => x.cmp(&y),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        });
+    }
+    let names: Vec<String> = def
         .workstreams
         .iter()
-        .zip(&resolved)
-        .map(|(ws, (resolution, pane))| {
-            let active_task = domain.active_task(&def.id, &ws.id).cloned();
+        .map(|ws| match &ws.pinned_pane {
+            Some(pinned) => pinned_name(store, pinned),
+            None => ws.name.clone(),
+        })
+        .collect();
+
+    let workstreams = order
+        .iter()
+        .map(|&i| {
+            let ws = &def.workstreams[i];
+            let (resolution, pane) = &resolved[i];
+            let active_task = active_of(&ws.id);
             let busy = pane.is_some_and(|p| {
                 matches!(p.agent_status, AgentStatus::Working | AgentStatus::Blocked)
             });
             ProjectedWorkstream {
                 id: ws.id.clone(),
-                name: ws.name.clone(),
+                name: names[i].clone(),
+                worktree: ws.pinned_pane.as_ref().and_then(|p| p.worktree.clone()),
                 binding: project_binding(resolution, *pane),
                 activity_undeclared: busy && active_task.is_none(),
                 active_task,
@@ -408,9 +566,20 @@ fn project_project(
         })
         .collect();
 
-    let tasks = def
-        .tasks
-        .iter()
+    // task 的輸出順序：手寫 project 照設定順序；Repo Project 與其工作線同序。
+    let mut task_order: Vec<usize> = (0..def.tasks.len()).collect();
+    if is_repo {
+        let position = |task: &TaskDef| {
+            order
+                .iter()
+                .position(|&i| def.workstreams[i].id == task.workstream)
+                .unwrap_or(usize::MAX)
+        };
+        task_order.sort_by_key(|&t| position(&def.tasks[t]));
+    }
+    let tasks = task_order
+        .into_iter()
+        .map(|t| &def.tasks[t])
         .map(|task| {
             let current = progress_of(&task.id)
                 .cloned()
@@ -422,23 +591,28 @@ fn project_project(
                 .map(|dep| progress_of(dep).map_or(Mark::None, |p| p.mark))
                 .collect();
             // 找不到所屬 workstream（設定驗證理論上已擋掉）視為沒有綁定。
-            let (resolution, pane) = def
+            let ws_index = def
                 .workstreams
                 .iter()
-                .position(|ws| ws.id == task.workstream)
-                .map_or((&BindingResolution::None, None), |i| {
-                    (&resolved[i].0, resolved[i].1)
-                });
+                .position(|ws| ws.id == task.workstream);
+            let (resolution, pane) = ws_index.map_or((&BindingResolution::None, None), |i| {
+                (&resolved[i].0, resolved[i].1)
+            });
             let status = derive_status(
                 current.mark,
                 &dependency_marks,
                 resolution,
                 pane.map(|p| p.agent_status),
-                domain.active_task(&def.id, &task.workstream) == Some(&task.id),
+                active_of(&task.workstream).as_ref() == Some(&task.id),
             );
+            // 固定 pane 工作線的 task 標題與工作線同名（design D3）。
+            let title = match ws_index {
+                Some(i) if def.workstreams[i].pinned_pane.is_some() => names[i].clone(),
+                _ => task.title.clone(),
+            };
             ProjectedTask {
                 id: task.id.clone(),
-                title: task.title.clone(),
+                title,
                 workstream: task.workstream.clone(),
                 stage: current.stage,
                 mark: current.mark,
@@ -456,6 +630,12 @@ fn project_project(
     ProjectedProject {
         id: def.id.clone(),
         name: def.name.clone(),
+        kind: if is_repo {
+            ProjectKind::Repo
+        } else {
+            ProjectKind::Config
+        },
+        repo: def.repo.clone(),
         stages: def.stages.clone(),
         warnings,
         warning_msgs,
@@ -497,8 +677,9 @@ fn project_binding(resolution: &BindingResolution, pane: Option<&Pane>) -> Proje
             agent: pane.and_then(|p| p.agent.clone()),
             agent_status: pane.map_or(AgentStatus::Unknown, |p| p.agent_status),
         },
-        BindingResolution::Unbound { runtime } => ProjectedBinding::Unbound {
+        BindingResolution::Unbound { runtime, source } => ProjectedBinding::Unbound {
             runtime: runtime.clone(),
+            source: (*source == BindingSource::Pane).then_some(BindingSource::Pane),
         },
         BindingResolution::Ambiguous {
             runtime,
@@ -560,6 +741,7 @@ fn project_connection(connection: &ConnectionState) -> ProjectedConnection {
             protocol,
             last_snapshot_at,
             protocol_warning,
+            settled: _,
         } => ProjectedConnection::Connected {
             since: to_rfc3339(*since),
             server_version: server_version.clone(),

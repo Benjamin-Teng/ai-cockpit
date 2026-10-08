@@ -83,6 +83,7 @@ fn sample_project() -> ProjectDef {
             id: WorkstreamId::new("be"),
             name: "be".to_string(),
             binding: None,
+            pinned_pane: None,
         }],
         tasks: vec![TaskDef {
             id: TaskId::new("t1"),
@@ -91,6 +92,7 @@ fn sample_project() -> ProjectDef {
             stage: "Spec".to_string(),
             depends_on: Vec::new(),
         }],
+        repo: None,
     }
 }
 
@@ -143,6 +145,7 @@ fn connected_store() -> RuntimeStore {
                 server_version: "test".to_string(),
                 protocol: 1,
                 last_snapshot_at: SystemTime::UNIX_EPOCH,
+                settled: true,
                 protocol_warning: None,
             },
         )
@@ -236,6 +239,7 @@ fn connected_bound_store(entries: &[(&str, &str, &str)]) -> RuntimeStore {
                 server_version: "test".to_string(),
                 protocol: 1,
                 last_snapshot_at: SystemTime::UNIX_EPOCH,
+                settled: true,
                 protocol_warning: None,
             },
         )
@@ -1222,6 +1226,7 @@ fn scenario_c_project() -> ProjectDef {
                 cwd: None,
                 agent: None,
             }),
+            pinned_pane: None,
         }],
         tasks: vec![TaskDef {
             id: TaskId::new("A"),
@@ -1230,6 +1235,7 @@ fn scenario_c_project() -> ProjectDef {
             stage: "Implement".to_string(),
             depends_on: Vec::new(),
         }],
+        repo: None,
     }
 }
 
@@ -1295,6 +1301,7 @@ fn scenario_d_project() -> ProjectDef {
                 cwd: None,
                 agent: None,
             }),
+            pinned_pane: None,
         }
     }
 
@@ -1327,6 +1334,7 @@ fn scenario_d_project() -> ProjectDef {
             task("fe1", "frontend", "Plan"),
             task("qa1", "tests", "Test"),
         ],
+        repo: None,
     }
 }
 

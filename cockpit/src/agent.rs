@@ -12,6 +12,11 @@
 //! 的 endpoint 建立，`HerdrEndpoint::Wsl` 恰好對應 [`PathMapping::Wsl`]，不另開一份清單；
 //! 表裡沒有的 runtime 視為非 WSL（正式啟動時設定中的每個 runtime 都在表內）。
 //!
+//! 免帶 id 推進 `POST /api/agent/advance`（repo-projects task 4.4；design D7）：不帶路徑參數，身分判定同上；
+//! 候選 task＝每條綁定到這個 pane 的 workstream 的目前 task（沒有目前 task 時，恰有一張才取），在寫入鎖內依
+//! Domain 選（不用可能落後的投影），恰一張就照 `advance` 推進，零張 404 `no_task_for_pane`、兩張以上 409
+//! `ambiguous_task`。
+//!
 //! 判定順序（design D6）：來源檢查（middleware）→ `op` 不是 `start`／`advance`（404）→ 標頭缺
 //! 或空白（400 `missing_pane_id`）→ project／task 不存在（404）→ task 所屬 workstream 未綁到此
 //! pane（403 `pane_not_bound`）→ 規則（409）→ 落檔（500）。先查存在再查綁定，打錯 id 才會得到
@@ -24,7 +29,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use cockpit_core::{
     BindingSource, Override, ProjectId, ProjectedBinding, ProjectedProject, ProjectedState,
-    RuntimeId, TaskId,
+    RuntimeId, TaskId, WorkstreamId,
 };
 use serde_json::{Value, json};
 
@@ -138,6 +143,9 @@ fn bound_workstreams_in(
                         pane_id: bound.clone(),
                     }),
                     BindingSource::Auto => BindingBasis::Auto,
+                    // 固定 pane（Repo Project）：重驗時忽略覆蓋，只確認仍是固定 pane 的工作線
+                    // （repo-projects task 3.1）。
+                    BindingSource::Pane => BindingBasis::Pinned,
                 };
                 found.insert(
                     (
@@ -265,11 +273,43 @@ pub(crate) async fn agent_op(
     }
 }
 
+/// `POST /api/agent/advance`（spec `agent-reporting`「免帶 id 推進」；design D7）：不需要路徑參數與請求本體。
+/// HTTP 層只用投影做 pane 身分判定（[`bound_workstreams`]），候選 task 的選擇與推進都在寫入鎖內依 Domain 進行
+/// （[`crate::progress_service::ProgressService::agent_advance_for_pane`]），避免投影落後時推進到舊的 task。
+/// 候選零張回 404 `no_task_for_pane`、兩張以上回 409 `ambiguous_task`（狀態都不變）；候選恰一張時的 403／409／500
+/// 與 `POST …/{task}/advance` 相同。
+pub(crate) async fn advance(State(app): State<AppState>, headers: HeaderMap) -> Response {
+    let Some(pane_id) = pane_id_header(&headers) else {
+        return missing_pane_id();
+    };
+    // 沒有寫入服務時（只在測試與 ui_preview）沒有任何綁定可言，與沒有候選同一個結果。
+    let Some(progress) = &app.progress else {
+        return write_error_response(WriteError::NoTaskForPane);
+    };
+    let projected = app.state.borrow().clone();
+    let mut bound: Vec<_> = bound_workstreams(&app, &projected, &pane_id)
+        .into_iter()
+        .map(|((project, workstream), basis)| {
+            (
+                ProjectId::new(project),
+                WorkstreamId::new(workstream),
+                basis,
+            )
+        })
+        .collect();
+    bound.sort_by(|a, b| (a.0.as_str(), a.1.as_str()).cmp(&(b.0.as_str(), b.1.as_str())));
+    match progress.agent_advance_for_pane(bound).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => write_error_response(error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use cockpit_core::{
-        AgentStatus, Focused, PaneId, ProjectedConnection, ProjectedPane, ProjectedRuntime,
-        ProjectedTab, ProjectedWorkspace, ProjectedWorkstream, TabId, WorkspaceId, WorkstreamId,
+        AgentStatus, Focused, PaneId, ProjectKind, ProjectedConnection, ProjectedPane,
+        ProjectedRuntime, ProjectedTab, ProjectedWorkspace, ProjectedWorkstream, TabId,
+        WorkspaceId, WorkstreamId,
     };
 
     use super::*;
@@ -346,6 +386,7 @@ mod tests {
         ProjectedWorkstream {
             id: WorkstreamId::new(id),
             name: id.to_string(),
+            worktree: None,
             binding,
             active_task: None,
             activity_undeclared: false,
@@ -363,12 +404,15 @@ mod tests {
             projects: vec![ProjectedProject {
                 id: ProjectId::new("p"),
                 name: "p".to_string(),
+                kind: ProjectKind::Config,
+                repo: None,
                 stages: vec!["Plan".to_string()],
                 warnings: Vec::new(),
                 warning_msgs: Vec::new(),
                 workstreams,
                 tasks: Vec::new(),
             }],
+            detected_repos: Vec::new(),
             recent_events: Vec::new(),
         }
     }
@@ -406,6 +450,30 @@ mod tests {
         let found = bound_workstreams_in(&projected, "w1:p1", never_wsl);
         assert_eq!(found.len(), 1);
         assert!(found.contains_key(&("p".to_string(), "fe".to_string())));
+    }
+
+    /// 固定 pane（`source: pane`）的綁定以 `BindingBasis::Pinned` 為判定依據，不是 `Auto`
+    /// （repo-projects task 3.1 review fix round 1）。
+    #[test]
+    fn pinned_pane_binding_uses_pinned_basis() {
+        let projected = state(
+            vec![runtime("local", connected(), vec![pane("wJ:p1")])],
+            vec![workstream(
+                "local~wJ:p1",
+                ProjectedBinding::Bound {
+                    runtime: RuntimeId::new("local"),
+                    pane_id: PaneId::new("wJ:p1"),
+                    source: BindingSource::Pane,
+                    agent: None,
+                    agent_status: AgentStatus::Idle,
+                },
+            )],
+        );
+        let found = bound_workstreams_in(&projected, "wJ:p1", never_wsl);
+        assert_eq!(
+            found.get(&("p".to_string(), "local~wJ:p1".to_string())),
+            Some(&BindingBasis::Pinned)
+        );
     }
 
     /// 同一個 runtime 同時「pane 樹有未 exited 的 pane」又「有 workstream bound 到它」只算一個擁有者

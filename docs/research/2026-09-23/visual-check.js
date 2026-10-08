@@ -163,7 +163,7 @@
 //       tasks.md「以 visual-check.js 走訪 DOM 列出實際用到的 class 對照」）。依序走訪預設投影、截斷、
 //       過期＋原因、pane 已不存在、空狀態、點選 pane 列、兩則提示＋改綁、通道三種非 connected 字串、
 //       防禦狀態（五種 agent 狀態＋未知、兩個 tab、connecting／未知連線、protocol 警告、未知 task
-//       status）、沒有 Project、通知設定面板開啟（desktop-launch-notify 修正波）、四種視窗；用 CSSOM 逐條選擇器（去掉 :hover／:focus-visible 等互動偽類
+//       status）、沒有 Project、通知設定面板開啟（desktop-launch-notify 修正波）、Repo Project 選單與管理對話框（repo-projects task 5.2）、四種視窗；用 CSSOM 逐條選擇器（去掉 :hover／:focus-visible 等互動偽類
 //       與偽元素）querySelector，斷言沒有任何一條從頭到尾對不到元素，並印出 DOM 出現過的全部 class；
 //       否定對照：注入的 <style> 只抓出沒人用的兩條。fix round 1（Codex medium）：外層 @media／@supports
 //       條件跟著遞迴，當下不成立就不算命中；每個狀態都在四種視窗取樣，另加 prefers-reduced-motion 取樣；
@@ -4790,15 +4790,19 @@ async function partProjectSwitching() {
     // 上下或左右相鄰時像同一句話說兩次，「在這裡看到」也沒有受詞），審核建議左欄只寫狀態、
     // 完整的指向動作說明留給 Factory Floor 那句 D11 逐字定案文案。這裡改成精確字串比對（同
     // GONE_TEXT／TRUNCATED_TEXT 的做法）。
+    // repo-projects task 5.1：spec cockpit-dashboard「Project 切換」改為左欄在 Project 清單（或其空狀態）之外另有
+    // 「偵測到的 repo」區、Factory Floor 的空狀態改指向該區且不得提重啟。左欄比對改成「Project 清單的空狀態節點
+    // 逐字等於『沒有 Project』」（偵測區的文字不屬於它），Factory Floor 改比新文案逐字。
     const PROJECTS_EMPTY_TEXT = '沒有 Project';
-    const FLOOR_EMPTY_TEXT =
-      '在 cockpit.toml 加入 [[project]] 區段即可在這裡看到 Factory Floor，加入後需要重啟 cockpit';
+    const FLOOR_EMPTY_TEXT = '在左欄「偵測到的 repo」按「加入」，即可在這裡看到它的 Factory Floor';
     const empty = await cdp.eval(`(() => {
       var col = document.querySelector('[data-region="projects"]');
+      var colEmpty = col ? col.querySelector('.projects-empty-state') : null;
       var floor = document.querySelector('[data-region="floor"]');
       var runtimes = document.querySelector('[data-region="runtimes"]');
       return {
-        colText: col ? col.textContent : null,
+        colText: colEmpty ? colEmpty.textContent : null,
+        colProjectItems: col ? col.querySelectorAll('[data-action="select-project"]').length : null,
         floorText: floor ? floor.textContent : null,
         runtimesStillThere: runtimes ? runtimes.textContent.length > 0 : null,
       };
@@ -4808,6 +4812,12 @@ async function partProjectSwitching() {
     check(
       empty.leftColumnEmptyState === true,
       `左欄應該顯示沒有 Project 的空狀態逐字文案「${PROJECTS_EMPTY_TEXT}」（實際 ${JSON.stringify(empty)}）`
+    );
+    // repo-projects task 5.1 fix round 1（審查 Minor 5）：左欄比對縮小成空狀態節點之後，另外確認整欄沒有任何 Project 項目，
+    // 補回原本「整欄只有空狀態」那條斷言對 Project 清單的覆蓋。
+    check(
+      empty.colProjectItems === 0,
+      `沒有 Project 時左欄不應該有任何 Project 項目（實際 ${empty.colProjectItems} 個）`
     );
     check(
       empty.floorEmptyState === true,
@@ -8412,7 +8422,7 @@ const CL1_COLLECT_FN = `function (stateTag, storeName, sheetId) {
     return parts;
   }
   function strip(sel) {
-    var s = sel.replace(/::?(?:hover|focus-visible|focus-within|focus|active|before|after)(?![-\\w(])/g, '').trim();
+    var s = sel.replace(/::?(?:hover|focus-visible|focus-within|focus|active|before|after|backdrop)(?![-\\w(])/g, '').trim();
     if (s === '') return '*';
     if (/[>+~]$/.test(s)) s += ' *';
     return s;
@@ -8556,6 +8566,12 @@ async function partCssInventory() {
 
     await collect('預設投影 1536×1024（沒有選取）');
 
+    // repo-projects task 5.1 fix round 1：左欄偵測區的「加入」按下後呈 aria-disabled（ui_preview 的投影不會反映加入，
+    // 所以一直停在這個狀態），對到 `.detected-repo > .action-button[aria-disabled="true"]` 這組規則。
+    await cdp.click('#app .detected-repo [data-action="add-repo"]');
+    await cdp.waitFor("!!document.querySelector('#app .detected-repo [data-action=\"add-repo\"][aria-disabled=\"true\"]')", 5000, '[CL1] 按偵測區的「加入」：按鈕呈 aria-disabled');
+    await collect('偵測區「加入」進行中');
+
     await cdp.eval("window.liveOutput.select('win', 'wJ:p3'); true");
     await cdp.waitFor("(() => { var n = document.querySelector('#output .output-truncated-notice'); return !!n && !n.hidden; })()", 5000, '[CL1] 選 wJ:p3：截斷提示出現');
     await collect('輸出（截斷提示）');
@@ -8605,6 +8621,42 @@ async function partCssInventory() {
     await cdp.waitFor("(() => { var p = document.getElementById('notify-panel'); var b = document.querySelector('#app [data-action=\"notify-settings\"]'); return !!p && !p.hidden && !!b && b.getAttribute('aria-expanded') === 'true'; })()", 3000, '[CL1] 按鈴鐺：通知設定面板開啟、鈴鐺 aria-expanded=true');
     await collect('通知設定面板開啟');
     await cdp.eval('window.cockpitNotify.togglePanel(); true');
+
+    // repo-projects task 5.2：Repo Project 的「⋯」選單與管理對話框（body 底下的 <dialog>）只在開著時有元素——依序取樣
+    // 選單開啟、「編輯 stage」對話框（改過名的列、新增的空白列、送出後的基本提示、停用的「上移」）與「改名」對話框，
+    // 再以「取消」關閉。用 .click()（鍵盤路徑，detail 0）觸發，與滑鼠路徑同一個 perform()。
+    await cdp.eval("document.querySelector('#app [data-action=\"project-menu\"][data-project=\"demo-app\"]').click(); true");
+    await cdp.waitFor("!!document.querySelector('#app .project-menu') && document.querySelector('#app [data-action=\"project-menu\"]').getAttribute('aria-expanded') === 'true'", 3000, '[CL1] 按 demo-app 的「⋯」：選單開啟');
+    await collect('Repo Project 選單開啟');
+    await cdp.eval("document.querySelector('#app [data-action=\"project-edit-stages\"]').click(); true");
+    await cdp.waitFor("(() => { var d = document.querySelector('dialog.project-dialog'); return !!d && d.open && d.getAttribute('data-dialog') === 'stages'; })()", 3000, '[CL1] 選「編輯 stage」：對話框開啟');
+    await cdp.eval(`(() => {
+      var d = document.querySelector('dialog.project-dialog');
+      var input = d.querySelector('.stage-row input.stage-name');
+      input.value = input.value + ' 2';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      d.querySelector('[data-stage-op="add"]').click();
+      d.querySelector('[data-dialog-op="submit"]').click();
+      return true;
+    })()`);
+    await cdp.waitFor("(() => { var e = document.querySelector('dialog.project-dialog .project-dialog-error'); return !!e && !e.hidden; })()", 3000, '[CL1] 「編輯 stage」：新增空白列後儲存，對話框內出現提示');
+    await collect('「編輯 stage」對話框（改名列、新增列、提示）');
+    await cdp.eval("document.querySelector('dialog.project-dialog [data-dialog-op=\"cancel\"]').click(); true");
+    await cdp.eval("document.querySelector('#app [data-action=\"project-menu\"][data-project=\"demo-app\"]').click(); true");
+    await cdp.waitFor("!!document.querySelector('#app [data-action=\"project-rename\"]')", 3000, '[CL1] 再按「⋯」：選單開啟');
+    await cdp.eval("document.querySelector('#app [data-action=\"project-rename\"]').click(); true");
+    await cdp.waitFor("(() => { var d = document.querySelector('dialog.project-dialog'); return !!d && d.open && d.getAttribute('data-dialog') === 'rename'; })()", 3000, '[CL1] 選「改名」：對話框開啟');
+    await collect('「改名」對話框');
+    await cdp.eval("document.querySelector('dialog.project-dialog [data-dialog-op=\"cancel\"]').click(); true");
+    await cdp.waitFor("!document.querySelector('dialog.project-dialog').open", 3000, '[CL1] 按「取消」：對話框關閉');
+
+    // repo-projects task 5.3：`.ff-worktree`（Repo Project 工作線列首的 worktree 標註）只在選定帶 worktree 的 Repo Project
+    // （ui_preview 的 demo-app，win~wJ:p7）時有元素——切到 demo-app 取樣，再切回 cockpit，後面的段落照舊在 cockpit 上。
+    await cdp.eval("document.querySelector('#app [data-action=\"select-project\"][data-project=\"demo-app\"]').click(); true");
+    await cdp.waitFor("!!document.querySelector('#app .ff-row-header .ff-worktree')", 3000, '[CL1] 選 demo-app：工作線列首出現 worktree 標註');
+    await collect('Repo Project 工作線的 worktree 標註');
+    await cdp.eval("document.querySelector('#app [data-action=\"select-project\"][data-project=\"cockpit\"]').click(); true");
+    await cdp.waitFor("!!document.querySelector('#app .project[data-project=\"cockpit\"]')", 3000, '[CL1] 切回 cockpit');
 
     // ui-language task 1.2：`.lang-toggle:disabled`（localStorage 不可寫時語言切換按鈕停用）只在儲存不可用時有元素。
     // 真實的停用流程（setItem 丟例外→canPersist=false→按鈕停用、有 title、點了不動作）由

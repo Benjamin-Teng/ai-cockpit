@@ -783,7 +783,7 @@ fn coded_response_literals(source: &str) -> Vec<String> {
 
 /// ui-language 階段審查 2 M2：後端能送出的每一個訊息代碼（錯誤本體與投影 `*_msg` 的 `code`）都要在
 /// `i18n.js` 兩份字典有 `msg.<code>`，反過來字典的 `msg.*` 也都對得到一個後端代碼。代碼來源：
-/// - `Rejection::code`、`WriteError::code`、`Message::msg`：以沒有萬用分支的 `match` 逐一列出每個變體，
+/// - `Rejection::code`、`WriteError::code`、`RepoProjectError::code`、`Message::msg`：以沒有萬用分支的 `match` 逐一列出每個變體，
 ///   新增變體時編譯失敗，逼人把它補進這裡，再由下面的字典斷言逼人補 `msg.<code>`；
 /// - http／agent／來源檢查的固定代碼：掃 `src/http.rs`、`agent.rs`、`source_check.rs` 傳給
 ///   `coded_error_response*` 的字面值（新增一個固定代碼卻沒補字典會失敗）。
@@ -792,8 +792,8 @@ fn coded_response_literals(source: &str) -> Vec<String> {
 /// 表（files.js／git.js，鍵 `files.error.*`），由 `i18n-check.js` 的 ① 與 ② 逐一驗。
 #[tokio::test]
 async fn every_backend_message_code_has_a_msg_key_in_both_dictionaries() {
-    use cockpit::progress_service::WriteError;
-    use cockpit_core::{Message, ProjectId, Rejection, TaskId, WorkstreamId};
+    use cockpit::progress_service::{RepoProjectError, WriteError};
+    use cockpit_core::{Message, ProjectId, Rejection, RepoKey, TaskId, WorkstreamId};
     use std::collections::BTreeSet;
 
     let s = |v: &str| v.to_string();
@@ -841,6 +841,9 @@ async fn every_backend_message_code_has_a_msg_key_in_both_dictionaries() {
             source: std::io::Error::other("disk full"),
         },
         WriteError::PaneNotBound,
+        WriteError::NotOverridable,
+        WriteError::NoTaskForPane,
+        WriteError::AmbiguousTask,
         WriteError::Internal(join_error),
     ];
     for e in &write_errors {
@@ -851,13 +854,43 @@ async fn every_backend_message_code_has_a_msg_key_in_both_dictionaries() {
             | WriteError::Rejected(_)
             | WriteError::Persist { .. }
             | WriteError::PaneNotBound
+            | WriteError::NotOverridable
+            | WriteError::NoTaskForPane
+            | WriteError::AmbiguousTask
             | WriteError::Internal(_) => {}
         }
     }
     assert_eq!(
         write_errors.len(),
-        7,
+        10,
         "WriteError 的變體數與上面的 match 對不上"
+    );
+
+    // RepoProjectError（repo-projects task 4.4）：`Write` 沿用 WriteError 的代碼，其餘六個各自列出。
+    let repo_project_errors = vec![
+        RepoProjectError::RepoNotDetected(RepoKey::new("r")),
+        RepoProjectError::RepoAlreadyAdded(RepoKey::new("r")),
+        RepoProjectError::NotRepoProject(ProjectId::new("p")),
+        RepoProjectError::UnknownProject(ProjectId::new("p")),
+        RepoProjectError::InvalidName,
+        RepoProjectError::InvalidStages,
+        RepoProjectError::Write(WriteError::PaneNotBound),
+    ];
+    for e in &repo_project_errors {
+        match e {
+            RepoProjectError::RepoNotDetected(_)
+            | RepoProjectError::RepoAlreadyAdded(_)
+            | RepoProjectError::NotRepoProject(_)
+            | RepoProjectError::UnknownProject(_)
+            | RepoProjectError::InvalidName
+            | RepoProjectError::InvalidStages
+            | RepoProjectError::Write(_) => {}
+        }
+    }
+    assert_eq!(
+        repo_project_errors.len(),
+        7,
+        "RepoProjectError 的變體數與上面的 match 對不上"
     );
 
     // Message：每個變體各一個。
@@ -892,6 +925,7 @@ async fn every_backend_message_code_has_a_msg_key_in_both_dictionaries() {
             event: s("e"),
             detail: s("x"),
         },
+        Message::RepoProjectIdConflict { id: s("app") },
         Message::Raw { text: s("x") },
     ];
     for m in &messages {
@@ -913,17 +947,19 @@ async fn every_backend_message_code_has_a_msg_key_in_both_dictionaries() {
             | Message::DriftPaneNotFound { .. }
             | Message::DriftRuntimeNotRegistered { .. }
             | Message::EventPayloadUnparsable { .. }
+            | Message::RepoProjectIdConflict { .. }
             | Message::Raw { .. } => {}
         }
     }
-    assert_eq!(messages.len(), 18, "Message 的變體數與上面的 match 對不上");
+    assert_eq!(messages.len(), 19, "Message 的變體數與上面的 match 對不上");
 
     let mut codes: BTreeSet<String> = BTreeSet::new();
     codes.extend(rejections.iter().map(|r| r.code().to_string()));
     codes.extend(write_errors.iter().map(|e| e.code().to_string()));
+    codes.extend(repo_project_errors.iter().map(|e| e.code().to_string()));
     codes.extend(messages.iter().map(|m| m.msg().code));
 
-    // http／agent／來源檢查的固定代碼（掃原始碼）。掃描器要有牙齒：已知的九個都得抓到。
+    // http／agent／來源檢查的固定代碼（掃原始碼）。掃描器要有牙齒：已知的十個都得抓到。
     let mut literals = coded_response_literals(include_str!("../src/http.rs"));
     literals.extend(coded_response_literals(include_str!("../src/agent.rs")));
     literals.extend(coded_response_literals(include_str!(
@@ -939,6 +975,7 @@ async fn every_backend_message_code_has_a_msg_key_in_both_dictionaries() {
         "missing_pane_id",
         "pane_not_bound",
         "forbidden_source",
+        "invalid_body",
     ] {
         assert!(
             literals.iter().any(|c| c == known),

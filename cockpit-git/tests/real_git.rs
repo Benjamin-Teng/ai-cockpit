@@ -29,8 +29,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cockpit_git::{
     Blob, BlobHead, BlobId, BlobSize, ChangedFiles, CommitInfo, DiffRow, FileDiff, GitParseError,
-    GitRunner, GitTarget, GraphCommit, Log, MergeBase, Oid, RefKind, Refs, RepoPath, RunnerError,
-    Side, Status, StatusGroup, VerifyCommit, layout,
+    GitRunner, GitTarget, GraphCommit, Log, MergeBase, Oid, RefKind, Refs, RepoIdentity, RepoPath,
+    RunnerError, Side, Status, StatusGroup, VerifyCommit, layout,
 };
 
 // ---------------------------------------------------------------------------
@@ -1437,6 +1437,238 @@ async fn blob_head_returns_full_content_untruncated_for_a_smaller_file() {
 }
 
 // ---------------------------------------------------------------------------
+// RepoIdentity（repo-projects task 2.1；design D1、spec「repo 身分判定」）
+// ---------------------------------------------------------------------------
+
+/// 正規化後比較路徑：`canonicalize` 展開 8.3 短名與符號連結（CI 的 `%TEMP%` 常是
+/// `RUNNER~1`，git 的 `--path-format=absolute` 回報的是 canonical 路徑），去掉 Windows 的
+/// `\\?\` 前綴，統一斜線與大小寫（NTFS 不分大小寫）。
+fn normalized(path: &str) -> String {
+    let p = path.replace('\\', "/");
+    let p = p.strip_prefix("//?/").unwrap_or(&p);
+    p.trim_end_matches('/').to_lowercase()
+}
+
+fn canonical(path: &Path) -> String {
+    let resolved = std::fs::canonicalize(path).expect("預期存在的路徑應能 canonicalize");
+    normalized(&resolved.to_string_lossy())
+}
+
+/// 專案 memory（git-in-subdir-falls-through-to-enclosing-repo）：暫存 repo 的 `git init`
+/// 若失敗會靜默落到外層 repo。每個 fixture 建完先驗 `--show-toplevel` 是暫存目錄本身。
+fn assert_toplevel_is_self(dir: &Path) {
+    let out = run_git(dir, &["rev-parse", "--show-toplevel"]);
+    assert!(
+        out.status.success(),
+        "暫存 repo 應能回報 toplevel，stderr：{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let top = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert_eq!(
+        normalized(&top),
+        canonical(dir),
+        "暫存 repo 的 toplevel 不是它自己：fixture 落到外層 repo 了"
+    );
+}
+
+/// 對 `dir` 執行 `RepoIdentity`，並解析。
+async fn repo_identity_of(dir: &Path) -> Option<cockpit_git::RepoIdentityOutput> {
+    let target = GitTarget::Native {
+        path: dir.to_string_lossy().into_owned(),
+    };
+    let run_output = GitRunner::new()
+        .run(&RepoIdentity, &target)
+        .await
+        .expect("RepoIdentity 不應有 runner 層錯誤");
+    RepoIdentity::parse(&run_output.calls).expect("RepoIdentity 輸出應可解析")
+}
+
+fn init_with_commit(repo: &TempRepo) {
+    repo.init();
+    assert_toplevel_is_self(repo.path());
+    repo.write_file("a.txt", "a\n");
+    repo.git_ok(&["add", "."]);
+    repo.commit_at(1, "c1");
+}
+
+/// 主 worktree 根目錄：共同 `.git` 與自己的 git 目錄相同，toplevel 是目錄本身；輸出為絕對路徑、
+/// 三行依引數順序。
+#[tokio::test]
+async fn repo_identity_at_main_worktree_root() {
+    let repo = TempRepo::new("repo-id-main");
+    init_with_commit(&repo);
+
+    let id = repo_identity_of(repo.path()).await.expect("應判定為 repo");
+    let dot_git = canonical(&repo.path().join(".git"));
+    assert_eq!(normalized(&id.common_dir), dot_git);
+    assert_eq!(normalized(&id.git_dir), dot_git);
+    assert_eq!(normalized(&id.toplevel), canonical(repo.path()));
+}
+
+/// 子目錄：`--path-format=absolute` 讓三個路徑仍是絕對路徑（不帶時 `--git-dir` 會回 `../.git`
+/// 之類的相對路徑），且 toplevel 是工作樹根目錄而不是子目錄。
+#[tokio::test]
+async fn repo_identity_from_subdirectory_is_absolute() {
+    let repo = TempRepo::new("repo-id-sub");
+    init_with_commit(&repo);
+    repo.write_file("deep/er/f.txt", "x\n");
+
+    let id = repo_identity_of(&repo.path().join("deep").join("er"))
+        .await
+        .expect("子目錄應判定為 repo");
+    let dot_git = canonical(&repo.path().join(".git"));
+    assert_eq!(normalized(&id.common_dir), dot_git);
+    assert_eq!(normalized(&id.git_dir), dot_git);
+    assert_eq!(normalized(&id.toplevel), canonical(repo.path()));
+    for p in [&id.common_dir, &id.git_dir, &id.toplevel] {
+        assert!(
+            Path::new(p).is_absolute(),
+            "{p:?} 應為絕對路徑（--path-format=absolute）"
+        );
+    }
+}
+
+/// spec「同一個 repo 的 worktree 歸在一起」：linked worktree 與主 worktree 的共同 `.git` 相同，
+/// 但自己的 git 目錄是 `<共同>/worktrees/<名稱>`，toplevel 是 linked worktree 的根目錄。
+#[tokio::test]
+async fn repo_identity_in_linked_worktree_shares_common_dir_but_not_git_dir() {
+    let main = TempRepo::new("repo-id-wt-main");
+    init_with_commit(&main);
+    let linked = TempRepo::new("repo-id-wt-linked");
+    let linked_str = to_forward_slash(linked.path());
+    main.git_ok(&["worktree", "add", "-q", "-b", "feat", &linked_str]);
+
+    let main_id = repo_identity_of(main.path())
+        .await
+        .expect("主 worktree 應是 repo");
+    let linked_id = repo_identity_of(linked.path())
+        .await
+        .expect("linked worktree 應是 repo");
+
+    let common = canonical(&main.path().join(".git"));
+    assert_eq!(normalized(&main_id.common_dir), common);
+    assert_eq!(
+        normalized(&linked_id.common_dir),
+        common,
+        "linked worktree 與主 worktree 應共用同一個共同 .git 目錄"
+    );
+    assert_ne!(
+        normalized(&linked_id.git_dir),
+        common,
+        "linked worktree 自己的 git 目錄不等於共同目錄"
+    );
+    assert!(
+        normalized(&linked_id.git_dir).starts_with(&format!("{common}/worktrees/")),
+        "git_dir 應在 <共同>/worktrees/ 底下：{}",
+        linked_id.git_dir
+    );
+    assert_eq!(normalized(&linked_id.toplevel), canonical(linked.path()));
+}
+
+/// spec「submodule 不是 linked worktree」：submodule 的共同目錄與自己的 git 目錄都是
+/// `<super>/.git/modules/<名稱>`，toplevel 是 `<super>/<名稱>`。
+#[tokio::test]
+async fn repo_identity_in_submodule_has_equal_common_and_git_dir() {
+    let sub = TempRepo::new("repo-id-submodule-src");
+    init_with_commit(&sub);
+    let sup = TempRepo::new("repo-id-submodule-super");
+    init_with_commit(&sup);
+    // git 2.38.1 起本機路徑的 file 協定預設禁止，要明確放行。
+    let sub_str = to_forward_slash(sub.path());
+    sup.git_ok(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        &sub_str,
+        "lib",
+    ]);
+
+    let id = repo_identity_of(&sup.path().join("lib"))
+        .await
+        .expect("submodule 應是 repo");
+    let modules = canonical(&sup.path().join(".git").join("modules").join("lib"));
+    assert_eq!(normalized(&id.common_dir), modules);
+    assert_eq!(
+        normalized(&id.git_dir),
+        modules,
+        "submodule 的 git 目錄與共同目錄相同（不是 linked worktree）"
+    );
+    assert_eq!(normalized(&id.toplevel), canonical(&sup.path().join("lib")));
+
+    // 外層 super repo 本身仍是另一個 repo。
+    let sup_id = repo_identity_of(sup.path())
+        .await
+        .expect("super repo 應是 repo");
+    assert_eq!(
+        normalized(&sup_id.common_dir),
+        canonical(&sup.path().join(".git"))
+    );
+}
+
+/// spec「不是 repo」：一般目錄（exit 128）→ `Ok(None)`。先用 plain git 確認這個暫存目錄真的
+/// 不在任何 repo 內（`%TEMP%` 若被放進某個 repo，這個測試的前提就不成立，要明確失敗而非假綠）。
+#[tokio::test]
+async fn repo_identity_of_plain_directory_is_not_a_repo() {
+    let dir = TempRepo::new("repo-id-plain");
+    let probe = run_git(dir.path(), &["rev-parse", "--git-dir"]);
+    assert_eq!(
+        probe.status.code(),
+        Some(128),
+        "前提：暫存目錄不在任何 repo 內（%TEMP% 不該被放進 git repo）"
+    );
+
+    let target = dir.native_target();
+    let run_output = GitRunner::new()
+        .run(&RepoIdentity, &target)
+        .await
+        .expect("非 repo 不是 runner 層錯誤");
+    match &run_output.calls[0] {
+        Err(RunnerError::Failed {
+            exit_code: Some(128),
+            ..
+        }) => {}
+        other => panic!("應為 Failed(exit 128)，實際：{other:?}"),
+    }
+    assert_eq!(RepoIdentity::parse(&run_output.calls), Ok(None));
+}
+
+/// 裸 repo：git 對裸 repo 先印出兩行（common-dir、git-dir）才因 `--show-toplevel` 無工作樹而
+/// 以 exit 128 失敗——stdout 有內容但不可使用；必須判為「不是 repo」，不得把這兩行當結果。
+#[tokio::test]
+async fn repo_identity_of_bare_repo_is_not_a_repo() {
+    let bare = TempRepo::new("repo-id-bare");
+    bare.git_ok(&["init", "-q", "--bare"]);
+    assert_eq!(
+        bare.git_ok(&["rev-parse", "--is-bare-repository"]).stdout,
+        b"true\n",
+        "前提：fixture 是裸 repo"
+    );
+
+    assert_eq!(repo_identity_of(bare.path()).await, None);
+}
+
+/// 位於 `.git` 目錄內：同裸 repo，沒有工作樹，exit 128 → 不是 repo。
+#[tokio::test]
+async fn repo_identity_inside_dot_git_directory_is_not_a_repo() {
+    let repo = TempRepo::new("repo-id-in-dotgit");
+    init_with_commit(&repo);
+
+    assert_eq!(repo_identity_of(&repo.path().join(".git")).await, None);
+}
+
+/// cwd 已不存在（例如 pane 的資料夾被刪）：`git -C <不存在>` 同樣以 exit 128 結束
+/// （`cannot change to`），歸為「不是 repo」；60 秒後重新查詢會再確認。
+#[tokio::test]
+async fn repo_identity_of_missing_directory_is_not_a_repo() {
+    let dir = TempRepo::new("repo-id-missing");
+    let missing = dir.path().join("does-not-exist");
+
+    assert_eq!(repo_identity_of(&missing).await, None);
+}
+
+// ---------------------------------------------------------------------------
 // 安全性：repo 設定的外部程式不被執行（spec「repo 設定的外部程式不被執行」）
 // ---------------------------------------------------------------------------
 
@@ -2214,4 +2446,195 @@ async fn wsl_refs_nested_annotated_tag_to_commit_is_commit() {
         "單層附註 tag → tree 在任何版本都剝得到 tree，必為 false"
     );
     assert_eq!(find("refs/tags/nested-tree-tag").kind, RefKind::Tag);
+}
+
+// ---------------------------------------------------------------------------
+// WSL 版 RepoIdentity（repo-projects task 7.2，最終審查 I2）：WSL 端 git 的
+// `rev-parse --path-format=absolute --git-common-dir --git-dir --show-toplevel` 實際輸出。
+// repo key（轉成 `\\wsl.localhost\<distro>\...`）與 worktree 標註全靠這三行；專案 memory
+// `git-peeled-objecttype-depth-varies-by-version`：git 格式細節要兩端各實測。
+// ---------------------------------------------------------------------------
+
+fn wsl_test_distro() -> String {
+    match std::env::var("COCKPIT_GIT_TEST_WSL_DISTRO") {
+        Ok(v) if !v.is_empty() => v,
+        _ => panic!(
+            "需要設定環境變數 COCKPIT_GIT_TEST_WSL_DISTRO 指定要用的 WSL distro（例如 \
+             Ubuntu-24.04）才能跑這個測試；這個 #[ignore] 測試平常不會自動執行，需控制端手動跑 \
+             `cargo test -p cockpit-git --test real_git -- --ignored wsl_repo_identity`"
+        ),
+    }
+}
+
+/// 在 WSL 的 `/tmp` 下建一個暫存目錄（`mktemp -d`），回傳路徑與收尾時 `rm -rf` 的守衛。
+fn wsl_temp_base(distro: &str) -> (String, WslCleanup) {
+    let out = wsl_exec_ok(distro, &["mktemp", "-d"]);
+    let base = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert!(
+        base.starts_with("/tmp/"),
+        "mktemp -d 應回傳 /tmp 底下的路徑，實際：{base:?}"
+    );
+    let cleanup = WslCleanup {
+        distro: distro.to_string(),
+        posix_dir: base.clone(),
+    };
+    (base, cleanup)
+}
+
+/// 在 `dir`（WSL POSIX 路徑）建一個有一個 commit 的 repo，並驗證 toplevel 是 `dir` 本身
+/// （專案 memory `git-in-subdir-falls-through-to-enclosing-repo`：init 失敗會靜默落到外層 repo）。
+fn wsl_init_with_commit(distro: &str, dir: &str) {
+    wsl_exec_ok(distro, &["mkdir", "-p", dir]);
+    wsl_git_ok(distro, dir, &["init", "-q", "-b", "main"]);
+    let top = wsl_git_ok(distro, dir, &["rev-parse", "--show-toplevel"]);
+    assert_eq!(
+        String::from_utf8_lossy(&top.stdout).trim(),
+        dir,
+        "暫存 repo 的 toplevel 不是它自己：fixture 落到外層 repo 了"
+    );
+    wsl_write_file(distro, &format!("{dir}/a.txt"), b"a\n");
+    wsl_git_ok(distro, dir, &["add", "a.txt"]);
+    wsl_git_commit(distro, dir, 1, "c1");
+}
+
+/// 經 `GitRunner` 對 WSL 目標執行 `RepoIdentity`，回傳解析結果，並印出原始三行供 ledger 記錄。
+async fn wsl_repo_identity_of(
+    distro: &str,
+    posix: &str,
+) -> Option<cockpit_git::RepoIdentityOutput> {
+    let target = GitTarget::Wsl {
+        distro: distro.to_string(),
+        posix: posix.to_string(),
+    };
+    let run_output = GitRunner::new()
+        .run(&RepoIdentity, &target)
+        .await
+        .expect("WSL RepoIdentity 不應有 runner 層錯誤");
+    let parsed = RepoIdentity::parse(&run_output.calls).expect("WSL RepoIdentity 輸出應可解析");
+    println!("RepoIdentity({posix}) = {parsed:?}");
+    parsed
+}
+
+/// 主 worktree 的子目錄：三個路徑都是絕對 POSIX 路徑（`--path-format=absolute`），依引數順序，
+/// toplevel 是工作樹根目錄而不是子目錄，沒有結尾斜線。
+#[tokio::test]
+#[ignore = "需要 WSL 與環境變數 COCKPIT_GIT_TEST_WSL_DISTRO；控制端手動執行 --ignored"]
+async fn wsl_repo_identity_from_subdirectory_of_main_worktree() {
+    let distro = wsl_test_distro();
+    let (base, _cleanup) = wsl_temp_base(&distro);
+    let main = format!("{base}/app");
+    wsl_init_with_commit(&distro, &main);
+    let deep = format!("{main}/deep/er");
+    wsl_exec_ok(&distro, &["mkdir", "-p", &deep]);
+
+    let id = wsl_repo_identity_of(&distro, &deep)
+        .await
+        .expect("子目錄應判定為 repo");
+    assert_eq!(id.common_dir, format!("{main}/.git"));
+    assert_eq!(id.git_dir, format!("{main}/.git"));
+    assert_eq!(id.toplevel, main);
+}
+
+/// linked worktree：共同 `.git` 與主 worktree 相同，自己的 git 目錄是 `<共同>/worktrees/<名稱>`，
+/// toplevel 是 linked worktree 的根目錄。
+#[tokio::test]
+#[ignore = "需要 WSL 與環境變數 COCKPIT_GIT_TEST_WSL_DISTRO；控制端手動執行 --ignored"]
+async fn wsl_repo_identity_in_linked_worktree() {
+    let distro = wsl_test_distro();
+    let (base, _cleanup) = wsl_temp_base(&distro);
+    let main = format!("{base}/app");
+    wsl_init_with_commit(&distro, &main);
+    let linked = format!("{base}/app-feat");
+    wsl_git_ok(
+        &distro,
+        &main,
+        &["worktree", "add", "-q", "-b", "feat", &linked],
+    );
+
+    let main_id = wsl_repo_identity_of(&distro, &main)
+        .await
+        .expect("主 worktree 應是 repo");
+    assert_eq!(main_id.common_dir, format!("{main}/.git"));
+    assert_eq!(main_id.git_dir, format!("{main}/.git"));
+    assert_eq!(main_id.toplevel, main);
+
+    let linked_id = wsl_repo_identity_of(&distro, &linked)
+        .await
+        .expect("linked worktree 應是 repo");
+    assert_eq!(
+        linked_id.common_dir,
+        format!("{main}/.git"),
+        "linked worktree 與主 worktree 共用同一個共同 .git 目錄"
+    );
+    assert_eq!(linked_id.git_dir, format!("{main}/.git/worktrees/app-feat"));
+    assert_eq!(linked_id.toplevel, linked);
+}
+
+/// submodule：共同目錄與自己的 git 目錄都是 `<super>/.git/modules/<名稱>`（不是 linked worktree），
+/// toplevel 是 `<super>/<名稱>`。
+#[tokio::test]
+#[ignore = "需要 WSL 與環境變數 COCKPIT_GIT_TEST_WSL_DISTRO；控制端手動執行 --ignored"]
+async fn wsl_repo_identity_in_submodule() {
+    let distro = wsl_test_distro();
+    let (base, _cleanup) = wsl_temp_base(&distro);
+    let sub = format!("{base}/sub");
+    wsl_init_with_commit(&distro, &sub);
+    let sup = format!("{base}/super");
+    wsl_init_with_commit(&distro, &sup);
+    // git 2.38.1 起本機路徑的 file 協定預設禁止，要明確放行。
+    wsl_git_ok(
+        &distro,
+        &sup,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            &sub,
+            "lib",
+        ],
+    );
+
+    let id = wsl_repo_identity_of(&distro, &format!("{sup}/lib"))
+        .await
+        .expect("submodule 應是 repo");
+    let modules = format!("{sup}/.git/modules/lib");
+    assert_eq!(id.common_dir, modules);
+    assert_eq!(
+        id.git_dir, modules,
+        "submodule 的 git 目錄與共同目錄相同（不是 linked worktree）"
+    );
+    assert_eq!(id.toplevel, format!("{sup}/lib"));
+}
+
+/// 一般目錄：exit 128 → 「不是 repo」。先用 plain git 確認暫存目錄真的不在任何 repo 內。
+#[tokio::test]
+#[ignore = "需要 WSL 與環境變數 COCKPIT_GIT_TEST_WSL_DISTRO；控制端手動執行 --ignored"]
+async fn wsl_repo_identity_of_plain_directory_is_not_a_repo() {
+    let distro = wsl_test_distro();
+    let (base, _cleanup) = wsl_temp_base(&distro);
+    let probe = wsl_exec(&distro, &["git", "-C", &base, "rev-parse", "--git-dir"]);
+    assert_eq!(
+        probe.status.code(),
+        Some(128),
+        "前提：WSL 的 /tmp 暫存目錄不在任何 repo 內"
+    );
+
+    let target = GitTarget::Wsl {
+        distro: distro.clone(),
+        posix: base.clone(),
+    };
+    let run_output = GitRunner::new()
+        .run(&RepoIdentity, &target)
+        .await
+        .expect("非 repo 不是 runner 層錯誤");
+    match &run_output.calls[0] {
+        Err(RunnerError::Failed {
+            exit_code: Some(128),
+            ..
+        }) => {}
+        other => panic!("應為 Failed(exit 128)，實際：{other:?}"),
+    }
+    assert_eq!(RepoIdentity::parse(&run_output.calls), Ok(None));
 }

@@ -107,6 +107,29 @@ pub fn evaluate(
     }
 }
 
+/// 跑一次 `wsl.exe --list --running --quiet`，回傳尚未判讀的原始結果（只列清單，不會把發行版開機）。
+/// [`WslProber`] 與 `cockpit` 的 repo resolver（repo-projects task 7.2）共用這支指令；判讀用 [`evaluate`] 或
+/// [`decode_list`]。
+///
+/// `kill_on_drop`：future 被 drop（例如呼叫端的逾時）時是否結束 `wsl.exe` 子程序。repo resolver 傳 `true`；
+/// [`WslProber`] 傳 `false`，維持原本行為。
+pub async fn list_running(kill_on_drop: bool) -> Result<ProbeOutcome, std::io::Error> {
+    let mut cmd = Command::new("wsl.exe");
+    cmd.args(["--list", "--running", "--quiet"]);
+    cmd.kill_on_drop(kill_on_drop);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
+    cmd.output().await.map(|output| ProbeOutcome {
+        status_ok: output.status.success(),
+        stdout: output.stdout,
+        stderr: output.stderr,
+    })
+}
+
 /// 探測某個 WSL 發行版是否在運作中；`Ok(())` 代表在運作中，`Err` 一律是
 /// [`RuntimeError::Unavailable`]（探測失敗或發行版未啟動都附固定重試間隔，design D4）。
 #[async_trait]
@@ -123,20 +146,6 @@ pub struct WslProber {
 #[async_trait]
 impl DistroProber for WslProber {
     async fn probe(&self, distro: &str) -> Result<(), RuntimeError> {
-        let mut cmd = Command::new("wsl.exe");
-        cmd.args(["--list", "--running", "--quiet"]);
-        cmd.stdin(Stdio::null());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-        #[cfg(windows)]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-
-        let outcome = cmd.output().await.map(|output| ProbeOutcome {
-            status_ok: output.status.success(),
-            stdout: output.stdout,
-            stderr: output.stderr,
-        });
-
-        evaluate(distro, outcome, self.retry_after)
+        evaluate(distro, list_running(false).await, self.retry_after)
     }
 }

@@ -27,6 +27,12 @@ const DEFAULT_RESNAPSHOT_SECS: u64 = 30;
 const DEFAULT_WSL_PROBE_SECS: u64 = 60;
 /// 零設定模式、或設定檔存在但沒有任何 `[[runtime]]` 時，自動補上的那一筆 runtime 的 id。
 const ZERO_CONFIG_RUNTIME_ID: &str = "local";
+/// 狀態檔預設檔名（有設定檔時在設定檔目錄下，零設定模式在 [`ZERO_CONFIG_STATE_DIR`] 下）。
+const STATE_FILE_NAME: &str = "cockpit.state.json";
+/// 零設定模式的狀態檔所在資料夾的上層，取自這個環境變數（repo-projects task 4.1，design D5）。
+const ZERO_CONFIG_STATE_DIR_ENV: &str = "LOCALAPPDATA";
+/// 零設定模式的狀態檔資料夾名稱：`%LOCALAPPDATA%\ai-cockpit`。
+const ZERO_CONFIG_STATE_DIR: &str = "ai-cockpit";
 
 /// 解析並驗證過的完整設定。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,8 +46,9 @@ pub struct Config {
     /// 解析並驗證過的 Project 清單，依設定檔中出現的順序（task 3.1；spec `pipeline-config`
     /// 「Project 區段結構」）。
     pub projects: Vec<ProjectDef>,
-    /// 狀態檔的實際路徑；`None` 表示不讀不寫狀態檔（零設定模式，或 `projects` 為空——spec
-    /// `pipeline-config`「狀態檔位置」）。
+    /// 狀態檔的實際路徑；`None` 表示沒有狀態檔、狀態只存在記憶體（內嵌設定，或零設定模式找不到
+    /// `LOCALAPPDATA`——spec `pipeline-config`「狀態檔位置」；repo-projects task 4.1）。有設定檔時一律有路徑，
+    /// 不論有沒有 project。
     pub state_path: Option<PathBuf>,
     /// 這份設定實際來自哪裡；`main` 用它印出「用了哪個設定」（review round 1 finding 2：
     /// `load` 的回傳型別改回單純的 `Result<Config, ConfigError>`，來源資訊改放進
@@ -190,8 +197,8 @@ pub fn parse_args(argv: &[String]) -> Result<Args, ConfigError> {
 /// `cockpit.toml` 建成目錄、權限不足）一律回 [`ConfigError::Read`]，不會被靜默吃掉、
 /// fail-open 成零設定。
 ///
-/// `lookup_env` 目前的驗證規則用不到（本機預設路徑解析在 `cockpit-herdr` 的工廠），簽章保留
-/// 給零設定之外的未來用途，並讓呼叫端維持「工作目錄與環境變數以參數注入」的慣例。
+/// `lookup_env` 只用來在零設定模式取 `LOCALAPPDATA` 決定狀態檔位置（repo-projects task 4.1，design D5）；
+/// 本機 HERDR 預設路徑解析在 `cockpit-herdr` 的工廠。測試注入固定值，不碰使用者真的環境變數。
 ///
 /// # Errors
 ///
@@ -199,7 +206,7 @@ pub fn parse_args(argv: &[String]) -> Result<Args, ConfigError> {
 pub fn load(
     args: &Args,
     cwd: &Path,
-    _lookup_env: &dyn Fn(&str) -> Option<String>,
+    lookup_env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Config, ConfigError> {
     if let Some(explicit) = &args.config {
         let resolved = if explicit.is_absolute() {
@@ -220,17 +227,17 @@ pub fn load(
             }
         })?;
         let core = parse_toml_labelled(&text, &resolved.display().to_string())?;
-        return Ok(core.with_source(ConfigSource::Explicit(resolved)));
+        return Ok(core.with_source(ConfigSource::Explicit(resolved), lookup_env));
     }
 
     let candidate = cwd.join("cockpit.toml");
     match std::fs::read_to_string(&candidate) {
         Ok(text) => {
             let core = parse_toml_labelled(&text, &candidate.display().to_string())?;
-            Ok(core.with_source(ConfigSource::Cwd(candidate)))
+            Ok(core.with_source(ConfigSource::Cwd(candidate), lookup_env))
         }
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-            Ok(zero_config().with_source(ConfigSource::ZeroConfig))
+            Ok(zero_config().with_source(ConfigSource::ZeroConfig, lookup_env))
         }
         Err(source) => Err(ConfigError::Read {
             path: candidate,
@@ -247,7 +254,7 @@ pub fn load(
 /// TOML 語法錯誤或驗證規則不過時回傳 [`ConfigError`]（[`ConfigError::Parse`] 的 `path` 固定是
 /// `"<inline>"`）。
 pub fn parse_toml(text: &str) -> Result<Config, ConfigError> {
-    Ok(parse_toml_labelled(text, "<inline>")?.with_source(ConfigSource::Inline))
+    Ok(parse_toml_labelled(text, "<inline>")?.with_source(ConfigSource::Inline, &|_| None))
 }
 
 /// [`parse_toml`] 的內部實作：解析錯誤的 `path` 標籤可以換成真實檔案路徑，供 [`load`] 共用。
@@ -287,10 +294,14 @@ struct ConfigCore {
 }
 
 impl ConfigCore {
-    /// 補上來源，變成完整的 [`Config`]；同時依來源與 `projects` 是否為空解出 `state_path`。
-    fn with_source(self, source: ConfigSource) -> Config {
-        let state_path =
-            resolve_state_path(&self.projects, self.state_path_raw.as_deref(), &source);
+    /// 補上來源，變成完整的 [`Config`]；同時依來源解出 `state_path`（零設定模式從 `lookup_env` 取
+    /// `LOCALAPPDATA`）。
+    fn with_source(
+        self,
+        source: ConfigSource,
+        lookup_env: &dyn Fn(&str) -> Option<String>,
+    ) -> Config {
+        let state_path = resolve_state_path(self.state_path_raw.as_deref(), &source, lookup_env);
         Config {
             server: self.server,
             polling: self.polling,
@@ -302,21 +313,29 @@ impl ConfigCore {
     }
 }
 
-/// 決定狀態檔的實際路徑（spec `pipeline-config`「狀態檔位置」）：`projects` 為空、或設定
-/// 來源沒有檔案（[`ConfigSource::ZeroConfig`]／[`ConfigSource::Inline`]）時沒有狀態檔；
-/// 否則未給 `state_path_raw` 時預設為設定檔目錄下的 `cockpit.state.json`，給了相對路徑時
-/// 相對於設定檔目錄解析，給絕對路徑時照用。
+/// 決定狀態檔的實際路徑（spec `pipeline-config`「狀態檔位置」；repo-projects task 4.1，design D5）：
+/// - 有設定檔：未給 `state_path_raw` 時為設定檔目錄下的 `cockpit.state.json`，給了相對路徑時相對於設定檔目錄
+///   解析，給絕對路徑時照用。不論有沒有 project（狀態檔可能含畫面加入的 Repo Project）。
+/// - 零設定模式：`%LOCALAPPDATA%\ai-cockpit\cockpit.state.json`；`LOCALAPPDATA` 不存在或為空字串時沒有狀態檔
+///   （啟動時由 `app` 記 warn）。這裡只決定路徑，不建立資料夾——資料夾在第一次寫入時才建立。
+/// - 內嵌設定（測試用）：沒有狀態檔。
 fn resolve_state_path(
-    projects: &[ProjectDef],
     state_path_raw: Option<&str>,
     source: &ConfigSource,
+    lookup_env: &dyn Fn(&str) -> Option<String>,
 ) -> Option<PathBuf> {
-    if projects.is_empty() {
-        return None;
-    }
     let config_path = match source {
         ConfigSource::Explicit(path) | ConfigSource::Cwd(path) => path,
-        ConfigSource::ZeroConfig | ConfigSource::Inline => return None,
+        ConfigSource::ZeroConfig => {
+            return lookup_env(ZERO_CONFIG_STATE_DIR_ENV)
+                .filter(|dir| !dir.is_empty())
+                .map(|dir| {
+                    PathBuf::from(dir)
+                        .join(ZERO_CONFIG_STATE_DIR)
+                        .join(STATE_FILE_NAME)
+                });
+        }
+        ConfigSource::Inline => return None,
     };
     let config_dir = config_path.parent().unwrap_or_else(|| Path::new(""));
     Some(match state_path_raw {
@@ -328,7 +347,7 @@ fn resolve_state_path(
                 config_dir.join(candidate)
             }
         }
-        None => config_dir.join("cockpit.state.json"),
+        None => config_dir.join(STATE_FILE_NAME),
     })
 }
 
@@ -694,6 +713,7 @@ fn validate_project(
         stages,
         workstreams,
         tasks,
+        repo: None,
     })
 }
 
@@ -747,6 +767,7 @@ fn validate_workstream(
         id: WorkstreamId::new(id),
         name: display_name,
         binding,
+        pinned_pane: None,
     })
 }
 

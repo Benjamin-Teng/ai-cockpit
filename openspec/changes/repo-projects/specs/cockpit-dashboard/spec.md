@@ -1,0 +1,236 @@
+# cockpit-dashboard（delta）
+
+## ADDED Requirements
+
+### Requirement: Repo Project 工作線的 worktree 標註
+
+系統必須在 Factory Floor 的 workstream 列首，於 workstream 名稱下方以文字顯示該 workstream 的 `worktree`（linked worktree
+的資料夾名稱，見 `state-projection`「Project 投影」）；沒有 `worktree` 時不顯示。顯示內容一律以文字節點呈現，不以 HTML 插入。
+`binding.source` 為 `pane` 的綁定摘要與 `auto` 同樣不加「改綁」標示，列首也不顯示「改綁」鈕（見「畫面操作」）。
+
+#### Scenario: linked worktree 的工作線
+
+- **GIVEN** Repo Project 的 workstream `local~wJ:p3`（`name` 為 `backend`）的 `worktree` 為 `app-wt`
+- **WHEN** 重畫
+- **THEN** 該列列首顯示 `backend` 與 `app-wt`；`worktree` 為空的工作線列首沒有 worktree 標註
+
+#### Scenario: 固定 pane 的綁定摘要沒有改綁標示
+
+- **GIVEN** workstream 的 `binding` 為 `bound`、`source` 為 `pane`
+- **WHEN** 重畫
+- **THEN** 綁定摘要顯示 runtime 與 pane id，沒有「改綁」標示
+
+## MODIFIED Requirements
+
+### Requirement: 畫面操作
+
+系統必須在畫面上提供下列操作，並以 `pipeline-progress` 的寫入端點送出：task 節點上，`mark` 為 `none` 且
+不在最後一個 stage 時顯示「推進」；`mark` 為 `none` 且不在第一個 stage 時顯示「退回」；`mark` 為 `none` 時顯示「Completed」與「Failed」；`mark` 不是 `none`
+時只顯示「清除標記」。workstream 列首顯示「改綁」（`binding.source` 為 `pane` 的固定 pane 工作線不顯示「改綁」與「取消改綁」，因為覆蓋端點會回 409 `not_overridable`）；`binding.source` 為 `override` 時另顯示「取消改綁」，包含綁定狀態為 `runtime_disconnected`、
+且 `source` 為 `override`（覆蓋造成的斷線）的情況；`source` 為 `auto` 時不顯示「取消改綁」。
+按「改綁」進入改綁模式：頁面顯示指出目標 workstream 的提示與「取消」，所有 `connected` runtime 卡中未
+exited 的 pane 列出現「綁定到這裡」，按下即送出覆蓋，成功或按「取消」即離開改綁模式。寫入端點回非 2xx
+或請求失敗時，頁面顯示錯誤訊息（含回應本體的 `error`），直到下一次操作或使用者關閉；操作成功後畫面
+不自行修改狀態，一律等 `/ws` 推送的新投影重畫。
+
+#### Scenario: 推進按鈕
+
+- **GIVEN** task `t1` 在 `Plan`（非最後一站）、`mark` 為 `none`
+- **WHEN** 在畫面按 `t1` 的「推進」
+- **THEN** 服務收到 `POST /api/projects/p/tasks/t1/advance`；新投影到達後節點出現在下一站的欄
+
+#### Scenario: 退回按鈕
+
+- **GIVEN** stages 為 `Plan`、`Build`，task `t1` 在 `Build`、`mark` 為 `none`；task `t2` 在 `Plan`、`mark` 為 `none`；
+  task `t3` 在 `Build`、`mark` 為 `failed`
+- **WHEN** 重畫後在畫面按 `t1` 的「退回」
+- **THEN** `t2` 與 `t3` 的節點沒有「退回」；服務收到 `POST /api/projects/p/tasks/t1/retreat`；新投影到達後 `t1` 的節點出現在
+  `Plan` 欄
+
+#### Scenario: 覆蓋造成的斷線可取消改綁
+
+- **GIVEN** workstream `be` 的覆蓋指向 `wsl`／`w1:p1`，`wsl` 為 `disconnected`，`be` 的 `binding` 為
+  `{"state":"runtime_disconnected","runtime":"wsl","source":"override"}`
+- **WHEN** 重畫後在畫面按 `be` 的「取消改綁」
+- **THEN** `be` 列首同時有「改綁」按鈕與「取消改綁」按鈕；服務收到 `DELETE /api/projects/p/workstreams/be/override`
+
+#### Scenario: 自動綁定的斷線沒有取消改綁
+
+- **GIVEN** workstream `fe` 沒有覆蓋、其自動綁定的 runtime 斷線，`binding` 為
+  `{"state":"runtime_disconnected","runtime":"wsl","source":"auto"}`
+- **WHEN** 重畫
+- **THEN** `fe` 列首有「改綁」按鈕、沒有「取消改綁」按鈕
+
+#### Scenario: 改綁模式跨重畫保留
+
+- **GIVEN** 已按 workstream `be` 的「改綁」進入改綁模式
+- **WHEN** 期間收到兩份新投影並整頁重畫
+- **THEN** 改綁提示與各 pane 列的「綁定到這裡」仍在；按其中一列後服務收到對應的 `PUT` 覆蓋請求
+
+#### Scenario: 頻繁重畫時按鈕仍有效
+
+- **GIVEN** 投影每 100 ms 推送一份新的 version
+- **WHEN** 連續按 10 次不同 task 的「Completed」
+- **THEN** 服務收到 10 個對應的 `POST` 請求，沒有因為重畫而遺失
+
+#### Scenario: 被拒絕時顯示原因
+
+- **GIVEN** 服務對某次操作回 409，本體 `{"error":"已有標記"}`
+- **WHEN** 該操作完成
+- **THEN** 頁面顯示含「已有標記」的錯誤訊息，之後的重畫不清除它
+
+#### Scenario: 固定 pane 的工作線沒有改綁鈕
+
+- **GIVEN** Repo Project 的 workstream `local~wJ:p1` 的 `binding.source` 為 `pane`，手寫 project 的 workstream `be` 的 `source` 為 `auto`
+- **WHEN** 重畫
+- **THEN** `local~wJ:p1` 列首沒有「改綁」與「取消改綁」按鈕；`be` 列首有「改綁」按鈕
+
+### Requirement: Project 切換
+
+系統必須在左欄依 `projects` 順序列出每個 Project：顯示 `name`、`warnings` 數量（有時）與各 task `status` 的數量
+（以 `status` 字串標示，不使用「完成」字樣）。使用者點選或以鍵盤（Enter 或 Space）選定某個 Project 後，Factory Floor
+改為顯示該 Project；目前選定的項目必須有可辨識的標示。未選定過時預設選定第一個 Project；選定的 Project 已不在最新投影中時
+改為選定第一個。選取只存在於該瀏覽器頁面（不送到服務、不持久化，重新整理後回到預設），整頁重畫不得清除選取。選定 Project
+不是「畫面操作」：不得清除最近一次操作的錯誤訊息、不得影響進行中的寫入請求的結果呈現、不得離開改綁模式。投影沒有任何
+Project 時，左欄與 Factory Floor 區域顯示沒有 Project 的空狀態，頁面其他部分正常；Factory Floor 的空狀態文字指向左欄
+「偵測到的 repo」區（說明在那裡加入 repo 即可看到 Factory Floor），不得出現需要重啟 Cockpit 的字樣。
+
+左欄 Project 分頁在 Project 清單之外必須有「偵測到的 repo」區，依投影 `detected_repos` 的順序列出每個 repo：顯示 `name`、
+`pane_count` 與「加入」鈕；沒有偵測到的 repo 時該區不列任何項目、沒有「加入」鈕。按「加入」送出 `POST /api/repo-projects`，
+本體為 `{"repo": <該項的 repo>, "stages": <預設 stages>}`（不帶 `name`）；預設 stages 依介面語言：繁中為 `規劃`、`實作`、
+`審查`、`完成`，英文為 `Plan`、`Implement`、`Review`、`Complete`。
+
+`kind` 為 `repo` 的 Project 項目必須有「⋯」選單（手寫的 Project 沒有），選單項目為「改名」「編輯 stage」「移除」：
+
+- 「改名」讓使用者輸入新名稱，送出 `PATCH /api/repo-projects/<pid>`，本體 `{"name": <新名稱>}`。
+- 「編輯 stage」開啟對話框，依序列出該 Project 目前的 stages，使用者可改名、新增、刪除、調整順序；按儲存送出
+  `PATCH /api/repo-projects/<pid>`，本體 `{"stages": [{"name": <名稱>, "from": <原名稱 或 null>}, ...]}`，順序即對話框中的
+  順序，原有項目的 `from` 為它原本的名稱，新增項目的 `from` 為 `null`；按取消不送出請求。
+- 「移除」先顯示含 Project 名稱的確認，確認後送出 `DELETE /api/repo-projects/<pid>`；取消不送出請求。
+
+加入、改名、編輯 stage、移除都是「畫面操作」：失敗（回非 2xx 或請求失敗）時依「畫面操作」顯示錯誤訊息（含回應本體的 `error`，
+介面為英文時依 `code` 顯示英文），成功後畫面不自行修改狀態，一律等 `/ws` 推送的新投影重畫。加入成功（回 201 與新 Project 的 `id`）後，畫面在含該 `id` 的投影到達時自動選定這個新 Project（只選取一次，之後
+使用者可自由切換；投影到達前使用者已手動選定其他 Project 時不自動切換）。同一個 repo 的加入請求進行中時，該 repo 的「加入」
+鈕呈現忙碌且不再送出請求，直到請求失敗或該 repo 離開偵測區（避免連點造成第二筆請求以「已加入」失敗）。對話框與確認在開啟期間收到新投影並
+整頁重畫時必須保留（含已輸入的內容與焦點）。所有名稱（Project、repo、stage、workstream）一律以文字節點呈現，不以 HTML 插入。
+
+#### Scenario: 切換 Project
+
+- **GIVEN** 投影有 Project `p1`、`p2`
+- **WHEN** 開啟 `/`，之後點左欄的 `p2`
+- **THEN** 開啟時左欄 `p1` 在上、`p2` 在下，`p1` 有選定標示、Factory Floor 顯示 `p1`；點選後 `p2` 有選定標示、
+  Factory Floor 顯示 `p2`
+
+#### Scenario: 選取跨重畫保留
+
+- **GIVEN** 已選定 `p2`
+- **WHEN** 期間收到兩份新投影並整頁重畫
+- **THEN** 仍選定 `p2`、Factory Floor 仍顯示 `p2`
+
+#### Scenario: 鍵盤切換與焦點保留
+
+- **GIVEN** 焦點在左欄 `p2` 項目上，投影每 100 ms 推送一份新的 version
+- **WHEN** 經過 2 秒後按 Enter
+- **THEN** 這段期間焦點始終在 `p2` 項目上，按 Enter 後 Factory Floor 顯示 `p2`
+
+#### Scenario: 切換 Project 不清除錯誤也不離開改綁模式
+
+- **GIVEN** 頁面正顯示一則操作錯誤訊息，且已按 `p1` 某 workstream 的「改綁」進入改綁模式
+- **WHEN** 點左欄的 `p2`
+- **THEN** 錯誤訊息仍在，改綁提示與各 pane 列的「綁定到這裡」仍在
+
+#### Scenario: 各狀態數量
+
+- **GIVEN** `p1` 有 2 個 `running`、1 個 `completed`、1 個 `failed` 的 task，並有 1 則 warning
+- **WHEN** 重畫
+- **THEN** 左欄 `p1` 項目顯示 `running` 2、`completed` 1、`failed` 1 與 1 則 warning，不出現「完成」字樣
+
+#### Scenario: 沒有 Project
+
+- **GIVEN** 投影的 `projects` 為空
+- **WHEN** 重畫
+- **THEN** 左欄與 Factory Floor 區域顯示沒有 Project 的空狀態，runtime 卡與 Live Output 正常
+
+#### Scenario: 空狀態指向偵測到的 repo
+
+- **GIVEN** 投影的 `projects` 為空，`detected_repos` 有 repo `app`
+- **WHEN** 重畫（繁中與英文各一次）
+- **THEN** Factory Floor 的空狀態文字指向「偵測到的 repo」區，不含「需要重啟」（英文為 `Restart`）字樣；左欄「偵測到的 repo」區列出 `app`
+  與「加入」鈕
+
+#### Scenario: 列出偵測到的 repo
+
+- **GIVEN** 投影的 `detected_repos` 為 `app`（`pane_count` 2）與 `lib`（`pane_count` 1），`projects` 有手寫的 `h`
+- **WHEN** 重畫
+- **THEN** 左欄 Project 分頁在 `h` 之外有「偵測到的 repo」區，依序列出 `app`（含數量 2）與 `lib`，各有「加入」鈕
+
+#### Scenario: 按加入送出預設 stages
+
+- **GIVEN** 介面為繁中，`detected_repos` 有 repo `app`（repo key `d:\work\app\.git`）
+- **WHEN** 按 `app` 的「加入」
+- **THEN** 服務收到 `POST /api/repo-projects`，本體 `{"repo":"d:\\work\\app\\.git","stages":["規劃","實作","審查","完成"]}`
+  （沒有 `name`）；新投影到達後 `app` 從該區消失並出現在 Project 清單。介面為英文時 `stages` 為 `["Plan","Implement","Review","Complete"]`
+
+#### Scenario: 加入成功後自動選定新 Project
+
+- **GIVEN** 已選定 Project `h`，`detected_repos` 有 repo `app`
+- **WHEN** 按 `app` 的「加入」，服務回 201 `{"id":"app"}`，稍後含 `app` 的新投影到達
+- **THEN** 左欄選定 `app`，Factory Floor 顯示 `app`；之後點回 `h` 不會再被自動切走
+
+#### Scenario: 投影到達前手動切換則不自動選定
+
+- **GIVEN** 已選定 Project `h`，`detected_repos` 有 repo `app`
+- **WHEN** 按 `app` 的「加入」，服務回 201 `{"id":"app"}`；含 `app` 的投影到達前，使用者點選 Project `h2`
+- **THEN** 投影到達後仍選定 `h2`
+
+#### Scenario: 連點加入只送出一次
+
+- **GIVEN** `detected_repos` 有 repo `app`
+- **WHEN** 快速連按兩次 `app` 的「加入」
+- **THEN** 只送出一筆 `POST /api/repo-projects`，不顯示錯誤；請求進行中該鈕呈現忙碌
+
+#### Scenario: 加入被拒絕時顯示原因
+
+- **GIVEN** 服務對加入請求回 409，`code` 為 `repo_already_added`
+- **WHEN** 該操作完成
+- **THEN** 頁面顯示含原因的錯誤訊息（英文介面以字典的英文訊息），之後的重畫不清除它
+
+#### Scenario: 只有 Repo Project 有選單
+
+- **GIVEN** 投影有手寫的 `h`（`kind` 為 `config`）與 Repo Project `app`（`kind` 為 `repo`）
+- **WHEN** 重畫
+- **THEN** `app` 項目有「⋯」選單，選單含「改名」「編輯 stage」「移除」；`h` 項目沒有
+
+#### Scenario: 改名
+
+- **WHEN** 從 `app` 的「⋯」選單選「改名」，輸入 `App 前端` 並送出
+- **THEN** 服務收到 `PATCH /api/repo-projects/app`，本體 `{"name":"App 前端"}`；新投影到達後左欄與 Factory Floor 標題顯示 `App 前端`
+
+#### Scenario: 編輯 stage
+
+- **GIVEN** `app` 的 stages 為 `Plan`、`Implement`、`Review`、`Done`
+- **WHEN** 開啟「編輯 stage」對話框，把 `Implement` 改名為 `Build`、刪除 `Review`、在最後新增 `Ship`，按儲存
+- **THEN** 服務收到 `PATCH /api/repo-projects/app`，本體 `{"stages":[{"name":"Plan","from":"Plan"},{"name":"Build","from":"Implement"},{"name":"Done","from":"Done"},{"name":"Ship","from":null}]}`
+
+#### Scenario: 取消編輯與取消移除不送請求
+
+- **WHEN** 開啟「編輯 stage」對話框後按取消；再從選單選「移除」，在確認中按取消
+- **THEN** 服務沒有收到任何 `PATCH` 或 `DELETE` 請求
+
+#### Scenario: 移除要先確認
+
+- **WHEN** 從 `app` 的「⋯」選單選「移除」
+- **THEN** 先顯示含 `app` 名稱的確認，尚未送出請求；確認後服務收到 `DELETE /api/repo-projects/app`，新投影到達後 `app` 從
+  Project 清單消失；若它原是選定的 Project，改為選定第一個
+
+#### Scenario: 對話框跨重畫保留
+
+- **GIVEN** 「編輯 stage」對話框開著，已改了一個 stage 名稱但尚未儲存
+- **WHEN** 期間收到兩份新投影並整頁重畫
+- **THEN** 對話框仍在，已輸入的內容與焦點保留
+
+#### Scenario: 名稱不以 HTML 解讀
+
+- **GIVEN** 某 Repo Project 的名稱為 `<img src=x onerror=alert(1)>`，其 stage 名稱與 pane label 也含 HTML 字元
+- **WHEN** 重畫
+- **THEN** 這些名稱在左欄、Factory Floor 與對話框中以原樣文字顯示，沒有建立任何 `<img>` 元素，也沒有執行指令碼

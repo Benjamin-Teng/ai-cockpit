@@ -12,7 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::config::{BindingSpec, WorkstreamDef};
+use crate::domain::config::{BindingSpec, PinnedPane, WorkstreamDef};
 use crate::domain::rejection::Rejection;
 use crate::store::{RuntimeState, RuntimeStore};
 use crate::types::connection::ConnectionState;
@@ -28,8 +28,8 @@ pub struct Override {
     pub pane_id: PaneId,
 }
 
-/// 一條 Workstream 綁定解析出的來源：自動解析，或畫面覆蓋；序列化為 `auto`／`override`
-/// （spec `state-projection` 「Project 投影」）。
+/// 一條 Workstream 綁定解析出的來源：自動解析、畫面覆蓋，或 Repo Project 的固定 pane；序列化為
+/// `auto`／`override`／`pane`（spec `state-projection` 「Project 投影」）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BindingSource {
@@ -37,6 +37,9 @@ pub enum BindingSource {
     Auto,
     /// 來自畫面設定的 `Override`。
     Override,
+    /// Repo Project 工作線固定綁定到推導出它的 pane（repo-projects task 3.1，design D3）；
+    /// 不經自動解析、不接受覆蓋。
+    Pane,
 }
 
 /// 一條 Workstream 綁定的解析結果，恰好五種之一（spec `runtime-binding` 「解析結果種類」）。
@@ -61,10 +64,13 @@ pub enum BindingResolution {
         /// 這個結果的來源。
         source: BindingSource,
     },
-    /// 自動解析的候選為 0 個。
+    /// 自動解析的候選為 0 個（`source` 為 `Auto`），或固定 pane 不在 pane 樹／已 exited（`source`
+    /// 為 `Pane`）。覆蓋不會產生這個結果（失效的覆蓋回到自動解析）。
     Unbound {
         /// 嘗試解析的 runtime id。
         runtime: RuntimeId,
+        /// 這個結果的來源（repo-projects task 3.1）。
+        source: BindingSource,
     },
     /// 自動解析的候選超過 1 個。
     Ambiguous {
@@ -170,7 +176,10 @@ fn resolve_auto(spec: &BindingSpec, store: &RuntimeStore) -> BindingResolution {
     candidates.sort_by_key(|(seq, _)| *seq);
 
     match candidates.len() {
-        0 => BindingResolution::Unbound { runtime },
+        0 => BindingResolution::Unbound {
+            runtime,
+            source: BindingSource::Auto,
+        },
         1 => {
             let (_, pane_id) = candidates.into_iter().next().expect("恰好一筆");
             BindingResolution::Bound {
@@ -186,7 +195,37 @@ fn resolve_auto(spec: &BindingSpec, store: &RuntimeStore) -> BindingResolution {
     }
 }
 
-/// 解析一條 Workstream 的綁定：有覆蓋時覆蓋優先，否則以 `workstream.binding` 自動解析
+/// 固定 pane 的解析（spec `repo-projects`「Repo Project 工作線的固定 pane 綁定」；repo-projects
+/// task 3.1）：runtime 不是 `connected`（含未登記）→ `RuntimeDisconnected`；pane 在 pane 樹且未
+/// exited → `Bound`；否則 `Unbound`。三種結果的 `source` 都是 `Pane`。
+fn resolve_pinned(pinned: &PinnedPane, store: &RuntimeStore) -> BindingResolution {
+    let runtime = pinned.runtime.clone();
+    if !is_connected(store, &runtime) {
+        return BindingResolution::RuntimeDisconnected {
+            runtime,
+            source: BindingSource::Pane,
+        };
+    }
+    let alive = store
+        .state(&runtime)
+        .and_then(|state| state.panes.get(&pinned.pane_id))
+        .is_some_and(|pane| !pane.exited);
+    if alive {
+        BindingResolution::Bound {
+            runtime,
+            pane_id: pinned.pane_id.clone(),
+            source: BindingSource::Pane,
+        }
+    } else {
+        BindingResolution::Unbound {
+            runtime,
+            source: BindingSource::Pane,
+        }
+    }
+}
+
+/// 解析一條 Workstream 的綁定：固定 pane 的 workstream（`pinned_pane`）只看它的 pane、不看覆蓋，
+/// 也不回報失效覆蓋；其餘有覆蓋時覆蓋優先，否則以 `workstream.binding` 自動解析
 /// （spec `runtime-binding` 「畫面覆蓋」；design D3、D7）。
 ///
 /// 回傳 `(解析結果, 覆蓋是否已失效)`：後者為 `true` 只發生在「覆蓋的 runtime 已
@@ -203,6 +242,10 @@ pub fn resolve_binding(
             Some(spec) => resolve_auto(spec, store),
             None => BindingResolution::None,
         }
+    }
+
+    if let Some(pinned) = &workstream.pinned_pane {
+        return (resolve_pinned(pinned, store), false);
     }
 
     let Some(over) = override_ else {

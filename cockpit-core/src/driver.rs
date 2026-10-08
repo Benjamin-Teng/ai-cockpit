@@ -248,7 +248,7 @@ async fn connect_and_serve(
     // 這輪連線建立的時間：之後每次重拿都只更新 `last_snapshot_at`，`since` 一路沿用
     // 這個值（重拿不是重新連線）。
     let since = SystemTime::now();
-    install_snapshot(store, id, snapshot, since);
+    install_snapshot(store, id, snapshot, since, false);
     // 真的連上了：退避序列歸零，下一次斷線從序列的第一項重新起算（spec「成功後歸零」）。
     // 之後每次重拿都不會再動它——`Connected` 期間根本不讀退避。
     *backoff_index = 0;
@@ -282,7 +282,9 @@ async fn connect_and_serve(
                 pending = None;
                 match result {
                     Ok(snapshot) => {
-                        install_snapshot(store, id, snapshot, since);
+                        // 沉降重拿已觸發（`settle_at` 為 `None`）之後才完成的重拿，就是沉降重拿本身、它併入的
+                        // 進行中重拿，或更晚的重拿（`biased` 讓同時就緒時先換上這份、再觸發沉降）。
+                        install_snapshot(store, id, snapshot, since, settle_at.is_none());
                         deadline = Instant::now() + policy.resnapshot;
                         // Drift 重拿期間有事件被套用：剛換上的 snapshot 可能比那些事件舊，
                         // 再拿一次；同一次 Drift 最多追加 MAX_DRIFT_FOLLOWUPS 次（spec
@@ -362,12 +364,14 @@ async fn await_pending(
 /// 整份替換狀態庫並寫回 `Connected`：初次連上與之後每一次重拿都走這裡。
 ///
 /// `since` 由呼叫端保存（這輪連線建立的時間，重拿不改它）；`server_version`／
-/// `protocol`／`protocol_warning` 一律取新 snapshot 的值，`last_snapshot_at` 更新為此刻。
+/// `protocol`／`protocol_warning` 一律取新 snapshot 的值，`last_snapshot_at` 更新為此刻。`settled` 由呼叫端
+/// 判定（初次連上為 `false`，沉降重拿觸發後完成的重拿為 `true`）。
 fn install_snapshot(
     store: &StoreHandle,
     id: &RuntimeId,
     snapshot: RuntimeSnapshot,
     since: SystemTime,
+    settled: bool,
 ) {
     // `replace` 會吃掉 snapshot，先把要寫進 `Connected` 的欄位留下來。
     let server_version = snapshot.server_version.clone();
@@ -385,6 +389,7 @@ fn install_snapshot(
             protocol,
             last_snapshot_at: SystemTime::now(),
             protocol_warning,
+            settled,
         },
     );
 }

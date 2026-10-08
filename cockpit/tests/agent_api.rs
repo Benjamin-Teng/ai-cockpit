@@ -77,6 +77,7 @@ fn workstream(id: &str, runtime: &str, workspace: &str) -> WorkstreamDef {
         id: WorkstreamId::new(id),
         name: id.to_string(),
         binding: binding(runtime, workspace),
+        pinned_pane: None,
     }
 }
 
@@ -104,6 +105,7 @@ fn sample_project() -> ProjectDef {
             task("t2", "be", "Build"),
             task("f1", "fe", "Plan"),
         ],
+        repo: None,
     }
 }
 
@@ -177,6 +179,7 @@ fn add_runtime(store: &mut RuntimeStore, id: &str, entries: &[(&str, &str)]) {
                 server_version: "test".to_string(),
                 protocol: 1,
                 last_snapshot_at: SystemTime::UNIX_EPOCH,
+                settled: true,
                 protocol_warning: None,
             },
         )
@@ -389,6 +392,7 @@ async fn wsl_runtime_pane_does_not_count() {
         stages: vec!["Plan".to_string(), "Build".to_string()],
         workstreams: vec![workstream("be", "wsl", "w1")],
         tasks: vec![task("t1", "be", "Plan")],
+        repo: None,
     };
     let mut store = RuntimeStore::new();
     add_runtime(&mut store, "wsl", &[("w1", "w1:p1")]);
@@ -422,6 +426,7 @@ async fn pane_id_collision_across_windows_runtimes_binds_nothing() {
         stages: vec!["Plan".to_string(), "Build".to_string()],
         workstreams: vec![workstream("a", "win", "w1"), workstream("b", "win2", "w1")],
         tasks: vec![task("ta", "a", "Plan"), task("tb", "b", "Plan")],
+        repo: None,
     };
     let mut store = RuntimeStore::new();
     add_runtime(&mut store, "win", &[("w1", "w1:p1")]);
@@ -460,6 +465,7 @@ async fn unbound_same_id_pane_on_other_windows_runtime_is_collision() {
         stages: vec!["Plan".to_string(), "Build".to_string()],
         workstreams: vec![workstream("a", "win", "w1")],
         tasks: vec![task("ta", "a", "Plan")],
+        repo: None,
     };
     let mut store = RuntimeStore::new();
     add_runtime(&mut store, "win", &[("w1", "w1:p1")]);
@@ -494,6 +500,7 @@ async fn exited_or_wsl_same_id_pane_is_not_collision() {
         stages: vec!["Plan".to_string(), "Build".to_string()],
         workstreams: vec![workstream("a", "win", "w1")],
         tasks: vec![task("ta", "a", "Plan")],
+        repo: None,
     };
     let mut store = RuntimeStore::new();
     add_runtime(&mut store, "win", &[("w1", "w1:p1")]);
@@ -540,6 +547,7 @@ async fn disconnected_runtime_last_known_pane_still_collides() {
         stages: vec!["Plan".to_string(), "Build".to_string()],
         workstreams: vec![workstream("a", "win", "w1")],
         tasks: vec![task("ta", "a", "Plan")],
+        repo: None,
     };
     let mut store = RuntimeStore::new();
     add_runtime(&mut store, "win", &[("w1", "w1:p1")]);
@@ -639,6 +647,7 @@ async fn wsl_binding_is_excluded_before_collision_check() {
         stages: vec!["Plan".to_string(), "Build".to_string()],
         workstreams: vec![workstream("a", "win", "w1"), workstream("b", "wsl", "w1")],
         tasks: vec![task("ta", "a", "Plan"), task("tb", "b", "Plan")],
+        repo: None,
     };
     let mut store = RuntimeStore::new();
     add_runtime(&mut store, "win", &[("w1", "w1:p1")]);
@@ -789,6 +798,7 @@ async fn same_pane_bound_by_two_workstreams_lists_both() {
             workstream("api", "win", "wJ"),
         ],
         tasks: vec![task("t1", "be", "Plan"), task("a1", "api", "Plan")],
+        repo: None,
     };
     let (_h, state) = build_with(vec![project], win_store(), &[], dir.path().join("s.json"));
     let router = http::router(state);
@@ -863,7 +873,7 @@ async fn start_declares_active_task() {
 
     let on_disk: Value =
         serde_json::from_str(&fs::read_to_string(&path).expect("狀態檔應該存在")).expect("JSON");
-    assert_eq!(on_disk["version"], 2);
+    assert_eq!(on_disk["version"], 3);
     assert_eq!(on_disk["projects"]["p"]["active"], json!({"be": "t2"}));
 }
 

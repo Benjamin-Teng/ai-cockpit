@@ -8,7 +8,8 @@
 //! HERDR 型別。
 
 use crate::domain::ids::{ProjectId, TaskId, WorkstreamId};
-use crate::types::ids::RuntimeId;
+use crate::domain::repo::RepoKey;
+use crate::types::ids::{PaneId, RuntimeId};
 
 /// 一條 Workstream 的 Runtime 綁定設定（spec `pipeline-config` 「Project 區段結構」）。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,6 +35,20 @@ pub struct WorkstreamDef {
     pub name: String,
     /// Runtime 綁定設定；`None` 表示這條 workstream 沒有 binding。
     pub binding: Option<BindingSpec>,
+    /// Repo Project 展開出的工作線固定綁定的 pane（repo-projects task 3.1，design D3）；手寫 project
+    /// 一律為 `None`。有值時 `binding` 為 `None`，綁定解析只看這個 pane、不接受覆蓋。
+    pub pinned_pane: Option<PinnedPane>,
+}
+
+/// Repo Project 工作線固定綁定的 pane（spec `repo-projects`「Repo Project 工作線的固定 pane 綁定」）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PinnedPane {
+    /// pane 所在的 runtime id。
+    pub runtime: RuntimeId,
+    /// pane id。
+    pub pane_id: PaneId,
+    /// pane 位於 linked worktree 時為 worktree 資料夾名稱；主 worktree 為 `None`（design D1）。
+    pub worktree: Option<String>,
 }
 
 /// 一個 Task（spec `pipeline-config` 「Project 區段結構」）。
@@ -66,4 +81,9 @@ pub struct ProjectDef {
     pub workstreams: Vec<WorkstreamDef>,
     /// 這個 Project 底下的 task，依設定檔順序。
     pub tasks: Vec<TaskDef>,
+    /// 種類標記（repo-projects task 3.1，design D3、D8）：手寫於設定檔的 project 為 `None`；由
+    /// [`crate::expand_repo_projects`] 展開的 Repo Project 為它的 repo key（也是投影要輸出的 `repo`）。
+    /// 撞名時生效清單裡的是手寫 project（`None`），所以判斷種類一律看這個欄位，不看 `repo_projects`
+    /// 有沒有同 id 的定義。
+    pub repo: Option<RepoKey>,
 }

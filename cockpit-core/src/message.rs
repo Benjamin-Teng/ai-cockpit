@@ -65,6 +65,9 @@ pub enum Message {
     DriftRuntimeNotRegistered { id: String },
     /// `event_payload_unparsable`（`event`、`detail`）：HERDR 事件的 payload 無法解析（`detail` 是底層 serde 英文錯誤）。
     EventPayloadUnparsable { event: String, detail: String },
+    /// `repo_project_id_conflict`（`id`）：手寫 project 與 Repo Project 的 id 相同，Repo Project 不展開、只能經
+    /// API 改名或移除（repo-projects task 3.1，design D3）。掛在手寫 project 的 warnings。
+    RepoProjectIdConflict { id: String },
     /// `raw`（`text`）：無法歸類的原文。
     Raw { text: String },
 }
@@ -94,6 +97,9 @@ const DRIFT_PANE_PREFIX: &str = "pane ";
 const DRIFT_RUNTIME_PREFIX: &str = "runtime ";
 const DRIFT_RUNTIME_SUFFIX: &str = " 未登記";
 const EVENT_PAYLOAD_MIDDLE: &str = " payload 無法解析：";
+const REPO_PROJECT_ID_CONFLICT_PREFIX: &str = "Repo Project「";
+const REPO_PROJECT_ID_CONFLICT_SUFFIX: &str =
+    "」與設定檔中的 project id 相同，已隱藏；只能經 API（/api/repo-projects）改名或移除";
 
 impl Message {
     /// 繁中原文（給舊欄位、記錄與前端的退回顯示用）。
@@ -144,6 +150,9 @@ impl Message {
             }
             Message::EventPayloadUnparsable { event, detail } => {
                 format!("{event}{EVENT_PAYLOAD_MIDDLE}{detail}")
+            }
+            Message::RepoProjectIdConflict { id } => {
+                format!("{REPO_PROJECT_ID_CONFLICT_PREFIX}{id}{REPO_PROJECT_ID_CONFLICT_SUFFIX}")
             }
             Message::Raw { text } => text.clone(),
         }
@@ -197,6 +206,7 @@ impl Message {
                 "event_payload_unparsable",
                 vec![("event", event), ("detail", detail)],
             ),
+            Message::RepoProjectIdConflict { id } => ("repo_project_id_conflict", vec![("id", id)]),
             Message::Raw { text } => ("raw", vec![("text", text)]),
         };
         MessageCode {
@@ -302,6 +312,13 @@ fn classify_known(text: &str) -> Option<Message> {
     }
     if let Some(id) = id_of(DRIFT_RUNTIME_PREFIX, DRIFT_RUNTIME_SUFFIX) {
         return Some(Message::DriftRuntimeNotRegistered { id });
+    }
+    if let Some(id) = text
+        .strip_prefix(REPO_PROJECT_ID_CONFLICT_PREFIX)
+        .and_then(|rest| rest.strip_suffix(REPO_PROJECT_ID_CONFLICT_SUFFIX))
+        .filter(|id| !id.is_empty())
+    {
+        return Some(Message::RepoProjectIdConflict { id: id.to_string() });
     }
     if let Some((event, detail)) = text.split_once(EVENT_PAYLOAD_MIDDLE)
         && is_plain_id(event)

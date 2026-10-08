@@ -91,8 +91,16 @@ fn zero_config() -> Config {
             .unwrap_or_default()
     ));
     std::fs::create_dir_all(&dir).expect("暫存目錄應該建得起來");
-    let config = config::load(&Args::default(), &dir, &|key| std::env::var(key).ok())
-        .expect("零設定模式不應該失敗");
+    // 遮掉 `LOCALAPPDATA`（repo-projects task 4.1）：零設定模式的狀態檔在使用者真的
+    // `%LOCALAPPDATA%\ai-cockpit` 下，測試不讀也不寫它，改成只存在記憶體。
+    let env = |key: &str| {
+        if key == "LOCALAPPDATA" {
+            None
+        } else {
+            std::env::var(key).ok()
+        }
+    };
+    let config = config::load(&Args::default(), &dir, &env).expect("零設定模式不應該失敗");
     std::fs::remove_dir_all(&dir).ok();
     config
 }

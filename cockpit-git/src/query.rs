@@ -734,11 +734,48 @@ impl GitQuery for VerifyCommit {
     }
 }
 
+// ---------------------------------------------------------------------------
+// RepoIdentity（repo-projects task 2.1；design D1）
+// ---------------------------------------------------------------------------
+
+/// `rev-parse --path-format=absolute --git-common-dir --git-dir --show-toplevel`：判定
+/// 目標目錄屬於哪個 git repo（repo-projects design D1）。成功時 stdout 三行，依引數順序：
+/// 共同 `.git` 目錄、該工作樹自己的 git 目錄、工作樹根目錄。
+///
+/// `--path-format=absolute` 必須放在三個路徑旗標**之前**（它只影響其後的引數；git 官方文件
+/// `git-rev-parse` 的 `--path-format` 節），否則子目錄會得到相對路徑。引數都不含使用者可控
+/// 字串（目標目錄經 `-C` 傳入），所以不需要 `--end-of-options`。解析與「不是 repo」的判別見
+/// `repo_identity.rs`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RepoIdentity;
+
+impl private::Sealed for RepoIdentity {}
+
+impl GitQuery for RepoIdentity {
+    type Output = Option<crate::repo_identity::RepoIdentityOutput>;
+
+    fn commands(&self, target: &crate::GitTarget) -> Vec<Vec<String>> {
+        let mut argv = target.base_argv();
+        argv.extend(strings(&[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+            "--git-dir",
+            "--show-toplevel",
+        ]));
+        vec![argv]
+    }
+
+    fn stdout_cap(&self) -> usize {
+        DEFAULT_STDOUT_CAP
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         Blob, BlobHead, BlobId, BlobSize, ChangedFiles, CommitInfo, FileDiff, GitQuery, Log,
-        MergeBase, QueryError, Refs, Status, VerifyCommit,
+        MergeBase, QueryError, Refs, RepoIdentity, Status, VerifyCommit,
     };
     use crate::{GitTarget, Oid, RepoPath, Side};
 
@@ -781,6 +818,29 @@ mod tests {
                     "-z",
                     "--branch",
                     "--untracked-files=all"
+                ]
+            );
+            assert!(!argv.contains(&"--end-of-options".to_string()));
+        }
+    }
+
+    /// repo-projects task 2.1（design D1）：單次呼叫，`--path-format=absolute` 在三個路徑旗標
+    /// 之前，順序固定為 common-dir、git-dir、show-toplevel（輸出三行依此順序）。
+    #[test]
+    fn repo_identity_argv_is_single_call_with_path_format_before_path_flags() {
+        for target in [native(), wsl()] {
+            let mut calls = RepoIdentity.commands(&target);
+            assert_eq!(calls.len(), 1);
+            let argv = calls.remove(0);
+            assert_common_prefix(&argv, &target);
+            assert_eq!(
+                &argv[target.base_argv().len()..],
+                [
+                    "rev-parse",
+                    "--path-format=absolute",
+                    "--git-common-dir",
+                    "--git-dir",
+                    "--show-toplevel"
                 ]
             );
             assert!(!argv.contains(&"--end-of-options".to_string()));
@@ -1416,6 +1476,9 @@ mod tests {
         let blob_head = BlobHead::new(Side::Index, RepoPath::parse("a.rs").unwrap()).unwrap();
         assert_eq!(blob_head.stdout_cap(), 8192);
         assert!(blob_head.truncatable());
+
+        assert_eq!(RepoIdentity.stdout_cap(), ONE_MIB);
+        assert!(!RepoIdentity.truncatable());
     }
 
     #[test]

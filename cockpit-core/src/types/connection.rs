@@ -18,6 +18,11 @@ pub enum ConnectionState {
         protocol: u32,
         /// 最近一次成功取得快照的時間。
         last_snapshot_at: SystemTime,
+        /// 這輪連線的沉降重拿（spec `runtime-driver`「連線後沉降重拿」）是否已換上：初次 snapshot 為 `false`；
+        /// 沉降重拿觸發之後完成的第一份 snapshot（沉降重拿本身，或它併入的進行中重拿）換上時起為 `true`，
+        /// 直到這輪連線結束。剛連上時 HERDR 的狀態可能還沒穩定，不可逆的判定（例如清除消失 pane 的
+        /// Repo Project 進度，repo-projects task 4.6）只採信 `true` 之後的 pane 樹。
+        settled: bool,
         /// 協定相容性警告；`None` 表示沒有警告。字串必須由 [`crate::Message`] 的 `text()` 產生
         /// （見 `RuntimeError` 的說明），投影才能反推代碼給英文介面翻譯。
         protocol_warning: Option<String>,

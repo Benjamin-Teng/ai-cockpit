@@ -4,6 +4,37 @@ All notable changes to AI Agent Cockpit are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Add a git repo as a project from the dashboard.** The Project tab in the left column now
+  lists the git repos your panes are working in under **Detected repos**, each with an **Add**
+  button. After you add one, every pane inside that repo (any worktree, any HERDR workspace)
+  becomes a workstream with its own task card, and the card goes away when the pane closes. A new
+  project starts with four stages; the **⋯** menu on a project lets you rename it, edit its stages
+  or remove it, all without restarting. Panes in a linked git worktree are labelled with the
+  worktree's folder name. You no longer have to write `[[project]]` sections in `cockpit.toml`;
+  the ones you already have keep working. A pane that moves to another folder can take up to
+  about 30 seconds to move to its new repo, and a folder opened from both Windows and WSL is
+  listed as two repos.
+- **Agents can advance their task without any IDs.** `POST /api/agent/advance` finds the task
+  that belongs to the calling pane from the `X-Herdr-Pane-Id` header, so one line in `AGENTS.md`
+  is enough. It answers 404 `no_task_for_pane` when the pane has no task and 409
+  `ambiguous_task` when it has more than one. As before, panes of a WSL runtime are not supported.
+- **Progress is saved without a config file too.** Without a `cockpit.toml`, Cockpit now keeps
+  its state in `%LOCALAPPDATA%\ai-cockpit\cockpit.state.json`, so the repos you added
+  survive a restart. The file is only created once there is something to save.
+
+### Changed
+
+- **State file version 3.** `cockpit.state.json` now records the repos you added. Older state
+  files are read as before and upgraded the next time something changes. **Going back is not
+  possible without a reset:** Cockpit 0.1.3 and earlier refuse to start when they find a version 3
+  state file. Before installing an older version, delete or rename `cockpit.state.json`; you lose
+  your progress and the repos you added.
+- **The empty dashboard no longer asks you to restart.** It now points to **Detected repos**.
+
 ## [0.1.3] - 2026-10-07
 
 ### Added

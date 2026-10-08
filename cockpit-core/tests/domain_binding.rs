@@ -33,6 +33,7 @@ fn connected_state() -> ConnectionState {
         server_version: "0.9.0".to_string(),
         protocol: 1,
         last_snapshot_at: SystemTime::UNIX_EPOCH,
+        settled: true,
         protocol_warning: None,
     }
 }
@@ -85,6 +86,7 @@ fn workstream_with(binding: Option<BindingSpec>) -> WorkstreamDef {
         id: WorkstreamId::new("be"),
         name: "be".to_string(),
         binding,
+        pinned_pane: None,
     }
 }
 
@@ -259,7 +261,10 @@ fn no_matching_workspace_label_is_unbound() {
     );
     let (resolution, _) = resolve_binding(&ws, None, &store);
     match resolution {
-        BindingResolution::Unbound { runtime } => assert_eq!(runtime.as_str(), "win"),
+        BindingResolution::Unbound { runtime, source } => {
+            assert_eq!(runtime.as_str(), "win");
+            assert_eq!(source, BindingSource::Auto);
+        }
         other => panic!("expected Unbound, got {other:?}"),
     }
 }
@@ -359,7 +364,7 @@ fn candidate_filters_are_case_sensitive_and_reject_missing_or_wrong_agent() {
             }
         } else {
             match resolution {
-                BindingResolution::Unbound { runtime } => {
+                BindingResolution::Unbound { runtime, .. } => {
                     assert_eq!(runtime.as_str(), "win", "case 「{}」", case.name);
                 }
                 other => panic!("case 「{}」：expected Unbound, got {other:?}", case.name),

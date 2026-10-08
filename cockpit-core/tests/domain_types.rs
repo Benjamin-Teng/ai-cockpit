@@ -92,6 +92,7 @@ fn binding_resolution_has_exactly_five_variants() {
         },
         BindingResolution::Unbound {
             runtime: runtime.clone(),
+            source: BindingSource::Auto,
         },
         BindingResolution::Ambiguous {
             runtime,
@@ -155,6 +156,7 @@ fn sample_project() -> ProjectDef {
                 cwd: None,
                 agent: None,
             }),
+            pinned_pane: None,
         }],
         tasks: vec![TaskDef {
             id: TaskId::new("t1"),
@@ -163,6 +165,7 @@ fn sample_project() -> ProjectDef {
             stage: "Plan".to_string(),
             depends_on: vec![],
         }],
+        repo: None,
     }
 }
 

@@ -64,6 +64,7 @@ fn nested_projection_matches_design_json_shape() {
                 server_version: "0.9.0-preview.1".to_string(),
                 protocol: 22,
                 last_snapshot_at: epoch_secs(2000),
+                settled: true,
                 protocol_warning: None,
             },
         )
@@ -128,6 +129,8 @@ fn nested_projection_matches_design_json_shape() {
         ],
         // change `pipeline-projection`：沒有 Project 時 `projects` 為空陣列（spec 「投影形狀」）。
         "projects": [],
+        // repo-projects task 3.2：頂層固定有 `detected_repos`，沒有時為空陣列（spec 「投影形狀」）。
+        "detected_repos": [],
         "recent_events": []
     });
 
@@ -209,6 +212,7 @@ fn connection_carries_text_and_msg_side_by_side() {
                 server_version: "0.9.0".to_string(),
                 protocol: 23,
                 last_snapshot_at: epoch_secs(2),
+                settled: true,
                 protocol_warning: Some("HERDR protocol 23 不在已測範圍 20..=22".to_string()),
             },
         )
@@ -284,6 +288,7 @@ fn timestamps_are_rfc3339() {
                 server_version: "0.9.0".to_string(),
                 protocol: 1,
                 last_snapshot_at: epoch_secs(200),
+                settled: true,
                 protocol_warning: None,
             },
         )

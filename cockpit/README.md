@@ -72,7 +72,8 @@ cargo run -p cockpit
 
 ## Pipeline 設定（change 2 `pipeline-projection`）
 
-`[[project]]`（零到多筆）與 `[state]` 都是選填區段，省略時行為與 1b 完全相同（不讀不寫狀態檔）。
+`[[project]]`（零到多筆）與 `[state]` 都是選填區段。手寫的 `[[project]]` 與畫面上加入的 Repo Project（見下一節）並列，
+兩者 id 相同時手寫的優先。
 
 ```toml
 [[project]]
@@ -107,8 +108,10 @@ path = "cockpit.state.json"   # 選填；相對路徑相對於設定檔目錄解
 - `id` 須符合 `^[A-Za-z0-9_-]{1,64}$`，同層不重複；`name`／`title` 省略時預設等於 `id`；
   `binding.runtime` 必須是設定檔中某一筆 `[[runtime]]` 的 `id`。以上區段與欄位之外的未知欄位視為
   錯誤（啟動失敗）。完整範例見 repo 根的 `cockpit.example.toml`（已含一份可直接跑的示範 project）。
-- `[state] path` 給了才用，未給時預設為設定檔目錄下的 `cockpit.state.json`；零設定模式（沒有
-  `--config` 也沒有 `cockpit.toml`）下 `projects` 恆為空，不會有任何 project，也就不讀寫狀態檔。
+- `[state] path` 給了才用，未給時預設為設定檔目錄下的 `cockpit.state.json`。零設定模式（沒有
+  `--config` 也沒有 `cockpit.toml`）的狀態檔在 `%LOCALAPPDATA%\ai-cockpit\cockpit.state.json`，第一次寫入時
+  才建立資料夾與檔案（`LOCALAPPDATA` 不存在時只存在記憶體）；沒有手寫 project、也沒有加入過 Repo Project
+  時不會產生這個檔案。
 - 狀態檔（`cockpit.state.json` 或 `[state] path` 指到的檔案）已列入 `.gitignore`，不會進 repo——
   它帶著會頻繁變動的進度與覆蓋，不是設定。停用某條 pipeline 只要刪掉對應的 `[[project]]` 區段，
   下次啟動時舊狀態檔中對不到設定檔的 project／task／workstream 會被忽略並記一則 warn。
@@ -118,10 +121,96 @@ path = "cockpit.state.json"   # 選填；相對路徑相對於設定檔目錄解
   task id，見下一節），檔案 `version` 為 2。升級直接換新版即可：舊的 v1 狀態檔照常讀取（視為沒有任何
   目前 task），第一次寫入時存成 v2。**回退**：舊版 cockpit 讀到 v2 會因版本不支援而啟動失敗；回退前先停掉
   cockpit，手動把 `version` 改回 `1`、刪掉每個 project 底下的 `active` 欄位，進度與覆蓋不受影響，再換回舊版。
+- **狀態檔 v3（change `repo-projects`）**：多一個 `repo_projects` 區段（畫面加入的 Repo Project 的定義與進度），
+  檔案 `version` 為 3。v1、v2 照常讀取，下次寫入內容有變時才升級成 v3。**降版限制**：v0.1.3 以前的版本讀到 v3
+  狀態檔會因版本不支援而拒絕啟動；裝回舊版前要先刪除或改名 `cockpit.state.json`（會失去進度與已加入的 Repo
+  Project）。
 - **回滾注意**：`[[project]]`／`[state]` 是 change 2 新增的區段，設定檔解析一律 `deny_unknown_fields`
   （未知欄位＝啟動失敗）。換回沒有這兩個功能的舊版 `cockpit.exe` 前，要先把 `cockpit.toml` 裡的
   `[[project]]` 與 `[state]` 區段整段移除，不然舊版會直接啟動失敗；狀態檔可以留著不動，舊版本來就
   不會去讀它。
+
+## 把 repo 加成 Project（change `repo-projects`）
+
+不必手寫 `cockpit.toml`，也不必重啟：在畫面上把 git repo 加成 Project（Repo Project）。
+
+1. 在 HERDR 裡於該 repo 內開一個 pane（任一 worktree、任一 workspace 都可以）。
+2. 左欄切到 Project 分頁，這個 repo 會列在「偵測到的 repo」區，旁邊顯示歸入的 pane 數。
+3. 按該列的「加入」。預設有四個 stage（繁中介面：規劃、實作、審查、完成；英文介面：Plan、Implement、Review、Complete）。
+
+加入後，cwd 落在這個 repo 內、且未 exited 的每個 pane 各自成為一條 workstream，每條 workstream 恰有一張 task，
+所以一個 pane 一張卡。linked worktree 裡的 pane 會標出 worktree 的資料夾名稱。pane 從 HERDR 消失（關掉）時，
+那條 workstream 與它的 task 進度一起移除；pane 已 exited 但還留在 HERDR 的 pane 樹裡時，它的 workstream 會從畫面消失，
+進度則保留到 pane 真正關閉才清除。Repo Project 的「⋯」選單可以改名、編輯 stage（改名、新增、刪除、排序）、
+移除，全部立即生效；移除後，只要還有 pane 在該 repo 內，它就回到「偵測到的 repo」。
+
+這些 workstream 的綁定固定是那個 pane，不接受畫面改綁（覆蓋端點對它們回 409 `not_overridable`，畫面也不顯示
+「改綁」鈕）。Repo Project 的定義與進度存在狀態檔（見上一節的 v3）。
+
+**限制：**
+
+- **cwd 改變最多約 30 秒才反映**：HERDR 沒有 cwd 變動事件，Cockpit 靠定期重新抓 snapshot
+  （`[polling] resnapshot_secs`，預設 30）。pane 內 `cd` 到另一個 repo 後，要等下一次重抓才會歸到新 repo；
+  git 查詢結果另有快取（成功的最多沿用 10 分鐘，「不是 repo」與暫時錯誤最多 60 秒）。
+- **Windows 與 WSL 看同一個資料夾會列成兩個 repo**：repo 以 git 的共同 `.git` 目錄的主機路徑判定，Windows
+  端是 `D:\...`，WSL 端是 `\\wsl.localhost\<distro>\...`，同一個資料夾從 Windows 與 WSL（`/mnt/d/...`）
+  兩邊開會得到兩個不同的 repo，不會合併。
+- **WSL runtime 的 pane 不適用 agent 回報 API**（沿用既有限制，見下方「agent 回報進度」）；它們的工作線
+  仍會顯示。
+- **未連線的 runtime 不重新查 git**，它的 pane 沿用上次的歸類（工作線仍在，綁定顯示 `runtime_disconnected`），
+  Cockpit 也不會為了查 repo 而啟動 WSL 發行版。
+- 一條工作線只有一張 task；pane 關掉不保留紀錄，在同一個 worktree 重開 pane 不會接回舊進度。
+- 手寫 `[[project]]` 仍完整支援，並與 Repo Project 並列；id 撞名時手寫的優先，被隱藏的 Repo Project 會在手寫
+  project 的 `warnings` 出現一則警告（`repo_project_id_conflict`），只能用下面的端點改名或移除。
+
+管理端點（同樣只接受本機同源請求，本體為 JSON；畫面按鈕送的就是它們）：
+
+```bash
+# 加入（repo 必須是投影 detected_repos[].repo 的值原樣送回；name 選填，省略時用 repo 的預設名稱）
+# 新 Project 的 id 由名稱產生並保留大小寫（非 [A-Za-z0-9_-] 的字元換成 -），下面的路徑要用回應裡的 id
+curl -i -X POST http://127.0.0.1:7770/api/repo-projects \
+  -H 'Host: 127.0.0.1:7770' -H 'Content-Type: application/json' \
+  -d '{"repo":"d:\\work\\app\\.git","stages":["規劃","實作","審查","完成"],"name":"app"}'
+# → 201 {"id":"app"}
+
+# 改名、改 stage（from 是現有的 stage 名稱，用來保留該 stage 裡的 task；省略或 null 表示新增的 stage）
+curl -i -X PATCH http://127.0.0.1:7770/api/repo-projects/app \
+  -H 'Host: 127.0.0.1:7770' -H 'Content-Type: application/json' \
+  -d '{"name":"App 前端","stages":[{"name":"Plan","from":"規劃"},{"name":"Build","from":"實作"},{"name":"Ship"}]}'
+# → 204
+
+# 移除（連同它的 stage 設定與所有 task 進度）
+curl -i -X DELETE http://127.0.0.1:7770/api/repo-projects/app -H 'Host: 127.0.0.1:7770'
+# → 204
+```
+
+PowerShell 要用 `curl.exe`（裸的 `curl` 是 `Invoke-WebRequest` 的別名）。Windows PowerShell 5.1 與 PowerShell 7.2 以前
+把引數交給原生程式時會吃掉 JSON 本體內的雙引號（7.3 起改用標準的引號跳脫，實測 7.6 可以直接用上面 bash 區塊的
+`-d '{...}'` 寫法，本體含中文也可以）。下例用單引號 here-string 放本體、經標準輸入交給 `curl.exe`（`-d '@-'`），
+各版本都能用；stage 名稱用 ASCII，避免管線編碼問題。Windows PowerShell 5.1 在 UTF-8 主控台（例如先 `chcp 65001`，
+或從 PowerShell 7 裡啟動 `powershell.exe`）經管線交給原生程式時，會在本體開頭多送一個 UTF-8 BOM；後端會略過本體
+開頭的一個 BOM，不影響結果：
+
+```powershell
+$body = @'
+{"repo":"d:\\work\\app\\.git","stages":["Plan","Build","Review","Done"],"name":"app"}
+'@
+$body | curl.exe -i -X POST http://127.0.0.1:7770/api/repo-projects `
+  -H "Host: 127.0.0.1:7770" -H "Content-Type: application/json" -d '@-'
+# 回應裡的 id 就是後續 PATCH／DELETE 的路徑。PATCH：改名、把 Build 改名為 Implement（保留其中的 task）、新增 Ship
+$patch = @'
+{"name":"App Frontend","stages":[{"name":"Plan","from":"Plan"},{"name":"Implement","from":"Build"},{"name":"Ship"}]}
+'@
+$patch | curl.exe -i -X PATCH http://127.0.0.1:7770/api/repo-projects/app `
+  -H "Host: 127.0.0.1:7770" -H "Content-Type: application/json" -d '@-'
+# DELETE：
+curl.exe -i -X DELETE http://127.0.0.1:7770/api/repo-projects/app -H "Host: 127.0.0.1:7770"
+```
+
+名稱去除前後空白後 1～64 個字元；stages 1～12 個、各 1～32 個字元且互不相同；兩者都不得含控制字元或不可見的
+格式字元。錯誤本體沿用 `{"error", "code", "params"}`，代碼見「後端訊息代碼」：`invalid_body`、`invalid_name`、
+`invalid_stages`（400）、`repo_not_detected`、`unknown_project`（404）、`repo_already_added`、`not_repo_project`
+（409，`pid` 是手寫 project）、`persist_failed`（500）。
 
 ## 寫入 API（change 2 `pipeline-projection`）
 
@@ -196,6 +285,14 @@ workstream 列首會顯示「工作中・未宣告 task」。
 | `GET /api/agent/tasks` | 列出綁定到這個 pane 的 workstream 與其 task（含 `id`、`stage`、`next_stage`、`mark`、`status`、`active_task`） |
 | `POST /api/agent/projects/<project>/tasks/<task>/start` | 宣告這個 task 為目前 task（204） |
 | `POST /api/agent/projects/<project>/tasks/<task>/advance` | 把 task 推進到下一個 stage，並設為目前 task（204） |
+| `POST /api/agent/advance` | 免帶 project／task id：從 `X-Herdr-Pane-Id` 找到這個 pane 的那張 task，並照上一列的規則推進（204） |
+
+**免帶 id 推進**（`POST /api/agent/advance`）：候選 task 是每條綁定到這個 pane 的 workstream 的目前 task；沒有目前
+task 但恰有一張 task 時取那一張。Repo Project 的 workstream 只有一張 task：它標記為 `none` 時本身就是目前 task；
+標了 `completed`／`failed` 後沒有目前 task，但因為恰有一張 task 仍會被選為候選，推進被規則拒絕（409
+`already_marked`）。候選恰為一張就推進；零張（沒有綁定的 workstream，或沒有目前 task 且有多張 task）回 404
+`no_task_for_pane`，兩張以上（例如兩條 workstream 綁到同一個 pane）回 409 `ambiguous_task`。候選在寫入鎖內依
+目前狀態計算，agent 剛 `start` 完立刻呼叫也不會選錯。手寫 project 也適用。
 
 所有請求都要帶標頭 `X-Herdr-Pane-Id`，值取 HERDR 在 pane 內提供的 `HERDR_PANE_ID` 環境變數
 （例如 `wW:p1`）。同樣只接受本機同源請求（見上一節）。agent 不能標 Completed／Failed、清除標記或退回，
@@ -208,11 +305,14 @@ workstream 列首會顯示「工作中・未宣告 task」。
 | 403 `pane_not_bound` | 該 task 所屬的 workstream 沒有綁定到這個 pane |
 | 403 `forbidden_source` | 不是本機同源請求（`Host`／`Origin` 不符） |
 | 404 | project／task 不存在，或 `<操作>` 不是 `start`／`advance` |
+| 404 `no_task_for_pane` | 免帶 id 推進：找不到唯一可推進的 task——沒有綁定的 workstream、pane 屬於 WSL runtime 或 pane id 在兩個以上 runtime 撞號，或綁定的 workstream 沒有目前 task 且有多張 task |
+| 409 `ambiguous_task` | 免帶 id 推進：這個 pane 有兩張以上候選 task，無法判斷要推進哪一張 |
 | 409 | 被拒絕：task 已有標記（`start`），或已是最後一個 stage／已有標記（`advance`）；本體 `{"error": "<原因>"}` |
 | 500 | 狀態檔寫入失敗，記憶體不變 |
 
 **只認非 WSL runtime 的 pane**：綁定到經由 WSL 連線的 runtime 的 pane 不算，同一個 pane id 在兩個以上
-Windows runtime 都有綁定時也不算，這兩種情況 `GET` 回空的 `workstreams`、`POST` 回 403。目前 WSL 內的
+Windows runtime 都有綁定時也不算，這兩種情況 `GET` 回空的 `workstreams`、帶 id 的 `POST` 回 403；免帶 id 的 `POST /api/agent/advance` 則回 404
+`no_task_for_pane`。目前 WSL 內的
 agent 連不到這組 API：WSL2 預設 NAT 網路下，WSL 裡的 `127.0.0.1` 是 WSL 自己，不是 Windows，Cockpit
 只監聽 Windows 的 `127.0.0.1`。
 
@@ -227,6 +327,8 @@ curl.exe -i -X POST http://127.0.0.1:7770/api/agent/projects/cockpit/tasks/impl/
 # 完成一站，推進到下一個 stage
 curl.exe -i -X POST http://127.0.0.1:7770/api/agent/projects/cockpit/tasks/impl/advance `
   -H "X-Herdr-Pane-Id: $env:HERDR_PANE_ID"
+# 免帶 id 推進（畫面上加入的 Repo Project 一行就夠）
+curl.exe -i -X POST http://127.0.0.1:7770/api/agent/advance -H "X-Herdr-Pane-Id: $env:HERDR_PANE_ID"
 ```
 
 bash：
@@ -235,6 +337,8 @@ bash：
 curl -s http://127.0.0.1:7770/api/agent/tasks -H "X-Herdr-Pane-Id: $HERDR_PANE_ID"
 curl -i -X POST http://127.0.0.1:7770/api/agent/projects/cockpit/tasks/impl/start   -H "X-Herdr-Pane-Id: $HERDR_PANE_ID"
 curl -i -X POST http://127.0.0.1:7770/api/agent/projects/cockpit/tasks/impl/advance   -H "X-Herdr-Pane-Id: $HERDR_PANE_ID"
+# 免帶 id 推進（畫面上加入的 Repo Project 一行就夠）
+curl -i -X POST http://127.0.0.1:7770/api/agent/advance -H "X-Herdr-Pane-Id: $HERDR_PANE_ID"
 ```
 
 可直接貼進專案 `AGENTS.md` 的短文（埠與 project id 依自己的設定改）：
@@ -245,10 +349,12 @@ curl -i -X POST http://127.0.0.1:7770/api/agent/projects/cockpit/tasks/impl/adva
 你的 pane 綁在 Cockpit 的一條 workstream 上。請用 `curl.exe`（PowerShell）或 `curl`（bash）回報進度，
 每次都帶標頭 `X-Herdr-Pane-Id: $HERDR_PANE_ID`，網址前綴 `http://127.0.0.1:7770`：
 
-- 開始做某個 task 時：`POST /api/agent/projects/<project>/tasks/<task>/start`。
-- 完成一個 stage 時：`POST /api/agent/projects/<project>/tasks/<task>/advance`。
+- 完成一個 stage 時：`POST /api/agent/advance`（不必帶 project 或 task id，Cockpit 依你的 pane 找到那張 task）。
+- 回 404 `no_task_for_pane` 代表找不到唯一可推進的 task（沒有綁定、WSL pane，或沒有目前 task 且有多張），
+  回 409 `ambiguous_task` 代表有多張候選；這兩種情況請改用下面帶 id 的端點，或先 `start` 宣告目前 task。
+- 要明確指定 task（例如手寫的 project）：開始時 `POST /api/agent/projects/<project>/tasks/<task>/start`，
+  完成時 `POST /api/agent/projects/<project>/tasks/<task>/advance`。不知道 task id 時，先 `GET /api/agent/tasks` 查。
 - 不要嘗試標完成、失敗或退回，那是人的操作。
-- 不知道自己的 task id 時，先 `GET /api/agent/tasks` 查。
 ```
 
 ## 輸出讀取 API（change 3 `live-output`）
@@ -496,7 +602,7 @@ HERDR 的 agent 狀態值、task 狀態值、連線狀態值、事件 `kind` 與
 範本、且範本的佔位符都有參數時，以範本代入參數值顯示（參數值原樣代入，不翻譯），遇到字典沒有的代碼或欄位不存在時退回顯示原文。
 
 **HTTP 錯誤本體**：`{"error": "<繁中文字>", "code": "<代碼>", "params": {"<名稱>": "<字串>"}}`，沒有參數時省略 `params`。
-適用於進度寫入、綁定覆蓋、agent 端點與輸出讀取端點。檔案與 git 端點另有自己的 `code` 表（見前面兩節），由前端的 `files.error.*`、
+適用於進度寫入、綁定覆蓋、Repo Project 管理端點、agent 端點與輸出讀取端點。檔案與 git 端點另有自己的 `code` 表（見前面兩節），由前端的 `files.error.*`、
 `git.error.*` 字典對應。
 
 | code | params | 出現的地方 |
@@ -517,6 +623,15 @@ HERDR 的 agent 狀態值、task 狀態值、連線狀態值、事件 `kind` 與
 | `internal_error` | 無 | 寫入任務異常結束（500） |
 | `pane_not_bound` | `task`、`pane`（寫入鎖內重驗發現綁定已變時沒有參數） | agent 的 pane 沒有綁定到該 task 所屬的 workstream（403） |
 | `missing_pane_id` | 無 | agent 端點缺少 `X-Herdr-Pane-Id` 標頭（400） |
+| `invalid_body` | 無 | Repo Project 管理端點：本體不是合法 JSON 物件、欄位型別不對、有未知欄位，或 PATCH 兩欄皆無（400） |
+| `invalid_name` | 無 | Repo Project 名稱不合規則（400） |
+| `invalid_stages` | 無 | Repo Project 的 stages 不合規則，含 `from` 不存在或重複引用（400） |
+| `repo_not_detected` | 無 | 加入 Repo Project：這個 repo 不在偵測到的清單中（404） |
+| `repo_already_added` | 無 | 加入 Repo Project：這個 repo 已經加入（409） |
+| `not_repo_project` | `id` | 管理端點的 `pid` 是手寫 project，不是 Repo Project（409） |
+| `not_overridable` | 無 | 對固定 pane 的 workstream 設定或取消畫面覆蓋（409） |
+| `no_task_for_pane` | 無 | 免帶 id 推進：找不到唯一可推進的 task（沒有綁定、WSL pane，或沒有目前 task 且有多張）（404） |
+| `ambiguous_task` | 無 | 免帶 id 推進：這個 pane 有兩張以上可推進的 task（409） |
 | `forbidden_source` | 無 | 本機同源檢查不通過（403） |
 | `method_not_allowed` | 無 | 不被接受的 HTTP method（405） |
 | `runtime_not_found` | `runtime` | 輸出讀取：runtime 不存在（404） |
@@ -547,6 +662,7 @@ HERDR 的 agent 狀態值、task 狀態值、連線狀態值、事件 `kind` 與
 | `event_stream_ended` | 無 | 事件流結束 |
 | `event_connection_error` | `label`（`L`／`S`）、`detail` | {label} 連線錯誤：{detail} |
 | `event_connection_ended` | `label`（`L`／`S`） | {label} 連線結束 |
+| `repo_project_id_conflict` | `id` | 手寫 project 與 Repo Project「{id}」的 id 相同，Repo Project 不展開，只能經 `/api/repo-projects` 改名或移除（出現在手寫 project 的 `warnings`） |
 | `task_stage_reset` | `task`、`stage`、`start` | task {task} 的 stage「{stage}」已不在 pipeline 的 stages 中，已退回起始 stage「{start}」 |
 | `drift_workspace_not_found` | `id` | workspace {id} 不存在（事件指到狀態庫沒有的 workspace，drift） |
 | `drift_tab_not_found` | `id` | tab {id} 不存在（同上） |

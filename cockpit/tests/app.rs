@@ -17,14 +17,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use cockpit::app::{self, Components};
-use cockpit::config::{Args, Config, ConfigSource, PollingConfig, RuntimeConfig, ServerConfig};
+use cockpit::config::{
+    self, Args, Config, ConfigSource, PollingConfig, RuntimeConfig, ServerConfig,
+};
 use cockpit::http::{AppState, router};
-use cockpit::progress_service::ProgressService;
+use cockpit::progress_service::{NewRepoProject, ProgressService};
 use cockpit_core::{
     AgentStatus, BindingSource, ConnectionState, DomainState, Focused, Mark, Override, Pane,
-    PaneId, ProgressOp, ProjectDef, ProjectId, ProjectedBinding, RuntimeId, RuntimeSnapshot,
-    RuntimeStore, StoreHandle, TabId, TaskDef, TaskId, WorkspaceId, WorkstreamDef, WorkstreamId,
-    spawn_projector,
+    PaneId, PaneRepo, PaneRepos, ProgressOp, ProjectDef, ProjectId, ProjectedBinding, RepoKey,
+    RuntimeId, RuntimeSnapshot, RuntimeStore, StoreHandle, TabId, TaskDef, TaskId, WorkspaceId,
+    WorkstreamDef, WorkstreamId, spawn_projector,
 };
 use cockpit_herdr::HerdrEndpoint;
 use http_body_util::BodyExt;
@@ -509,6 +511,7 @@ fn components_with_slow_driver() -> (Components, StoreHandle, Arc<AtomicBool>) {
             router,
             progress_service: None,
             stale_remover: None,
+            repo_resolver: None,
             port: Arc::new(AtomicU16::new(0)),
             runtimes: Arc::new(HashMap::new()),
             activity: cockpit::http::ClientActivity::new(),
@@ -739,6 +742,7 @@ fn sample_project() -> ProjectDef {
             id: WorkstreamId::new("be"),
             name: "be".to_string(),
             binding: None,
+            pinned_pane: None,
         }],
         tasks: vec![TaskDef {
             id: TaskId::new("t1"),
@@ -747,6 +751,7 @@ fn sample_project() -> ProjectDef {
             stage: "Spec".to_string(),
             depends_on: Vec::new(),
         }],
+        repo: None,
     }
 }
 
@@ -804,25 +809,213 @@ async fn corrupt_state_file_fails_startup() {
     );
 }
 
+/// repo-projects task 4.1 改寫（原 `no_projects_creates_no_state_file`；spec `pipeline-config`「沒有 project 就
+/// 不碰狀態檔」）：寫入服務改為永遠建立（design D5），原意保留——沒有任何被接受的操作就不建檔；只有 pane
+/// 歸類改變（不寫入狀態檔的內容）也不建檔。
 #[tokio::test]
-async fn no_projects_creates_no_state_file() {
+async fn no_projects_and_no_accepted_operation_creates_no_state_file() {
     let dir = TempDir::new("no-projects");
-    // 刻意仍然給一個路徑（模擬使用者寫了 `[state] path` 卻沒有任何 `[[project]]`）：沒有
-    // project 時不該讀也不該建狀態檔（design Migration Plan），即使設定裡指定了路徑。
     let state_path = dir.path().join("cockpit.state.json");
 
     let config = config_with(Vec::new(), Some(state_path.clone()));
 
     let components = app::build_components(&config).expect("沒有 project 應該組裝成功");
 
+    let service = components
+        .progress_service
+        .clone()
+        .expect("寫入服務一律建立");
     assert!(
-        components.progress_service.is_none(),
-        "沒有 project 不該建立寫入服務"
+        components.stale_remover.is_some(),
+        "失效覆蓋清除工作照常接上"
     );
-    assert!(
-        !state_path.exists(),
-        "沒有 project 不該建立狀態檔，即使設定裡指定了路徑"
+    service
+        .set_pane_repos(pane_repos_for_app(&[("local", "wJ:p1")]))
+        .await
+        .expect("更新 pane 歸類應成功");
+    assert!(!state_path.exists(), "沒有被接受的操作就不該建立狀態檔");
+}
+
+const APP_REPO: &str = r"d:\work\app\.git";
+
+fn pane_repos_for_app(panes: &[(&str, &str)]) -> PaneRepos {
+    panes
+        .iter()
+        .map(|(runtime, pane)| {
+            (
+                (RuntimeId::new(*runtime), PaneId::new(*pane)),
+                PaneRepo {
+                    repo: RepoKey::new(APP_REPO),
+                    default_name: "app".to_string(),
+                    worktree: None,
+                },
+            )
+        })
+        .collect()
+}
+
+/// spec `pipeline-config`「沒有 project 仍讀取既有狀態檔」：設定檔沒有 `[[project]]`，狀態檔含 Repo Project
+/// `app` → 讀回，投影的 `projects` 含它。
+#[tokio::test]
+async fn no_projects_still_loads_repo_projects_from_state_file() {
+    let dir = TempDir::new("no-projects-reads");
+    let state_path = dir.path().join("cockpit.state.json");
+    fs::write(
+        &state_path,
+        r#"{"version":3,"projects":{},"repo_projects":{"app":{"name":"App","repo":"d:\\work\\app\\.git","stages":["Plan","Build"],"tasks":{}}}}"#,
+    )
+    .expect("寫入狀態檔");
+
+    let config = config_with(Vec::new(), Some(state_path));
+    let components = app::build_components(&config).expect("組裝應成功");
+
+    let projection = components.handle.current();
+    let app = projection
+        .projects
+        .iter()
+        .find(|p| p.id.as_str() == "app")
+        .expect("投影應含 Repo Project app");
+    assert_eq!(app.name, "App");
+    assert_eq!(app.repo, Some(RepoKey::new(APP_REPO)));
+}
+
+/// spec `pipeline-config`「既有 v2 狀態檔不因開啟新版而被改寫」＋`pipeline-progress`「只有 pane 進出與 cwd
+/// 改變時不改寫 v2 檔」：啟動、pane 進出（runtime 的 pane 樹與 pane 歸類都變），沒有任何被接受的操作 →
+/// 狀態檔位元組不變，仍是 v2。
+#[tokio::test]
+async fn existing_v2_state_file_is_untouched_by_pane_churn() {
+    let dir = TempDir::new("v2-untouched");
+    let state_path = dir.path().join("cockpit.state.json");
+    let original = r#"{"version":2,"projects":{"p":{"tasks":{"t1":{"stage":"Build","mark":"none"}},"overrides":{},"active":{"be":"t1"}}}}"#;
+    fs::write(&state_path, original).expect("寫入 v2 狀態檔");
+
+    let config = config_with(vec![sample_project()], Some(state_path.clone()));
+    let components = app::build_components(&config).expect("組裝應成功");
+    let service = components
+        .progress_service
+        .clone()
+        .expect("寫入服務一律建立");
+
+    // pane 進入：runtime 有 pane、pane 歸入 app repo。
+    register_connected_pane(&components.handle, &RuntimeId::new("local"), "wJ:p1");
+    service
+        .set_pane_repos(pane_repos_for_app(&[("local", "wJ:p1")]))
+        .await
+        .expect("pane 歸類更新");
+    // pane 離開：歸類清空。
+    service
+        .set_pane_repos(PaneRepos::new())
+        .await
+        .expect("pane 歸類更新");
+    // 讓投影任務與失效覆蓋清除工作跑過幾輪。
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    assert_eq!(
+        fs::read_to_string(&state_path).expect("讀檔"),
+        original,
+        "沒有被接受的操作，v2 檔位元組不變"
     );
+}
+
+/// spec `pipeline-config`「零設定模式的位置」「零設定模式只開啟不操作」：狀態檔位於（注入的）
+/// `%LOCALAPPDATA%\ai-cockpit\cockpit.state.json`，啟動與 pane 歸類變動都不建立任何檔案或資料夾。
+#[tokio::test]
+async fn zero_config_startup_creates_no_file_or_folder() {
+    let dir = TempDir::new("zero-config");
+    let local = dir.path().join("Local");
+    let state_path = local.join("ai-cockpit").join("cockpit.state.json");
+    let config = Config {
+        source: ConfigSource::ZeroConfig,
+        ..config_with(Vec::new(), Some(state_path))
+    };
+
+    let components = app::build_components(&config).expect("零設定應組裝成功");
+    let service = components
+        .progress_service
+        .clone()
+        .expect("寫入服務一律建立");
+    service
+        .set_pane_repos(pane_repos_for_app(&[("local", "wJ:p1")]))
+        .await
+        .expect("pane 歸類更新");
+
+    assert!(!local.exists(), "只開啟不操作，不建立任何檔案或資料夾");
+}
+
+/// spec `pipeline-config`「零設定模式的位置」與 `repo-projects`「重啟後保留」的前半（repo-projects task 4.2，補
+/// 4.1 審查留下的端對端測試）：零設定來源（`LOCALAPPDATA` 注入成暫存目錄，絕不碰使用者真的資料夾）經
+/// `build_components` 組裝；只有 pane 歸類時不建任何東西，第一次被接受的操作（加入 Repo Project）才建立
+/// `ai-cockpit` 資料夾與狀態檔。runtime 換成連不上的假端點，不碰真的 HERDR。
+#[tokio::test]
+async fn zero_config_first_repo_project_creates_folder_and_state_file() {
+    let dir = TempDir::new("zero-config-add");
+    let local = dir.path().join("Local");
+    let local_text = local.display().to_string();
+    let env = move |key: &str| (key == "LOCALAPPDATA").then(|| local_text.clone());
+    let args = Args {
+        config: None,
+        exit_when_idle: false,
+    };
+    let loaded = config::load(&args, dir.path(), &env).expect("零設定應載入成功");
+    assert_eq!(loaded.source, ConfigSource::ZeroConfig);
+    let state_path = local.join("ai-cockpit").join("cockpit.state.json");
+    assert_eq!(loaded.state_path.as_deref(), Some(state_path.as_path()));
+    let config = Config {
+        runtimes: config_with_runtime(Vec::new(), None).runtimes,
+        ..loaded
+    };
+
+    let components = app::build_components(&config).expect("零設定應組裝成功");
+    let service = components
+        .progress_service
+        .clone()
+        .expect("寫入服務一律建立");
+    service
+        .set_pane_repos(pane_repos_for_app(&[("local", "wJ:p1")]))
+        .await
+        .expect("pane 歸類更新");
+    assert!(!local.exists(), "只有 pane 歸類時不建立任何東西");
+
+    let id = service
+        .add_repo_project(NewRepoProject {
+            repo: RepoKey::new(APP_REPO),
+            stages: vec!["Plan".to_string(), "Build".to_string()],
+            name: None,
+        })
+        .await
+        .expect("加入 Repo Project");
+
+    assert!(state_path.is_file(), "第一次被接受的操作建立資料夾與狀態檔");
+    let written: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&state_path).expect("讀狀態檔"))
+            .expect("狀態檔是 JSON");
+    assert_eq!(written["version"], 3);
+    assert_eq!(written["repo_projects"][id.as_str()]["repo"], APP_REPO);
+}
+
+/// spec `pipeline-config`「內嵌設定沒有狀態檔」：沒有狀態檔路徑時組裝成功、被接受的操作只更新記憶體。
+#[tokio::test]
+async fn inline_config_without_state_path_runs_in_memory() {
+    let config = config_with(vec![sample_project()], None);
+
+    let components = app::build_components(&config).expect("沒有狀態檔路徑也應組裝成功");
+    let service = components
+        .progress_service
+        .clone()
+        .expect("寫入服務一律建立");
+    service
+        .apply_progress(
+            &ProjectId::new("p"),
+            &TaskId::new("t1"),
+            ProgressOp::Complete,
+        )
+        .await
+        .expect("操作應成功");
+
+    let mark = components
+        .handle
+        .with_domain(|d| d.progress[&ProjectId::new("p")][&TaskId::new("t1")].mark);
+    assert_eq!(mark, Mark::Completed);
 }
 
 /// 讓 `runtime` 在 `handle` 裡登記、`connected`，且有一個未 exited 的 pane `pane_id`——
@@ -868,6 +1061,7 @@ fn register_connected_pane(handle: &StoreHandle, runtime: &RuntimeId, pane_id: &
                 server_version: "test".to_string(),
                 protocol: 1,
                 last_snapshot_at: SystemTime::UNIX_EPOCH,
+                settled: true,
                 protocol_warning: None,
             },
         )
@@ -985,8 +1179,8 @@ async fn restart_keeps_progress_and_override() {
     let raw_state = fs::read_to_string(&state_path).expect("重啟後狀態檔應該存在");
     let state_json: serde_json::Value =
         serde_json::from_str(&raw_state).expect("狀態檔應該是合法 JSON");
-    // 狀態檔改為 v2（pipeline-progress「狀態檔格式與持久化」：系統寫出的狀態檔一律為 version 2；progress-model task 3.1）。
-    assert_eq!(state_json["version"], 2);
+    // 狀態檔改為 v3（pipeline-progress「狀態檔格式與持久化」：系統寫出的狀態檔一律為 version 3；repo-projects task 4.1）。
+    assert_eq!(state_json["version"], 3);
     assert_eq!(state_json["projects"]["p"]["tasks"]["t1"]["stage"], "Build");
     assert_eq!(
         state_json["projects"]["p"]["tasks"]["t1"]["mark"],
@@ -1037,10 +1231,20 @@ async fn shutdown_all_finishes_projector_and_stale_remover() {
         .as_ref()
         .expect("有 project 應該有 stale-remover")
         .abort_handle();
+    // repo-projects task 4.3：resolver 一律建立，關機時同樣要真的結束。
+    let repo_resolver_handle = components
+        .repo_resolver
+        .as_ref()
+        .expect("應該有 repo resolver")
+        .abort_handle();
 
     assert!(
         !projector_handle.is_finished(),
         "剛組裝完，投影任務不該已經結束"
+    );
+    assert!(
+        !repo_resolver_handle.is_finished(),
+        "剛組裝完，repo resolver 不該已經結束"
     );
     assert!(
         !stale_remover_handle.is_finished(),
@@ -1054,9 +1258,15 @@ async fn shutdown_all_finishes_projector_and_stale_remover() {
         components.drivers,
         components.projector,
         components.stale_remover,
+        components.repo_resolver,
         Duration::from_secs(5),
     )
     .await;
+
+    assert!(
+        repo_resolver_handle.is_finished(),
+        "shutdown_all 回傳時 repo resolver 必須已經結束（不能變成孤兒 task）"
+    );
 
     assert!(
         projector_handle.is_finished(),

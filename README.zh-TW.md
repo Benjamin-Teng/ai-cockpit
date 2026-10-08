@@ -93,9 +93,11 @@ cargo run -p cockpit
 
 打開 <http://127.0.0.1:7770/>。沒有設定檔時，Cockpit 會自己找到本機的 HERDR。
 
-要描述你的專案，先複製範例設定檔。執行前換掉裡面的 `<user>` 佔位字，再列出 HERDR runtime、
+要追蹤某個 git repo，不需要設定檔：見[把 repo 加成專案](#把-repo-加成專案)。
+要手動描述你的專案，先複製範例設定檔。執行前換掉裡面的 `<user>` 佔位字，再列出 HERDR runtime、
 每個專案的階段，以及每條工作流在哪個 pane 裡跑。Cockpit 會讀工作目錄裡的 `cockpit.toml`，
-或 `--config` 指定的檔案。
+或 `--config` 指定的檔案。手寫的 `[[project]]` 照常支援，和畫面上加入的專案並列；
+兩者 id 相同時，手寫的優先。
 
 ```powershell
 Copy-Item cockpit.example.toml cockpit.toml
@@ -120,9 +122,43 @@ cargo run -p cockpit --example ui_preview
 
 會在 <http://127.0.0.1:7770/> 用範例資料打開儀表板。
 
+## 把 repo 加成專案
+
+不用改 `cockpit.toml`、也不用重啟，直接在儀表板上加入 git repo：
+
+1. 在 HERDR 裡於該 repo 內開一個 pane。
+2. 左欄切到 **Project** 分頁，這個 repo 會列在「偵測到的 repo」。
+3. 按「加入」。
+
+之後，只要 pane 的工作目錄在這個 repo 裡（任一 worktree、任一 HERDR workspace），就自動成為
+一條工作線，每條工作線各有一張 task 卡。新專案預設有四個 stage（規劃、實作、審查、完成）。
+用專案的「⋯」選單可以改名、編輯 stage（改名、新增、刪除、排序）或移除，改完立即生效。位於
+linked git worktree 的 pane 會標出 worktree 的資料夾名稱。關掉 pane 時，它的工作線與 task 進度
+一起移除；pane 已 exited 但還留在 HERDR 裡時，它的工作線會從畫面消失，進度則保留到 pane 真正關閉才清除。
+
+注意事項：
+
+- pane 的工作目錄取自 HERDR 的 snapshot，Cockpit 預設每 30 秒重新抓一次。pane 內 `cd` 到另一個
+  repo 後，最多約 30 秒才會歸到新的 repo。
+- Cockpit 以 git 的共同目錄區分 repo，所以同一個 repo 的所有 worktree 算同一個專案。同一個
+  資料夾若分別從 Windows 與 WSL（`/mnt/d/...`）開啟，會列成兩個 repo。
+- 畫面上加入的專案存在 `cockpit.state.json`。沒有設定檔時，這個檔案是
+  `%LOCALAPPDATA%\ai-cockpit\cockpit.state.json`。這個版本寫出狀態檔第 3 版，要回到舊版前請先看
+  [CHANGELOG](CHANGELOG.md)。
+
 ## 讓 agent 回報進度
 
-在 agent 自己的 HERDR pane 裡執行（限 Windows 端的 runtime）：
+在 agent 自己的 HERDR pane 裡執行（限 Windows 端的 runtime）。在由 repo 加入的專案裡，一行就夠：
+Cockpit 會依 pane ID 找到這個 pane 的 task，不必帶專案或 task id。
+
+```bash
+# 完成這一站，推進到下一站（不必帶專案或 task id）
+curl -i -X POST http://127.0.0.1:7770/api/agent/advance -H "X-Herdr-Pane-Id: $HERDR_PANE_ID"
+```
+
+Cockpit 找不到唯一可推進的 task 時回 404 `no_task_for_pane`（pane 沒有綁定的工作線，或有多張 task 且沒有目前
+task）或 409 `ambiguous_task`（有多張候選），這時請明確指定 task，或先 `start`。和其他
+agent 端點一樣，WSL runtime 的 pane 不適用。手寫的專案也可以明確指定 task：
 
 ```bash
 # 列出綁定到這個 pane 的 task

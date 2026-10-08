@@ -34,6 +34,7 @@ fn state() -> DomainState {
         id: ws(id),
         name: id.to_string(),
         binding: None,
+        pinned_pane: None,
     };
     DomainState::from_projects(vec![ProjectDef {
         id: pid(),
@@ -45,6 +46,7 @@ fn state() -> DomainState {
             task("t2", "be", "Plan"),
             task("f1", "fe", "Plan"),
         ],
+        repo: None,
     }])
 }
 

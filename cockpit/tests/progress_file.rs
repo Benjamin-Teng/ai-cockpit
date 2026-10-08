@@ -171,14 +171,15 @@ fn corrupt_state_file_fails_with_path() {
 
 #[test]
 fn unsupported_version_fails_with_path() {
+    // repo-projects task 4.1：3 已是合法版本，改用 4（spec「不支援的版本」）。
     let dir = TempDir::new("version");
     let config = load_config(&dir, SAMPLE_CONFIG);
     let path = state_path(&config);
-    fs::write(&path, r#"{"version": 3, "projects": {}}"#).expect("寫入版本不符狀態檔");
+    fs::write(&path, r#"{"version": 4, "projects": {}}"#).expect("寫入版本不符狀態檔");
     let runtimes = runtime_ids(&config);
 
     let error = progress::load_progress(&path, config.projects.clone(), &runtimes)
-        .expect_err("version 不是 1 或 2 應載入失敗");
+        .expect_err("version 不是 1、2 或 3 應載入失敗");
 
     assert!(matches!(error, ProgressError::UnsupportedVersion { .. }));
     assert!(
@@ -626,9 +627,9 @@ fn v2_unknown_project_with_active_is_ignored() {
 }
 
 /// 載入帶目前 task 的 v2 檔，經服務寫出（任一被接受的操作），再讀回：目前 task 保留，且寫出的
-/// 檔案是 v2、含 `active`（Scenario「重啟後保留」）。
+/// 檔案是 v3（repo-projects task 4.1）、含 `active`（Scenario「重啟後保留」「讀取 v2 舊檔」）。
 #[tokio::test]
-async fn written_state_is_v2_and_round_trips_with_active() {
+async fn written_state_is_v3_and_round_trips_with_active() {
     let dir = TempDir::new("round-trip");
     let config = load_config(&dir, ACTIVE_CONFIG);
     let path = state_path(&config);
@@ -649,7 +650,7 @@ async fn written_state_is_v2_and_round_trips_with_active() {
 
     let json: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&path).expect("讀檔")).expect("JSON");
-    assert_eq!(json["version"], 2);
+    assert_eq!(json["version"], 3);
     assert_eq!(
         json["projects"]["p"]["active"],
         serde_json::json!({"fe": "f1"})
@@ -665,10 +666,10 @@ async fn written_state_is_v2_and_round_trips_with_active() {
     assert_eq!(active_of(&reloaded, "fe"), Some(TaskId::new("f1")));
 }
 
-/// v1 舊檔經一次被接受的操作後寫成 v2，且每個 project 都帶 `active`（空物件）
+/// v1 舊檔經一次被接受的操作後寫成 v3（repo-projects task 4.1），且每個 project 都帶 `active`（空物件）
 /// （Scenario「讀取 v1 舊檔」）。
 #[tokio::test]
-async fn v1_file_is_rewritten_as_v2_with_empty_active() {
+async fn v1_file_is_rewritten_as_v3_with_empty_active() {
     let dir = TempDir::new("v1-rewrite");
     let config = load_config(&dir, ACTIVE_CONFIG);
     let path = state_path(&config);
@@ -693,7 +694,7 @@ async fn v1_file_is_rewritten_as_v2_with_empty_active() {
 
     let json: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&path).expect("讀檔")).expect("JSON");
-    assert_eq!(json["version"], 2);
+    assert_eq!(json["version"], 3);
     assert_eq!(json["projects"]["p"]["active"], serde_json::json!({}));
 }
 

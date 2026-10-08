@@ -20,7 +20,9 @@
 //! `Output` 仍是 `()`。git-review task 3.3 fix round 1（Ruling R8）新增 [`BlobId`]（`Output =
 //! String`，`meta` 端點用它取得物件 hash 而不必讀取內容），解析器在 `blob_id.rs`；fix round 2
 //! （Ruling R10）再新增 [`BlobHead`]（argv 同 [`Blob`]，`stdout_cap` 為 8192 且可截斷，供
-//! `meta` 依 5a 規則以前 8192 位元組分類 `viewer`）。
+//! `meta` 依 5a 規則以前 8192 位元組分類 `viewer`）。repo-projects task 2.1 新增
+//! [`RepoIdentity`]（`Output = Option<RepoIdentityOutput>`：判定目錄屬於哪個 git repo，回傳
+//! git 的三個原始路徑字串，`None` 代表「不是 repo」；解析器與判別規則在 `repo_identity.rs`）。
 
 mod blob_id;
 mod changed_files;
@@ -34,6 +36,7 @@ mod parse_support;
 mod query;
 mod ref_name;
 mod refs;
+mod repo_identity;
 mod repo_path;
 mod runner;
 mod side;
@@ -49,10 +52,11 @@ pub use oid::{Oid, OidError};
 pub use parse_error::GitParseError;
 pub use query::{
     Blob, BlobHead, BlobId, BlobSize, ChangedFiles, CommitInfo, FileDiff, GitQuery, Log, MergeBase,
-    QueryError, Refs, Status, VerifyCommit,
+    QueryError, Refs, RepoIdentity, Status, VerifyCommit,
 };
 pub use ref_name::{RefName, RefNameError};
 pub use refs::{RefEntry, RefKind, RefsHead, RefsOutput};
+pub use repo_identity::RepoIdentityOutput;
 pub use repo_path::{RepoPath, RepoPathError};
 pub use runner::{CallOutcome, GitRunner, QueryPlan, RunOutput, RunnerError};
 pub use side::Side;

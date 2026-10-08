@@ -63,6 +63,7 @@ fn wide_projects() -> Vec<ProjectDef> {
                     id: WorkstreamId::new(format!("ws{w}")),
                     name: format!("ws{w}"),
                     binding: None,
+                    pinned_pane: None,
                 })
                 .collect();
             let tasks: Vec<TaskDef> = (0..TASKS_PER_PROJECT)
@@ -80,6 +81,7 @@ fn wide_projects() -> Vec<ProjectDef> {
                 stages: vec!["Spec".to_string(), "Build".to_string()],
                 workstreams,
                 tasks,
+                repo: None,
             }
         })
         .collect()
@@ -92,6 +94,7 @@ fn sample_projects() -> Vec<ProjectDef> {
         id: WorkstreamId::new(id),
         name: id.to_string(),
         binding: None,
+        pinned_pane: None,
     };
     let task = |id: &str, ws: &str| TaskDef {
         id: TaskId::new(id),
@@ -106,6 +109,7 @@ fn sample_projects() -> Vec<ProjectDef> {
         stages: vec!["Spec".to_string(), "Build".to_string()],
         workstreams: vec![workstream("be"), workstream("fe")],
         tasks: vec![task("a", "be"), task("b", "fe")],
+        repo: None,
     }]
 }
 
@@ -157,6 +161,7 @@ fn connected_store(panes: Vec<Pane>) -> RuntimeStore {
                 server_version: "test".to_string(),
                 protocol: 1,
                 last_snapshot_at: SystemTime::UNIX_EPOCH,
+                settled: true,
                 protocol_warning: None,
             },
         )

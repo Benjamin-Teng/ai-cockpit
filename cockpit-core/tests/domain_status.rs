@@ -13,7 +13,8 @@ use std::time::Duration;
 
 use cockpit_core::domain::binding::resolve_binding;
 use cockpit_core::domain::{
-    BindingResolution, BindingSpec, Mark, StageStatus, WorkstreamDef, WorkstreamId, derive_status,
+    BindingResolution, BindingSource, BindingSpec, Mark, StageStatus, WorkstreamDef, WorkstreamId,
+    derive_status,
 };
 use cockpit_core::{AgentStatus, ConnectionState, PaneId, RuntimeStore};
 
@@ -36,6 +37,7 @@ fn connected_state() -> ConnectionState {
         server_version: "0.9.0".to_string(),
         protocol: 1,
         last_snapshot_at: std::time::SystemTime::UNIX_EPOCH,
+        settled: true,
         protocol_warning: None,
     }
 }
@@ -77,6 +79,7 @@ fn workstream_with(id: &str, binding: Option<BindingSpec>) -> WorkstreamDef {
         id: WorkstreamId::new(id),
         name: id.to_string(),
         binding,
+        pinned_pane: None,
     }
 }
 
@@ -392,6 +395,7 @@ fn no_binding_unbound_and_ambiguous_are_ready() {
         BindingResolution::None,
         BindingResolution::Unbound {
             runtime: runtime_id("win"),
+            source: BindingSource::Auto,
         },
         BindingResolution::Ambiguous {
             runtime: runtime_id("win"),

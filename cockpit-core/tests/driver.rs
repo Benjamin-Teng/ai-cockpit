@@ -1470,3 +1470,121 @@ async fn settle_resnapshot_again_after_reconnect() {
         .expect("停止後驅動器應在期限內結束")
         .expect("驅動器不應 panic");
 }
+
+// ---------------------------------------------------------------------------
+// repo-projects task 4.6：`Connected.settled`
+// ---------------------------------------------------------------------------
+
+/// 從 `Connected` 取出 `settled`。
+fn connected_settled(store: &StoreHandle, id: &RuntimeId) -> bool {
+    match connection(store, id) {
+        ConnectionState::Connected { settled, .. } => settled,
+        other => panic!("應為 Connected，實際 {other:?}"),
+    }
+}
+
+/// GIVEN 驅動器剛進入 `Connected` WHEN 沉降重拿觸發前先有一次 Drift 重拿完成，之後事件流靜默滿 1 秒
+/// THEN 初次 snapshot 與沉降前的 Drift 重拿換上時 `settled` 都是 `false`；沉降重拿換上後才變成 `true`，
+/// 之後的定期重拿維持 `true`。
+#[tokio::test(start_paused = true)]
+async fn settled_only_after_settle_resnapshot() {
+    let id = runtime_id("win");
+    let fake = Arc::new(
+        FakeRuntime::new("win").snapshot_responses(vec![(Ok(one_of_each()), Duration::ZERO)]),
+    );
+    let store = store_with(&id);
+
+    let (stop_tx, stop_rx) = oneshot::channel();
+    let runtime: Arc<dyn AgentRuntime> = fake.clone();
+    let driver = tokio::spawn(run(runtime, store.clone(), Policy::default(), stop_rx));
+
+    wait_until(|| is_connected(&store, &id), "驅動器進入 Connected").await;
+    assert!(!connected_settled(&store, &id), "初次 snapshot 尚未沉降");
+
+    // t = 0.2 s：Drift 重拿（零延遲）在沉降重拿觸發前完成。
+    tokio::time::advance(Duration::from_millis(200)).await;
+    fake.push_event(Ok(drift_event("ghost")));
+    wait_until(|| snapshot_calls(&fake) == 2, "Drift 重拿").await;
+    spin(20).await;
+    assert!(
+        !connected_settled(&store, &id),
+        "沉降重拿觸發前完成的 Drift 重拿不算沉降"
+    );
+
+    // t = 1.2 s：Drift 事件後靜默滿 1 秒，沉降重拿。
+    tokio::time::advance(Duration::from_secs(1)).await;
+    wait_until(|| snapshot_calls(&fake) == 3, "沉降重拿").await;
+    wait_until(|| connected_settled(&store, &id), "沉降重拿換上後 settled").await;
+
+    // 定期重拿（沉降重拿後 30 秒）：仍為 true。
+    tokio::time::advance(Duration::from_secs(30)).await;
+    wait_until(|| snapshot_calls(&fake) == 4, "定期重拿").await;
+    spin(20).await;
+    assert!(connected_settled(&store, &id), "沉降後的重拿維持 settled");
+
+    drop(stop_tx);
+    tokio::time::timeout(EXPECT_TIMEOUT, driver)
+        .await
+        .expect("停止後驅動器應在期限內結束")
+        .expect("驅動器不應 panic");
+}
+
+/// GIVEN Drift 重拿進行中（回應延遲 1.5 秒）WHEN 沉降重拿到期併入它 THEN 那次重拿換上時 `settled` 為 `true`；
+/// 重新連線後回到 `false`。
+#[tokio::test(start_paused = true)]
+async fn settled_when_settle_merges_into_pending_and_reset_on_reconnect() {
+    let id = runtime_id("win");
+    let fake = Arc::new(FakeRuntime::new("win").snapshot_responses(vec![
+        (Ok(one_of_each()), Duration::ZERO),
+        (Ok(one_of_each()), Duration::from_millis(1_500)),
+        (Ok(one_of_each()), Duration::ZERO),
+    ]));
+    let store = store_with(&id);
+
+    let (stop_tx, stop_rx) = oneshot::channel();
+    let runtime: Arc<dyn AgentRuntime> = fake.clone();
+    let driver = tokio::spawn(run(runtime, store.clone(), Policy::default(), stop_rx));
+
+    wait_until(|| is_connected(&store, &id), "驅動器進入 Connected").await;
+
+    // t = 0.5 s：Drift 觸發重拿（t = 2.0 s 才回）；t = 1.5 s 沉降到期、併入。
+    tokio::time::advance(Duration::from_millis(500)).await;
+    fake.push_event(Ok(drift_event("ghost")));
+    spin(20).await;
+    tokio::time::advance(Duration::from_millis(1_200)).await;
+    spin(20).await;
+    assert_eq!(snapshot_calls(&fake), 2, "沉降重拿併入進行中的 Drift 重拿");
+    assert!(!connected_settled(&store, &id), "併入的重拿還沒回來");
+
+    tokio::time::advance(Duration::from_millis(300)).await;
+    wait_until(
+        || connected_settled(&store, &id),
+        "併入沉降的重拿換上後 settled",
+    )
+    .await;
+    assert_eq!(snapshot_calls(&fake), 2);
+
+    fake.end_stream();
+    wait_until(
+        || is_disconnected(&store, &id),
+        "事件流結束後進入 Disconnected",
+    )
+    .await;
+    let (_, retry_in) = disconnected_parts(&store, &id);
+    tokio::time::advance(retry_in).await;
+    wait_until(
+        || subscribe_calls(&fake) == 2 && is_connected(&store, &id),
+        "重試後再次進入 Connected",
+    )
+    .await;
+    assert!(
+        !connected_settled(&store, &id),
+        "新連線的初次 snapshot 尚未沉降"
+    );
+
+    drop(stop_tx);
+    tokio::time::timeout(EXPECT_TIMEOUT, driver)
+        .await
+        .expect("停止後驅動器應在期限內結束")
+        .expect("驅動器不應 panic");
+}

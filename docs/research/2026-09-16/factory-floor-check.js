@@ -498,12 +498,15 @@ async function scenarioGridAndCoverage() {
       (m) => m[1]
     );
     check(
-      projectItemMatches.length === 2,
-      `左欄應該恰好有兩個 Project 項目（實際 ${projectItemMatches.length}：${JSON.stringify(projectItemMatches)}）`
+      // repo-projects task 4.5：fixture 多一個 Repo Project（`demo-app`），依規格排在手寫 project 之後。
+      projectItemMatches.length === 3,
+      `左欄應該恰好有三個 Project 項目（實際 ${projectItemMatches.length}：${JSON.stringify(projectItemMatches)}）`
     );
     check(
-      projectItemMatches[0] === 'cockpit' && projectItemMatches[1] === 'p',
-      `左欄 Project 順序應該是 cockpit 在上、p（Scenario D）在下（實際 ${JSON.stringify(projectItemMatches)}）`
+      projectItemMatches[0] === 'cockpit' &&
+        projectItemMatches[1] === 'p' &&
+        projectItemMatches[2] === 'demo-app',
+      `左欄 Project 順序應該是 cockpit 在上、p（Scenario D）居中、Repo Project demo-app 在最下（實際 ${JSON.stringify(projectItemMatches)}）`
     );
     // task 5.3 起操作按鈕也帶 data-project（design D9），這裡只算 Factory Floor 面板本身
     // （class="project"，不是 class="project-item"）。

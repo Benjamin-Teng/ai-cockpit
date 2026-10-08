@@ -647,6 +647,24 @@ function part1() {
     ['drift_runtime_not_registered', { id: 'ghost' }, 'runtime ghost 未登記', 'Runtime ghost is not registered'],
     ['event_payload_unparsable', { event: 'pane_created', detail: 'missing field' }, 'pane_created payload 無法解析：missing field',
       'Could not parse the pane_created event payload: missing field'],
+    // repo-projects task 3.1：Repo Project 與手寫 project 的 id 撞名警告（spec ui-language「id 撞名警告以代碼翻譯」）。
+    ['repo_project_id_conflict', { id: 'app' },
+      'Repo Project「app」與設定檔中的 project id 相同，已隱藏；只能經 API（/api/repo-projects）改名或移除',
+      'Repo Project "app" has the same id as a project in the config file and is hidden; it can only be renamed or removed via the API (/api/repo-projects)'],
+    // repo-projects task 4.4：Repo Project 管理端點、固定 pane 工作線與免帶 id 推進的錯誤代碼（spec ui-language「後端訊息代碼」）。
+    ['repo_not_detected', {}, '這個 repo 不在偵測到的清單中', 'This repo is not in the detected list'],
+    ['repo_already_added', {}, '這個 repo 已經加入', 'This repo has already been added'],
+    ['not_repo_project', { id: 'hand' }, '不是 Repo Project：hand', 'Not a Repo Project: hand'],
+    ['invalid_body', {}, '請求本體不合法：不是有效的 JSON 物件，或欄位不符合格式',
+      'Invalid request body: it is not a valid JSON object, or its fields do not match the expected format'],
+    ['invalid_name', {}, '名稱不合規則：去除前後空白後須為 1～64 個字元，且不含控制字元或不可見的格式字元',
+      'Invalid name: after trimming it must be 1 to 64 characters with no control or invisible formatting characters'],
+    ['invalid_stages', {}, 'stages 不合規則：須為 1～12 個、各 1～32 個字元、不含控制字元或不可見的格式字元且互不相同；from 須是現有的 stage 且不重複引用',
+      'Invalid stages: 1 to 12 stages, each 1 to 32 characters, no control or invisible formatting characters, all distinct; every from must be an existing stage and used at most once'],
+    ['not_overridable', {}, '這條工作線固定綁定到 pane，不能改綁', 'This workstream is pinned to its pane and cannot be rebound'],
+    ['no_task_for_pane', {}, '這個 pane 沒有可推進的 task', 'This pane has no task to advance'],
+    ['ambiguous_task', {}, '這個 pane 有多張可推進的 task，無法判斷要推進哪一張',
+      'This pane has more than one task that could be advanced, so it is unclear which one to advance'],
     ['raw', { text: 'connection refused (os error 111)' }, 'connection refused (os error 111)', 'connection refused (os error 111)'],
   ];
   const msgKeys = zhKeys.filter((k) => k.startsWith('msg.')).sort();
@@ -1288,9 +1306,11 @@ const PROBE_MAP = {
 
 // 每條期望：[快照名稱, probe 鍵, { en, zh }, 'eq'（整份陣列相等）或 'has'（含這些值）]。繁中值是改動前的字串逐字，
 // 與字典無關——所以繁中介面這一段是「沒有任何改變」的獨立檢查。
+// repo-projects task 5.1：spec cockpit-dashboard「Project 切換」改為空狀態指向左欄「偵測到的 repo」區、不得出現需要重啟的
+// 字樣，兩種語言的期望值跟著改成新文案逐字（仍與字典無關，是獨立的逐字檢查）。
 const FLOOR_EMPTY = {
-  en: 'Add a [[project]] section to cockpit.toml to see the Factory Floor here. Restart cockpit after adding it.',
-  zh: '在 cockpit.toml 加入 [[project]] 區段即可在這裡看到 Factory Floor，加入後需要重啟 cockpit',
+  en: 'Add a repo under "Detected repos" in the left column to see its Factory Floor here.',
+  zh: '在左欄「偵測到的 repo」按「加入」，即可在這裡看到它的 Factory Floor',
 };
 const EXPECT = [
   ['default', 'lampStale', { en: ['Last known', 'Last known'], zh: ['最後已知', '最後已知'] }, 'eq'],
