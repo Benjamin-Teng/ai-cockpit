@@ -4,7 +4,7 @@ All notable changes to AI Agent Cockpit are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [0.1.6] - Unreleased
+## [0.1.6] - 2026-10-11
 
 ### Added
 
