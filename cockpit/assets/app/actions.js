@@ -469,6 +469,25 @@
     ];
   }
 
+  // OpenSpec 階段（spec cockpit-dashboard「Project 切換」；openspec-stage-sync task 5.2）：值是送給後端的字串，順序即下拉的
+  // 選項順序（「不對應」固定排第一，值為 null／空字串）。「加入」送出的預設對應與介面語言無關，四站各對應同名階段，
+  // 與 defaultStages() 同序。
+  var PHASES = ["plan", "implement", "review", "complete"];
+
+  function defaultPhases() {
+    return PHASES.slice();
+  }
+
+  // 投影 project 的 stage_phases 對齊 stages 的版本：缺欄位、比 stages 短、或值不是上面四個字串的位置一律視為 null（不對應），
+  // 不丟例外。開啟時的初值與過期檢查都用它，兩邊才比得起來。
+  function phasesOf(project) {
+    var stages = Array.isArray(project.stages) ? project.stages : [];
+    var raw = Array.isArray(project.stage_phases) ? project.stage_phases : [];
+    return stages.map(function (_, i) {
+      return PHASES.indexOf(raw[i]) !== -1 ? raw[i] : null;
+    });
+  }
+
   // 「加入」成功（201 `{"id": ...}`）後記下待自動選定的 id，再重畫一次：投影若已先含這個 id，這次重畫就會選定
   // （見 applyPendingProjectSelection）。本體讀不到或沒有字串 id 時不做事——請求本身已成功，不顯示錯誤。
   function onRepoProjectAdded(response) {
@@ -503,7 +522,8 @@
   // 送出前只做不依後端細節的基本提示（空白名稱、空白或重複的 stage 名稱、沒有 stage）：長度、字元等其餘規則一律交給後端，
   // 以回應的 code 顯示（專案 memory「前端複算後端規則來比對，後端規則一改就靜默誤報」）。名稱與 stage 名稱原樣送出，去除前後
   // 空白由後端做。stages 本體依對話框列的身分送 `from`：原有的列帶它開啟時的 stage 名稱（逐字），新增的列為 null；順序即
-  // 列的順序，被刪除的列不送（spec「編輯 stage」）。名稱一律經 textContent／input.value 呈現，不以 HTML 插入。
+  // 列的順序，被刪除的列不送（spec「編輯 stage」）。每列另帶 `phase`（OpenSpec 階段字串或 null），來自該列的階段下拉
+  // （openspec-stage-sync task 5.2）。名稱一律經 textContent／input.value 呈現，不以 HTML 插入。
 
   var DIALOG_KIND = {
     "project-rename": "rename",
@@ -585,8 +605,12 @@
   dialogEl.setAttribute("aria-labelledby", "project-dialog-title");
   document.body.appendChild(dialogEl);
 
-  // 開著的對話框：null，或 { kind, project, projectName, name（改名輸入框的值）, rows（stage 列：{ key, from, value }）,
+  // 開著的對話框：null，或 { kind, project, projectName, name（改名輸入框的值）,
+  // rows（stage 列：{ key, from, value, phase }，phase 為 PHASES 的字串或 null＝不對應）,
+  // openedStages／openedPhases（開啟時投影的快照，過期檢查用）,
   // error（對話框內顯示的原因，null 為沒有）, invalid（error 指向的輸入框焦點目標，null 為不標任何輸入框）, sending }。
+  // 階段下拉的選擇只以 rows[].phase 為準：改選時同步寫進去，列的結構改變（新增、刪除、排序）重建 DOM 時從這裡讀回
+  // （openspec-stage-sync task 5.2；專案 memory「整頁重畫會丟掉只存在 DOM 上的狀態」）。
   var dlg = null;
   var rowSeq = 0;
 
@@ -605,17 +629,20 @@
       closeDialog(false);
     }
     var stages = Array.isArray(project.stages) ? project.stages : [];
+    var phases = phasesOf(project);
     dlg = {
       kind: kind,
       project: projectId,
       projectName: project.name,
       name: project.name,
-      rows: stages.map(function (stage) {
+      rows: stages.map(function (stage, i) {
         rowSeq += 1;
-        return { key: rowSeq, from: stage, value: stage };
+        return { key: rowSeq, from: stage, value: stage, phase: phases[i] };
       }),
-      // 開啟時的 stages 快照（fix round 1）：送出前與最新投影比對，別處改過就不送（見 staleProblem）。
+      // 開啟時的 stages 與階段對應快照（fix round 1；openspec-stage-sync task 5.2）：送出前與最新投影比對，別處改過就不送
+      // （見 staleProblem）。
       openedStages: stages.slice(),
+      openedPhases: phases.slice(),
       error: null,
       invalid: null,
       sending: false,
@@ -742,6 +769,29 @@
     syncDialogStatus();
   }
 
+  // 一列的 OpenSpec 階段下拉（spec「編輯 stage」；openspec-stage-sync task 5.2）：選項依序「不對應」＋PHASES，option 的
+  // value 是送給後端的字串（不對應為空字串）；顯示文字走 i18n。選中的項目取自 row.phase。原生 <select>：鍵盤（Tab 到達、
+  // 方向鍵改選）與讀屏器行為都由瀏覽器提供。
+  function buildPhaseSelect(row, n) {
+    var select = dialogNode("select", "project-dialog-input stage-phase");
+    select.setAttribute("aria-label", t("actions.dialog.stages.phaseLabel", { n: n }));
+    // 字典鍵寫成字面值（i18n-check.js ① 以字面值掃描用到的鍵，不接受組字串）。
+    var options = [
+      ["", t("actions.dialog.phase.none")],
+      ["plan", t("actions.dialog.phase.plan")],
+      ["implement", t("actions.dialog.phase.implement")],
+      ["review", t("actions.dialog.phase.review")],
+      ["complete", t("actions.dialog.phase.complete")],
+    ];
+    for (var k = 0; k < options.length; k += 1) {
+      var option = dialogNode("option", "", options[k][1]);
+      option.value = options[k][0];
+      select.appendChild(option);
+    }
+    select.value = row.phase === null ? "" : row.phase;
+    return select;
+  }
+
   function buildStageList() {
     var list = dialogNode("ol", "stage-list");
     var count = dlg.rows.length;
@@ -757,6 +807,7 @@
       input.value = row.value;
       input.setAttribute("aria-label", t("actions.dialog.stages.nameLabel", { n: n }));
       item.appendChild(input);
+      item.appendChild(buildPhaseSelect(row, n));
       var buttons = dialogNode("div", "stage-row-actions");
       var up = dialogButton(t("actions.dialog.stages.up"), "data-stage-op", "up");
       up.setAttribute("aria-label", t("actions.dialog.stages.upLabel", { n: n }));
@@ -903,7 +954,7 @@
     var focus = null;
     if (op === "add") {
       rowSeq += 1;
-      dlg.rows.push({ key: rowSeq, from: null, value: "" });
+      dlg.rows.push({ key: rowSeq, from: null, value: "", phase: null });
       focus = { row: rowSeq, part: "input" };
     } else if (index === -1) {
       return;
@@ -952,8 +1003,9 @@
     return null;
   }
 
-  // 對話框開著期間 Project 在別處被移除、或 stages 在別處被改過（fix round 1）：以最新投影比對，不同就不送——stages 的
-  // from 是開啟時的名稱，照送會覆寫別處的修改或被拒絕。
+  // 對話框開著期間 Project 在別處被移除、或 stages／階段對應在別處被改過（fix round 1；openspec-stage-sync task 5.2 加上
+  // stage_phases）：以最新投影比對，不同就不送——stages 的 from 是開啟時的名稱，照送會覆寫別處的修改或被拒絕；
+  // 階段對應照送會蓋掉別處的改動。
   function staleProblem() {
     var latest = repoProjectIn(
       typeof window.cockpitLatestState === "function" ? window.cockpitLatestState() : null,
@@ -966,7 +1018,8 @@
     if (
       dlg.kind === "stages" &&
       Array.isArray(latest.stages) &&
-      JSON.stringify(latest.stages) !== JSON.stringify(dlg.openedStages)
+      (JSON.stringify(latest.stages) !== JSON.stringify(dlg.openedStages) ||
+        JSON.stringify(phasesOf(latest)) !== JSON.stringify(dlg.openedPhases))
     ) {
       return { message: t("actions.dialog.stale.stages"), focus: { op: "cancel" } };
     }
@@ -991,7 +1044,8 @@
     } else if (current.kind === "stages") {
       body = {
         stages: current.rows.map(function (row) {
-          return { name: row.value, from: row.from };
+          // 每一列都帶 phase（字串或 null）；省略在後端等於 null，所以這裡一律明確送出（spec「編輯 stage」）。
+          return { name: row.value, from: row.from, phase: row.phase };
         }),
       };
     } else if (current.kind === "remove") {
@@ -1053,6 +1107,45 @@
     }
   });
 
+  // 階段下拉改選（openspec-stage-sync task 5.2；spec「選到已被使用的階段時他列改回不對應」）：寫回 dlg.rows[].phase
+  // （這才是狀態來源）。選到的階段若已被他列使用，他列的 phase 改回 null，並就地把那列的 <select> 設回「不對應」——
+  // 不重建對話框，焦點留在剛操作的下拉上（鍵盤方向鍵可以接著按）。選回「不對應」不影響他列。
+  dialogEl.addEventListener("change", function (event) {
+    var target = event.target;
+    if (dlg === null || !(target instanceof HTMLSelectElement) || !target.classList.contains("stage-phase")) {
+      return;
+    }
+    var rowEl = target.closest(".stage-row");
+    var index = rowEl !== null ? rowIndexByKey(Number(rowEl.getAttribute("data-row"))) : -1;
+    if (index === -1) {
+      return;
+    }
+    var phase = PHASES.indexOf(target.value) !== -1 ? target.value : null;
+    dlg.rows[index].phase = phase;
+    if (phase !== null) {
+      var rowEls = dialogEl.querySelectorAll(".stage-row");
+      for (var i = 0; i < dlg.rows.length; i += 1) {
+        if (i === index || dlg.rows[i].phase !== phase) {
+          continue;
+        }
+        dlg.rows[i].phase = null;
+        for (var k = 0; k < rowEls.length; k += 1) {
+          if (rowEls[k].getAttribute("data-row") === String(dlg.rows[i].key)) {
+            var other = rowEls[k].querySelector("select.stage-phase");
+            if (other !== null) {
+              other.value = "";
+            }
+          }
+        }
+      }
+    }
+    if (dlg.error !== null) {
+      dlg.error = null;
+      dlg.invalid = null;
+      syncDialogStatus();
+    }
+  });
+
   // 「儲存」與輸入框裡的 Enter 都走表單送出。
   dialogEl.addEventListener("submit", function (event) {
     event.preventDefault();
@@ -1096,7 +1189,7 @@
 
   // Tab／Shift+Tab 在對話框內循環：modal 讓頁面其餘部分 inert，但最後一個元素再按 Tab 仍可能跑到瀏覽器介面。
   function dialogFocusables() {
-    var all = dialogEl.querySelectorAll("input, button");
+    var all = dialogEl.querySelectorAll("input, select, button");
     var out = [];
     for (var i = 0; i < all.length; i += 1) {
       if (!all[i].disabled && all[i].getClientRects().length > 0) {
@@ -1252,7 +1345,8 @@
       send(op, "DELETE", overrideUrl(data.project, data.workstream));
     } else if (action === "add-repo") {
       // 加入 Repo Project（spec「Project 切換」；repo-projects task 5.1）：本體只有 repo（投影 detected_repos 的值原樣
-      // 送回）與依介面語言的預設 stages，不帶 name（用 repo 的預設名稱）。是「畫面操作」：上面已遞增 latestOp、清錯誤，
+      // 送回）、依介面語言的預設 stages 與同序的預設 phases（與語言無關；openspec-stage-sync task 5.2），不帶 name
+      // （用 repo 的預設名稱）。是「畫面操作」：上面已遞增 latestOp、清錯誤，
       // 失敗時 send() 顯示錯誤（英文介面依 code 翻譯），成功後畫面不自行改投影，等 /ws 推送。
       var addingRepo = data.repo;
       ui.addingRepos[addingRepo] = "sending";
@@ -1260,7 +1354,7 @@
         op,
         "POST",
         "/api/repo-projects",
-        { repo: addingRepo, stages: defaultStages() },
+        { repo: addingRepo, stages: defaultStages(), phases: defaultPhases() },
         function (response) {
           // 成功：保留標記到投影的偵測區不再列著它（pruneAddingRepos），避免真後端合併投影前再按一次被 409 拒絕。
           ui.addingRepos[addingRepo] = "added";

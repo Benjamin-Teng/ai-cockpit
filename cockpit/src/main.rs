@@ -8,14 +8,22 @@
 //!
 //! 回傳 `anyhow::Result<()>`：任何啟動失敗（設定檔不存在、驗證不過、port 被占用）都會
 //! 由 Rust runtime 以 `Error: <訊息>` 印到 stderr 並讓行程非零結束。
+//!
+//! 不用 `#[tokio::main]`：它在 `main` 返回時 drop runtime，會無限期等卡住的 `spawn_blocking`（例如讀
+//! `\\wsl.localhost` 卡在 9P）。改由 [`cockpit::app::block_on_bounded`] 建 runtime，跑完後最多再等
+//! [`cockpit::app::RUNTIME_SHUTDOWN_TIMEOUT`]（openspec-stage-sync task 4.7）。
 
 use std::io::IsTerminal;
 
 use anyhow::Context;
+use cockpit::app::{RUNTIME_SHUTDOWN_TIMEOUT, block_on_bounded};
 use tracing_subscriber::EnvFilter;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    block_on_bounded(serve(), RUNTIME_SHUTDOWN_TIMEOUT).context("建立 tokio runtime 失敗")?
+}
+
+async fn serve() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),

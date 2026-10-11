@@ -136,6 +136,7 @@ fn pane_repos_with(panes: &[(&str, &str)]) -> PaneRepos {
                     repo: RepoKey::new(APP_REPO),
                     default_name: "app".to_string(),
                     worktree: None,
+                    root: None,
                 },
             )
         })
@@ -250,16 +251,16 @@ fn v1_and_v2_files_with_repo_projects_are_corrupt() {
     );
 }
 
-/// Scenario「不支援的版本」：version 4。
+/// Scenario「不支援的版本」：version 5（openspec-stage-sync task 4.1：4 已是合法版本）。
 #[test]
-fn version_4_is_unsupported() {
-    let dir = TempDir::new("v4");
+fn version_5_is_unsupported() {
+    let dir = TempDir::new("v5");
     let (path, result) = load(
         &dir,
-        r#"{"version":4,"projects":{},"repo_projects":{}}"#,
+        r#"{"version":5,"projects":{},"repo_projects":{}}"#,
         Vec::new(),
     );
-    let error = result.expect_err("version 4 應啟動失敗");
+    let error = result.expect_err("version 5 應啟動失敗");
     assert!(
         matches!(error, ProgressError::UnsupportedVersion { .. }),
         "{error:?}"
@@ -454,10 +455,10 @@ fn repo_projects_are_listed_by_name_regardless_of_file_order() {
 // 寫出
 // ---------------------------------------------------------------------------
 
-/// Scenario「寫出 Repo Project」：`version` 3；`repo_projects.app` 逐字相符、不含 `overrides`／`active`；
+/// Scenario「寫出 Repo Project」：`version` 4（openspec-stage-sync task 4.1，原 3）、含 `phases`；`repo_projects.app` 逐字相符、不含 `overrides`／`active`；
 /// 手寫的 `projects` 區段不含 Repo Project。
 #[tokio::test]
-async fn written_file_is_v3_with_repo_projects_section() {
+async fn written_file_is_v4_with_repo_projects_section() {
     let dir = TempDir::new("write-v3");
     let (path, result) = load(
         &dir,
@@ -492,10 +493,10 @@ async fn written_file_is_v3_with_repo_projects_section() {
         .expect("推進應成功");
 
     let written = read_json(&path);
-    assert_eq!(written["version"], 3);
+    assert_eq!(written["version"], 4);
     assert_eq!(
         written["repo_projects"]["app"],
-        json!({"name":"App","repo":"d:\\work\\app\\.git","stages":["Plan","Build"],"tasks":{"local~wJ:p1":{"stage":"Build","mark":"none"}}})
+        json!({"name":"App","repo":"d:\\work\\app\\.git","stages":["Plan","Build"],"phases":["plan",null],"tasks":{"local~wJ:p1":{"stage":"Build","mark":"none"}}})
     );
     let section_keys: Vec<&String> = written["projects"]
         .as_object()
@@ -679,5 +680,5 @@ async fn zero_config_target_creates_its_folder_on_first_write() {
         .await
         .expect("第一次寫入應建立資料夾並成功");
 
-    assert_eq!(read_json(&path)["version"], 3);
+    assert_eq!(read_json(&path)["version"], 4);
 }

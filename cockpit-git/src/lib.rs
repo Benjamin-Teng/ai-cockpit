@@ -23,10 +23,14 @@
 //! `meta` 依 5a 規則以前 8192 位元組分類 `viewer`）。repo-projects task 2.1 新增
 //! [`RepoIdentity`]（`Output = Option<RepoIdentityOutput>`：判定目錄屬於哪個 git repo，回傳
 //! git 的三個原始路徑字串，`None` 代表「不是 repo」；解析器與判別規則在 `repo_identity.rs`）。
+//! openspec-stage-sync task 2.1 新增 [`CurrentBranch`]（`symbolic-ref -q HEAD`，`Output = Option<String>`：
+//! 目前分支名稱，自行去掉 `refs/heads/` 前綴；detached 或不在 `refs/heads/` 底下為 `None`；僅供內部的
+//! OpenSpec 進度偵測使用，沒有 HTTP 端點；解析器在 `current_branch.rs`）。
 
 mod blob_id;
 mod changed_files;
 mod commit_info;
+mod current_branch;
 mod file_diff;
 mod graph;
 mod log;
@@ -51,8 +55,8 @@ pub use log::{LogOutput, LogRow};
 pub use oid::{Oid, OidError};
 pub use parse_error::GitParseError;
 pub use query::{
-    Blob, BlobHead, BlobId, BlobSize, ChangedFiles, CommitInfo, FileDiff, GitQuery, Log, MergeBase,
-    QueryError, Refs, RepoIdentity, Status, VerifyCommit,
+    Blob, BlobHead, BlobId, BlobSize, ChangedFiles, CommitInfo, CurrentBranch, FileDiff, GitQuery,
+    Log, MergeBase, QueryError, Refs, RepoIdentity, Status, VerifyCommit,
 };
 pub use ref_name::{RefName, RefNameError};
 pub use refs::{RefEntry, RefKind, RefsHead, RefsOutput};

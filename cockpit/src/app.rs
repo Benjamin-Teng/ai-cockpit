@@ -56,6 +56,7 @@ use tokio::task::JoinHandle;
 use crate::config::{Args, Config, ConfigSource, load};
 use crate::files::PathMapping;
 use crate::http::{AppState, ClientActivity, router};
+use crate::openspec_sync_job::{FsOpenSpecReader, GitBranchLookup, spawn_openspec_sync};
 use crate::progress;
 use crate::progress_service::{ProgressService, StateFileTarget};
 use crate::repo_resolver::{GitRepoLookup, WslRunningDistros, spawn_repo_resolver};
@@ -90,6 +91,10 @@ pub struct Components {
     /// `Some`；保留 `Option` 的理由同 [`Components::progress_service`]。它不會自己結束（投影的 watch 傳送端與
     /// `StoreHandle` 同壽），由 [`shutdown_all`] `abort()` 再 `await`。
     pub repo_resolver: Option<JoinHandle<()>>,
+    /// OpenSpec 進度的背景偵測工作（openspec-stage-sync task 4.4，design D5）。[`build_components`] 一律建立，所以一定是
+    /// `Some`；保留 `Option` 的理由同 [`Components::progress_service`]。它不會自己結束，由 [`shutdown_all`] `abort()` 再
+    /// `await`。
+    pub openspec_sync: Option<JoinHandle<()>>,
     /// 與 [`Components::router`] 內 `AppState::port` 共用同一個 `Arc`（task 4.1；design
     /// D6）：[`router`] 在監聽埠確定之前就已經組好，[`run_with_shutdown`] 開始
     /// `axum::serve` 之前透過這個把手把傳入 `listener` 的 `TcpListener::local_addr()`
@@ -167,8 +172,21 @@ pub fn build_components(config: &Config) -> anyhow::Result<Components> {
         WslRunningDistros,
         service.clone(),
     );
-    let (progress_service, stale_remover, repo_resolver) =
-        (Some(service), Some(stale_remover), Some(repo_resolver));
+    // OpenSpec 偵測（openspec-stage-sync task 4.4，design D5）：pane 清單取自寫入服務的 domain（`StoreHandle`），
+    // 與 resolver 共用同一個 runner 與同一道 WSL 防護。
+    let openspec_sync = spawn_openspec_sync(
+        handle.clone(),
+        GitBranchLookup::new(Arc::clone(&git_runner)),
+        FsOpenSpecReader,
+        WslRunningDistros,
+        service.clone(),
+    );
+    let (progress_service, stale_remover, repo_resolver, openspec_sync) = (
+        Some(service),
+        Some(stale_remover),
+        Some(repo_resolver),
+        Some(openspec_sync),
+    );
 
     let policy = Policy {
         resnapshot: Duration::from_secs(config.polling.resnapshot_secs),
@@ -218,6 +236,7 @@ pub fn build_components(config: &Config) -> anyhow::Result<Components> {
         progress_service,
         stale_remover,
         repo_resolver,
+        openspec_sync,
         port,
         runtimes,
         activity,
@@ -306,6 +325,7 @@ pub async fn run(
                 components.projector,
                 components.stale_remover,
                 components.repo_resolver,
+                components.openspec_sync,
                 DRIVER_SHUTDOWN_TIMEOUT,
             )
             .await;
@@ -383,6 +403,7 @@ pub async fn run_with_shutdown(
         progress_service: _progress_service,
         stale_remover,
         repo_resolver,
+        openspec_sync,
         port,
         runtimes: _runtimes,
         activity: _activity,
@@ -397,6 +418,7 @@ pub async fn run_with_shutdown(
                 projector,
                 stale_remover,
                 repo_resolver,
+                openspec_sync,
                 DRIVER_SHUTDOWN_TIMEOUT,
             )
             .await;
@@ -435,6 +457,7 @@ pub async fn run_with_shutdown(
         projector,
         stale_remover,
         repo_resolver,
+        openspec_sync,
         DRIVER_SHUTDOWN_TIMEOUT,
     )
     .await;
@@ -551,17 +574,28 @@ fn log_join(what: &'static str, joined: Result<(), tokio::task::JoinError>) {
 /// repo resolver（repo-projects task 4.3）最先收：它不會自己結束（見 [`Components::repo_resolver`]），所以跟投影任務
 /// 一樣 `abort()` 再 `await`（[`ABORT_AWAIT_TIMEOUT`] 上限）。排在最前面讓它不再啟動新的 git 查詢；進行中的 git 子程序
 /// 隨 future 被 drop 而結束（`GitRunner` 設了 `kill_on_drop`），已交給寫入服務的交易在服務自己的 task 裡照常跑完。
+/// OpenSpec 偵測工作（openspec-stage-sync task 4.4）同理，緊接在 resolver 之後收：`abort` 後在 [`ABORT_AWAIT_TIMEOUT`]
+/// 內等到它結束，進行中的 git 子程序隨 future 被 drop 而結束。但讀檔跑在 `spawn_blocking` 的執行緒上，`abort` 收不掉：
+/// 讀 `\\wsl.localhost` 若卡在 9P，那條 blocking 執行緒會一直留到讀檔返回。偵測工作每次讀檔最多等
+/// [`DETECT_TIMEOUT`](crate::openspec_sync_job::DETECT_TIMEOUT)，同一個 worktree 前一次讀檔未返回時不再派新的
+/// （task 4.7）；`main` 以 [`block_on_bounded`] 關閉 runtime，最多等 [`RUNTIME_SHUTDOWN_TIMEOUT`]，不讓卡住的執行緒
+/// 拖住行程結束。
 pub async fn shutdown_all(
     stops: Vec<oneshot::Sender<()>>,
     drivers: Vec<JoinHandle<()>>,
     projector: JoinHandle<()>,
     stale_remover: Option<JoinHandle<()>>,
     repo_resolver: Option<JoinHandle<()>>,
+    openspec_sync: Option<JoinHandle<()>>,
     driver_timeout: Duration,
 ) {
     if let Some(repo_resolver) = repo_resolver {
         repo_resolver.abort();
         await_bounded(repo_resolver, "repo resolver").await;
+    }
+    if let Some(openspec_sync) = openspec_sync {
+        openspec_sync.abort();
+        await_bounded(openspec_sync, "OpenSpec 偵測工作").await;
     }
     shutdown_components(stops, drivers, projector, driver_timeout).await;
 
@@ -578,6 +612,31 @@ pub async fn shutdown_all(
             }
         }
     }
+}
+
+/// `main` 跑完之後 tokio runtime 關閉最多再等多久（openspec-stage-sync task 4.7）。到期還沒結束的只會是
+/// `spawn_blocking` 的執行緒（例如讀 `\\wsl.localhost` 卡在 9P），放著不等，隨行程結束一起消失。
+pub const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// 建 multi-thread runtime（同 `#[tokio::main]`：所有 driver 都開）跑完 `future`，再以 `shutdown_timeout` 為上限關閉
+/// runtime（openspec-stage-sync task 4.7，Codex UNC 讀檔 finding）。
+///
+/// `#[tokio::main]` 在 `main` 返回時 drop runtime，drop 會無限期等所有已開始的 `spawn_blocking` 工作跑完；
+/// 卡住的 blocking 讀檔會讓行程結束不掉。這裡改用 `Runtime::shutdown_timeout`，期限到了就放手。
+///
+/// # Errors
+///
+/// 建 runtime 失敗。
+pub fn block_on_bounded<F: std::future::Future>(
+    future: F,
+    shutdown_timeout: Duration,
+) -> std::io::Result<F::Output> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let output = runtime.block_on(future);
+    runtime.shutdown_timeout(shutdown_timeout);
+    Ok(output)
 }
 
 /// `--exit-when-idle` 的兩個期限（desktop-launch-notify task 2.1；spec `desktop-launch`「閒置

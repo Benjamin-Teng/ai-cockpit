@@ -54,6 +54,8 @@ const DOCS = { repo: 'd:\\work\\docs-site\\.git', name: 'Docs Site', paneCount: 
 const FIXTURE_PROJECTS = ['cockpit', 'p', 'demo-app'];
 // spec cockpit-dashboard「Project 切換」：預設 stages 依介面語言。
 const DEFAULT_STAGES = { zh: ['規劃', '實作', '審查', '完成'], en: ['Plan', 'Implement', 'Review', 'Complete'] };
+// openspec-stage-sync task 5.2：「加入」另送預設 phases（與語言無關）。
+const DEFAULT_PHASES = ['plan', 'implement', 'review', 'complete'];
 
 // ---------------------------------------------------------------------------
 // 命令列
@@ -185,6 +187,11 @@ function waitForChildExit(child, timeoutMs) {
 }
 async function settleChild(child, port, label) {
   const exited = await waitForChildExit(child, 5000);
+  // 已觀察到這個 ChildProcess 的 exit 事件＝這個 PID 的行程確實結束了：自 OUR_PIDS 移除。收尾之後同一個 PID
+  // 若又出現，是 Windows 重用 PID 給別的程式（例：晚幾秒建立的 svchost.exe），不是本腳本的殘留；不移除的話
+  // 收尾的 pidStillRunning 只看 PID 會誤報（openspec-stage-sync task 5.1；ledger「調查（Task 4.6 carry）」）。
+  // 沒觀察到 exit 的 PID 仍留在 OUR_PIDS，真殘留照樣抓得到。
+  if (exited && child.pid) OUR_PIDS.delete(child.pid);
   const portListening = isPortListening(port);
   if (exited && !portListening) {
     const i = SPAWNED.findIndex((e) => e.child === child);
@@ -986,7 +993,7 @@ async function segAddSendsDefaultStages() {
     await clickAdd(ctx, BILLING.repo);
     const first = await waitAddRequest(ctx, 1);
     need(first !== null, '按「加入」後服務收到 POST /api/repo-projects');
-    const wantZh = { repo: BILLING.repo, stages: DEFAULT_STAGES.zh };
+    const wantZh = { repo: BILLING.repo, stages: DEFAULT_STAGES.zh, phases: DEFAULT_PHASES };
     check(J(first.parsed) === J(wantZh), `繁中：本體恰為 ${J(wantZh)}（沒有 name；實際 ${first.raw}）`);
     check(first.parsed && !('name' in first.parsed), '繁中：本體沒有 name 欄位');
     const r1 = await waitAddResponse(ctx, 1);
@@ -1003,7 +1010,7 @@ async function segAddSendsDefaultStages() {
     await ctx.cdp.pressKey('Enter', 'Enter', 13, '\r');
     const second = await waitAddRequest(ctx, 2);
     need(second !== null, '在「加入」上按 Enter 後服務收到第二筆 POST /api/repo-projects');
-    const wantZh2 = { repo: DOCS.repo, stages: DEFAULT_STAGES.zh };
+    const wantZh2 = { repo: DOCS.repo, stages: DEFAULT_STAGES.zh, phases: DEFAULT_PHASES };
     check(J(second.parsed) === J(wantZh2), `鍵盤：本體恰為 ${J(wantZh2)}（實際 ${second.raw}）`);
     await sleep(300);
     check(addPosts(ctx).length === 2, `一次按壓只送一筆（共 2 筆；實際 ${addPosts(ctx).length}）`);
@@ -1013,7 +1020,7 @@ async function segAddSendsDefaultStages() {
     await clickAdd(ctx, BILLING.repo);
     const third = await waitAddRequest(ctx, 3);
     need(third !== null, '英文介面按「Add」後服務收到 POST /api/repo-projects');
-    const wantEn = { repo: BILLING.repo, stages: DEFAULT_STAGES.en };
+    const wantEn = { repo: BILLING.repo, stages: DEFAULT_STAGES.en, phases: DEFAULT_PHASES };
     check(J(third.parsed) === J(wantEn), `英文：本體恰為 ${J(wantEn)}（實際 ${third.raw}）`);
     const r3 = await waitAddResponse(ctx, 3);
     check(r3 !== null && r3.status === 201, `英文：假端點回 201（實際 ${r3 ? r3.status : '沒有回應'}）`);
@@ -1141,7 +1148,7 @@ async function segKeyboardFocusAcrossRepaints() {
     await ctx.cdp.pressKey('Enter', 'Enter', 13, '\r');
     const req = await waitAddRequest(ctx, 1);
     need(req !== null, '頻繁重畫時按 Enter 照常送出 POST /api/repo-projects');
-    check(J(req.parsed) === J({ repo: BILLING.repo, stages: DEFAULT_STAGES.zh }), `本體正確（實際 ${req.raw}）`);
+    check(J(req.parsed) === J({ repo: BILLING.repo, stages: DEFAULT_STAGES.zh, phases: DEFAULT_PHASES }), `本體正確（實際 ${req.raw}）`);
     const r = await waitAddResponse(ctx, 1);
     need(r !== null && r.status === 201, '頁面收到 201 回應');
     await inject(ctx, await craft(ctx, (st) => addProject(st, BILLING, DEFAULT_STAGES.zh)), '含 billing-api 的新投影');
@@ -1552,7 +1559,16 @@ async function segEditStages() {
     await clickDialog(ctx, 'submit', null, '「儲存」');
     const w = await waitWrite(ctx, 'PATCH', 1);
     need(w !== null, '按「儲存」後服務收到 PATCH');
-    const want = { stages: [{ name: 'Plan', from: 'Plan' }, { name: 'Build', from: 'Implement' }, { name: 'Done', from: 'Done' }, { name: 'Ship', from: null }] };
+    // task 5.2：每列另帶 phase。fixture 的 stage_phases 為 [plan, implement]（短於注入的四個 stage，缺的視為不對應）；
+    // 沒動下拉，所以各列的對應原樣跟著列走。
+    const want = {
+      stages: [
+        { name: 'Plan', from: 'Plan', phase: 'plan' },
+        { name: 'Build', from: 'Implement', phase: 'implement' },
+        { name: 'Done', from: 'Done', phase: null },
+        { name: 'Ship', from: null, phase: null },
+      ],
+    };
     check(w.path === DEMO.path, `PATCH 的路徑為 ${DEMO.path}（實際 ${w.path}）`);
     check(w.body === J(want), `本體恰為 ${J(want)}（實際 ${w.body}）`);
     check(await waitDialogClosed(ctx), '成功後對話框關閉');
@@ -1577,7 +1593,8 @@ async function segEditStages() {
     check(J(d.stages) === J(['Done', 'Plan', 'Implement', 'Review']), `按停用的「上移」不改變順序（實際 ${J(d.stages)}）`);
     await clickDialog(ctx, 'submit', null, '「儲存」');
     const w2 = await waitWrite(ctx, 'PATCH', 2);
-    const want2 = { stages: ['Done', 'Plan', 'Implement', 'Review'].map((n) => ({ name: n, from: n })) };
+    const PHASE_OF = { Plan: 'plan', Implement: 'implement', Review: null, Done: null }; // task 5.2：對應跟著列走
+    const want2 = { stages: ['Done', 'Plan', 'Implement', 'Review'].map((n) => ({ name: n, from: n, phase: PHASE_OF[n] })) };
     check(w2 !== null && w2.body === J(want2), `只調整順序時 from 為各自的名稱（期望 ${J(want2)}，實際 ${w2 ? w2.body : '沒有請求'}）`);
     check(await waitDialogClosed(ctx), '成功後對話框關閉');
 
@@ -1588,7 +1605,14 @@ async function segEditStages() {
     await ctx.cdp.send('Input.insertText', { text: 'Review' });
     await clickDialog(ctx, 'submit', null, '「儲存」');
     const w3 = await waitWrite(ctx, 'PATCH', 3);
-    const want3 = { stages: [{ name: 'Plan', from: 'Plan' }, { name: 'Implement', from: 'Implement' }, { name: 'Done', from: 'Done' }, { name: 'Review', from: null }] };
+    const want3 = {
+      stages: [
+        { name: 'Plan', from: 'Plan', phase: 'plan' },
+        { name: 'Implement', from: 'Implement', phase: 'implement' },
+        { name: 'Done', from: 'Done', phase: null },
+        { name: 'Review', from: null, phase: null }, // 新增的列為不對應（舊 Review 列的對應原本就是 null）
+      ],
+    };
     check(w3 !== null && w3.body === J(want3), `刪除後新增同名的 stage，新增那列 from 為 null（期望 ${J(want3)}，實際 ${w3 ? w3.body : '沒有請求'}）`);
     check(await waitDialogClosed(ctx), '成功後對話框關閉');
     check(repoWrites(ctx, 'PATCH').length === 3, `共 3 筆 PATCH（實際 ${repoWrites(ctx, 'PATCH').length}）`);
@@ -1699,7 +1723,7 @@ async function segDialogSurvivesRepaints() {
     check(J(d.stages) === J(['Design', 'Build']), `接著輸入的字接在已輸入的內容後面（實際 ${J(d.stages)}）`);
     await clickDialog(ctx, 'submit', null, '「儲存」');
     const w = await waitWrite(ctx, 'PATCH', 1);
-    const want = { stages: [{ name: 'Design', from: 'Plan' }, { name: 'Build', from: 'Build' }] };
+    const want = { stages: [{ name: 'Design', from: 'Plan', phase: 'plan' }, { name: 'Build', from: 'Build', phase: 'implement' }] };
     check(w !== null && w.body === J(want), `頻繁重畫時儲存送出 ${J(want)}（實際 ${w ? w.body : '沒有請求'}）`);
     check(await waitDialogClosed(ctx), '成功後對話框關閉');
     await openDialog(ctx, DEMO.id, 'project-remove', 'remove');
@@ -1736,7 +1760,7 @@ async function segDialogKeyboard() {
     await waitDialog(ctx, 'stages', '在「編輯 stage」上按 Enter');
     let d = await dsnap(ctx);
     check(d.activeInDialog && d.active.row === 0 && /stage-name/.test(d.active.cls), `焦點進入對話框的第一個輸入框（實際 ${J(d.active)}）`);
-    const n = await ctx.cdp.run(() => Array.from(window.__rp.dialog().querySelectorAll('input, button')).filter((x) => !x.disabled && x.getClientRects().length > 0).length);
+    const n = await ctx.cdp.run(() => Array.from(window.__rp.dialog().querySelectorAll('input, select, button')).filter((x) => !x.disabled && x.getClientRects().length > 0).length);
     need(n >= 4, `對話框內可聚焦的元素至少 4 個（實際 ${n}）`);
     let outside = 0;
     const seen = [];
@@ -1828,7 +1852,7 @@ async function segDialogValidation() {
     check(d.error === null, `修正後提示消失（實際 ${J(d.error)}）`);
     await clickDialog(ctx, 'submit', null, '「儲存」');
     const w = await waitWrite(ctx, 'PATCH', 1);
-    check(w !== null && w.body === J({ stages: [{ name: 'X', from: null }] }), `修正後照常送出（實際 ${w ? w.body : '沒有請求'}）`);
+    check(w !== null && w.body === J({ stages: [{ name: 'X', from: null, phase: null }] }), `修正後照常送出（實際 ${w ? w.body : '沒有請求'}）`);
     check(await waitDialogClosed(ctx), '成功後對話框關閉');
     await openDialog(ctx, DEMO.id, 'project-rename', 'rename');
     await typeReplace(ctx, { name: true }, '', '名稱輸入框');

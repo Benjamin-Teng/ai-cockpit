@@ -41,6 +41,7 @@ fn repo_project(id: &str, name: &str, repo: &str) -> RepoProjectDef {
         name: s(name),
         repo: RepoKey::new(repo),
         stages: vec![s("Plan"), s("Build")],
+        phases: vec![None; 2],
     }
 }
 
@@ -49,6 +50,7 @@ fn pane_repo(repo: &str, name: &str, worktree: Option<&str>) -> PaneRepo {
         repo: RepoKey::new(repo),
         default_name: s(name),
         worktree: worktree.map(s),
+        root: None,
     }
 }
 
@@ -276,7 +278,8 @@ fn repo_project_workstream_and_task_come_from_the_pane() {
             "stage": "Plan",
             "mark": "none",
             "status": "running",
-            "depends_on": []
+            "depends_on": [],
+            "sync": null
         })
     );
 }

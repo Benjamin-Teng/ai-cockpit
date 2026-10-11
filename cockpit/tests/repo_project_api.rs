@@ -171,6 +171,7 @@ fn pane_repos() -> PaneRepos {
                 repo: RepoKey::new(repo),
                 default_name: s(name),
                 worktree: None,
+                root: None,
             },
         )
     };
@@ -888,6 +889,387 @@ async fn patch_invalid_body_is_400_invalid_body() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// 每站 OpenSpec 階段對應（openspec-stage-sync task 4.5；design D8、D10-1；spec `repo-projects`）
+// ---------------------------------------------------------------------------
+
+/// `POST` 加入 `app`（stages `Plan`、`Build`、`Done`）並帶上 `phases`（`None` 表示省略該欄位），等到投影出現。
+async fn add_app_with_phases(env: &Env, phases: Option<Value>) -> (StatusCode, Value) {
+    let mut body = json!({"repo": APP_REPO, "stages": ["Plan", "Build", "Done"]});
+    if let Some(phases) = phases {
+        body["phases"] = phases;
+    }
+    let result = send(
+        &env.router,
+        "POST",
+        "/api/repo-projects",
+        Some(&body.to_string()),
+    )
+    .await;
+    if result.0 == StatusCode::CREATED {
+        wait_state(&env.router, "app 出現", |st| project(st, "app").is_some()).await;
+    }
+    result
+}
+
+/// 等到 `app` 的 `stage_phases` 等於 `want`，回傳那份投影。
+async fn wait_stage_phases(env: &Env, want: Value) -> Value {
+    wait_state(&env.router, "stage_phases 更新", |st| {
+        project(st, "app").is_some_and(|p| p["stage_phases"] == want)
+    })
+    .await
+}
+
+/// 狀態檔中 `app` 的 `phases`。
+fn phases_in_file(dir: &TempDir) -> Value {
+    read_state_file(&dir.state_path())["repo_projects"]["app"]["phases"].clone()
+}
+
+/// spec「加入時帶階段對應」。
+#[tokio::test]
+async fn add_with_phases_is_201_and_projection_has_stage_phases() {
+    let dir = TempDir::new("add-phases");
+    let env = build_empty(&dir);
+
+    let (status, body) = send(
+        &env.router,
+        "POST",
+        "/api/repo-projects",
+        Some(
+            &json!({
+                "repo": APP_REPO,
+                "stages": ["規劃", "實作", "審查", "完成"],
+                "phases": ["plan", "implement", "review", "complete"],
+            })
+            .to_string(),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED, "本體：{body:?}");
+    let state = wait_state(&env.router, "app 出現", |st| project(st, "app").is_some()).await;
+    assert_eq!(
+        project(&state, "app").expect("app")["stage_phases"],
+        json!(["plan", "implement", "review", "complete"])
+    );
+    assert_eq!(
+        phases_in_file(&dir),
+        json!(["plan", "implement", "review", "complete"])
+    );
+}
+
+/// spec「phases 可含 null」。
+#[tokio::test]
+async fn add_with_phases_containing_null_keeps_the_nulls() {
+    let dir = TempDir::new("add-phases-null");
+    let env = build_empty(&dir);
+
+    let (status, body) = add_app_with_phases(&env, Some(json!(["plan", null, null]))).await;
+
+    assert_eq!(status, StatusCode::CREATED, "本體：{body:?}");
+    wait_stage_phases(&env, json!(["plan", null, null])).await;
+    assert_eq!(phases_in_file(&dir), json!(["plan", null, null]));
+}
+
+/// spec「省略 phases 視為全部不對應」。
+#[tokio::test]
+async fn add_without_phases_means_all_null() {
+    let dir = TempDir::new("add-no-phases");
+    let env = build_empty(&dir);
+
+    let (status, body) = add_app_with_phases(&env, None).await;
+
+    assert_eq!(status, StatusCode::CREATED, "本體：{body:?}");
+    wait_stage_phases(&env, json!([null, null, null])).await;
+    assert_eq!(phases_in_file(&dir), json!([null, null, null]));
+}
+
+/// spec「phases 長度與 stages 不同」「階段對應重複」「階段名稱不合法」（design D10-1）：400 `invalid_stages`，
+/// 沒有新增 Project。未知字串不可落到反序列化錯誤的 `invalid_body`；大小寫不同、前後空白也算未知。
+#[tokio::test]
+async fn add_invalid_phases_is_400_invalid_stages_and_adds_nothing() {
+    let dir = TempDir::new("add-bad-phases");
+    let env = build_empty(&dir);
+    let cases = [
+        ("長度太短", json!(["plan", "implement"])),
+        (
+            "長度太長",
+            json!(["plan", "implement", "review", "complete"]),
+        ),
+        ("空陣列", json!([])),
+        ("未知字串", json!(["plan", "done", null])),
+        ("大小寫不同", json!(["Plan", null, null])),
+        ("前後空白", json!([" plan", null, null])),
+        ("空字串", json!(["", null, null])),
+        ("非 null 重複", json!(["plan", "plan", null])),
+        (
+            "非 null 不相鄰重複",
+            json!(["review", "implement", "review"]),
+        ),
+    ];
+
+    for (what, phases) in cases {
+        let (status, body) = add_app_with_phases(&env, Some(phases)).await;
+        assert_error(status, &body, StatusCode::BAD_REQUEST, "invalid_stages");
+        assert!(
+            env.handle.with_domain(|d| d.repo_projects.is_empty()),
+            "{what}：不得新增 Project"
+        );
+    }
+    assert!(!dir.state_path().exists(), "拒絕的請求不落檔");
+}
+
+/// spec「phases 型別不對」：400 `invalid_body`（`phases` 不是陣列、元素不是字串也不是 null），狀態不變。
+#[tokio::test]
+async fn add_phases_of_wrong_type_is_400_invalid_body() {
+    let dir = TempDir::new("add-phases-type");
+    let env = build_empty(&dir);
+    let cases = [
+        ("字串", json!("plan")),
+        ("物件", json!({"0": "plan"})),
+        ("數字", json!(1)),
+        ("元素是數字", json!([1, null, null])),
+        ("元素是布林", json!([true, null, null])),
+        ("元素是陣列", json!([["plan"], null, null])),
+    ];
+
+    for (what, phases) in cases {
+        let (status, body) = add_app_with_phases(&env, Some(phases)).await;
+        assert_error(status, &body, StatusCode::BAD_REQUEST, "invalid_body");
+        assert!(
+            env.handle.with_domain(|d| d.repo_projects.is_empty()),
+            "{what}：不得新增 Project"
+        );
+    }
+}
+
+/// spec「修改 stages 時帶 phase」。
+#[tokio::test]
+async fn patch_with_phase_updates_stage_phases() {
+    let dir = TempDir::new("patch-phase");
+    let env = build_empty(&dir);
+    let (status, _) = add_app_with_phases(&env, Some(json!(["plan", null, null]))).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = patch(
+        &env,
+        "app",
+        r#"{"stages":[{"name":"Plan","from":"Plan","phase":"plan"},{"name":"Build","from":"Build","phase":"implement"},{"name":"Done","from":"Done","phase":"complete"}]}"#,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::NO_CONTENT, "本體：{body:?}");
+    wait_stage_phases(&env, json!(["plan", "implement", "complete"])).await;
+    assert_eq!(
+        phases_in_file(&dir),
+        json!(["plan", "implement", "complete"])
+    );
+}
+
+/// spec「phase 省略視為不對應」：PATCH 每列省略 `phase` 是 `null`，不是沿用舊值；明寫 `null` 同樣。
+#[tokio::test]
+async fn patch_without_phase_resets_to_null() {
+    let dir = TempDir::new("patch-no-phase");
+    let env = build_empty(&dir);
+    let (status, _) = add_app_with_phases(&env, Some(json!(["plan", "implement", null]))).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = patch(
+        &env,
+        "app",
+        r#"{"stages":[{"name":"Plan","from":"Plan"},{"name":"Build","from":"Build"},{"name":"Done","from":"Done"}]}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "本體：{body:?}");
+    wait_stage_phases(&env, json!([null, null, null])).await;
+    assert_eq!(phases_in_file(&dir), json!([null, null, null]));
+
+    let (status, _) = patch(
+        &env,
+        "app",
+        r#"{"stages":[{"name":"Plan","from":"Plan","phase":"plan"},{"name":"Build","from":"Build"},{"name":"Done","from":"Done"}]}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    wait_stage_phases(&env, json!(["plan", null, null])).await;
+
+    let (status, _) = patch(
+        &env,
+        "app",
+        r#"{"stages":[{"name":"Plan","from":"Plan","phase":null},{"name":"Build","from":"Build"},{"name":"Done","from":"Done"}]}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    wait_stage_phases(&env, json!([null, null, null])).await;
+}
+
+/// spec「只改名稱，階段對應不變」。
+#[tokio::test]
+async fn patch_name_only_keeps_stage_phases() {
+    let dir = TempDir::new("patch-name-phases");
+    let env = build_empty(&dir);
+    let (status, _) =
+        add_app_with_phases(&env, Some(json!(["plan", "implement", "complete"]))).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = patch(&env, "app", r#"{"name":"App 前端"}"#).await;
+
+    assert_eq!(status, StatusCode::NO_CONTENT, "本體：{body:?}");
+    let state = wait_state(&env.router, "改名", |st| {
+        project(st, "app").is_some_and(|p| p["name"] == "App 前端")
+    })
+    .await;
+    assert_eq!(
+        project(&state, "app").expect("app")["stage_phases"],
+        json!(["plan", "implement", "complete"])
+    );
+    assert_eq!(
+        phases_in_file(&dir),
+        json!(["plan", "implement", "complete"])
+    );
+}
+
+/// spec「階段對應重複」「階段名稱不合法」「phase 型別不對」（PATCH）：未知字串與非 null 重複回 400
+/// `invalid_stages`，型別不對回 400 `invalid_body`；任何一種都不改 stages 與對應。
+#[tokio::test]
+async fn patch_invalid_phase_is_rejected_and_changes_nothing() {
+    let dir = TempDir::new("patch-bad-phase");
+    let env = build_empty(&dir);
+    let (status, _) = add_app_with_phases(&env, Some(json!(["plan", "implement", null]))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let cases = [
+        (
+            "未知字串",
+            r#"{"stages":[{"name":"Plan","from":"Plan","phase":"done"},{"name":"Build","from":"Build"}]}"#,
+            "invalid_stages",
+        ),
+        (
+            "大小寫不同",
+            r#"{"stages":[{"name":"Plan","from":"Plan","phase":"Plan"}]}"#,
+            "invalid_stages",
+        ),
+        (
+            "非 null 重複",
+            r#"{"stages":[{"name":"Plan","from":"Plan","phase":"review"},{"name":"Build","from":"Build","phase":"review"}]}"#,
+            "invalid_stages",
+        ),
+        (
+            "同時改名稱但階段不合法",
+            r#"{"name":"改了","stages":[{"name":"Plan","from":"Plan","phase":"nope"}]}"#,
+            "invalid_stages",
+        ),
+        (
+            "phase 是數字",
+            r#"{"stages":[{"name":"Plan","from":"Plan","phase":1}]}"#,
+            "invalid_body",
+        ),
+        (
+            "phase 是布林",
+            r#"{"stages":[{"name":"Plan","from":"Plan","phase":false}]}"#,
+            "invalid_body",
+        ),
+        (
+            "phase 是陣列",
+            r#"{"stages":[{"name":"Plan","from":"Plan","phase":["plan"]}]}"#,
+            "invalid_body",
+        ),
+        (
+            "列上有未知欄位",
+            r#"{"stages":[{"name":"Plan","from":"Plan","phases":"plan"}]}"#,
+            "invalid_body",
+        ),
+    ];
+
+    for (what, body, code) in cases {
+        let (status, response) = patch(&env, "app", body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{what}：{response:?}");
+        assert_eq!(response["code"], code, "{what}：{response:?}");
+    }
+
+    let (name, stages) = env.handle.with_domain(|d| {
+        let def = &d.repo_projects[0];
+        (def.name.clone(), def.stages.clone())
+    });
+    assert_eq!(name, "app");
+    assert_eq!(stages, vec![s("Plan"), s("Build"), s("Done")]);
+    assert_eq!(phases_in_file(&dir), json!(["plan", "implement", null]));
+}
+
+/// 既有契約「先判定 pid、再驗內容」（`progress_service.rs` 的註解、`patch_checks_pid_before_name`）：帶未知 phase
+/// 的 PATCH 對不存在的 pid 仍是 404 `unknown_project`，對手寫 project 仍是 409 `not_repo_project`
+/// （openspec-stage-sync task 4.5 fix round 1：HTTP 層不提早回 `invalid_stages`）。
+#[tokio::test]
+async fn patch_unknown_phase_checks_pid_first() {
+    let dir = TempDir::new("patch-phase-pid");
+    let env = build(vec![hand_project()], dir.state_path());
+    let body = r#"{"stages":[{"name":"X","phase":"nope"}]}"#;
+
+    let (status, response) = patch(&env, "ghost", body).await;
+    assert_error(status, &response, StatusCode::NOT_FOUND, "unknown_project");
+
+    let (status, response) = patch(&env, "p", body).await;
+    assert_error(status, &response, StatusCode::CONFLICT, "not_repo_project");
+}
+
+/// 檢查順序 pid → name → stages → phases：名稱不合法時，即使同時有未知 phase 也先回 `invalid_name`（PATCH）。
+#[tokio::test]
+async fn patch_blank_name_wins_over_unknown_phase() {
+    let dir = TempDir::new("patch-name-before-phase");
+    let env = build_empty(&dir);
+    add_app(&env).await;
+
+    let (status, response) = patch(
+        &env,
+        "app",
+        r#"{"name":"   ","stages":[{"name":"Plan","from":"Plan","phase":"nope"}]}"#,
+    )
+    .await;
+
+    assert_error(status, &response, StatusCode::BAD_REQUEST, "invalid_name");
+}
+
+/// 同上（POST）：名稱不合法優先於未知 phase；stages 不合法也優先於 phases。
+#[tokio::test]
+async fn add_name_and_stages_checked_before_phases() {
+    let dir = TempDir::new("add-name-before-phase");
+    let env = build_empty(&dir);
+
+    let (status, response) = send(
+        &env.router,
+        "POST",
+        "/api/repo-projects",
+        Some(
+            &json!({"repo": APP_REPO, "stages": ["A"], "name": "  ", "phases": ["nope"]})
+                .to_string(),
+        ),
+    )
+    .await;
+    assert_error(status, &response, StatusCode::BAD_REQUEST, "invalid_name");
+
+    let (status, response) = send(
+        &env.router,
+        "POST",
+        "/api/repo-projects",
+        Some(&json!({"repo": APP_REPO, "stages": [], "phases": ["nope"]}).to_string()),
+    )
+    .await;
+    assert_error(status, &response, StatusCode::BAD_REQUEST, "invalid_stages");
+    assert!(env.handle.with_domain(|d| d.repo_projects.is_empty()));
+}
+
+/// `"phases": null` 等同省略（控制端裁決）：201，`stage_phases` 全為 null。
+#[tokio::test]
+async fn add_with_null_phases_means_all_null() {
+    let dir = TempDir::new("add-null-phases");
+    let env = build_empty(&dir);
+
+    let (status, body) = add_app_with_phases(&env, Some(Value::Null)).await;
+
+    assert_eq!(status, StatusCode::CREATED, "本體：{body:?}");
+    wait_stage_phases(&env, json!([null, null, null])).await;
+    assert_eq!(phases_in_file(&dir), json!([null, null, null]));
+}
+
 /// spec「pid 不存在或是手寫 project」。
 #[tokio::test]
 async fn patch_ghost_is_404_and_hand_written_is_409() {
@@ -1144,9 +1526,11 @@ async fn advance_repo_project_pane_moves_to_next_stage_and_persists() {
         "Plan",
         "其他 pane 不動"
     );
+    // openspec-stage-sync task 4.3：spec「agent 的推進端點標記手動」「沒有偵測結果時手動推進」改變了這裡——agent 推進
+    // 是手動入口，task 沒有同步狀態時建立 `{manual, applied: null}`。
     assert_eq!(
         read_state_file(&dir.state_path())["repo_projects"]["app"]["tasks"]["local~wJ:p1"],
-        json!({"stage": "Build", "mark": "none"})
+        json!({"stage": "Build", "mark": "none", "sync": {"mode": "manual", "applied": null}})
     );
 }
 

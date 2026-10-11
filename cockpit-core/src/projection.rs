@@ -14,9 +14,10 @@ use crate::domain::binding::{BindingResolution, BindingSource, Override, resolve
 use crate::domain::config::{PinnedPane, ProjectDef, TaskDef};
 use crate::domain::ids::{ProjectId, TaskId, WorkstreamId};
 use crate::domain::progress::{Mark, TaskProgress};
-use crate::domain::repo::RepoKey;
+use crate::domain::repo::{OpenSpecPhase, RepoKey, split_pane_item_id};
 use crate::domain::state::DomainState;
 use crate::domain::status::{StageStatus, derive_status};
+use crate::domain::sync::SyncMode;
 use crate::message::{Message, MessageCode};
 use crate::store::{DRIFT_KIND, RECENT_EVENTS_CAPACITY, RuntimeState, RuntimeStore};
 use crate::types::agent_status::AgentStatus;
@@ -92,6 +93,10 @@ pub struct ProjectedProject {
     pub repo: Option<RepoKey>,
     /// Stage 的線性順序（設定順序）。
     pub stages: Vec<String>,
+    /// 與 `stages` 逐項對齊的 OpenSpec 階段對應（openspec-stage-sync task 3.3，design D8）；沒有對應的 stage 為
+    /// `None`（序列化為 `null`）。手寫 project 沒有階段對應，為空陣列；舊 JSON 缺這個欄位時也是空陣列。
+    #[serde(default)]
+    pub stage_phases: Vec<Option<OpenSpecPhase>>,
     /// 載入狀態檔時產生的 warning；沒有就是空陣列。
     pub warnings: Vec<String>,
     /// 與 `warnings` 等長、同順序的代碼與參數（ui-language design D4）；舊 JSON 缺這個欄位時為空陣列。
@@ -190,6 +195,26 @@ pub struct ProjectedTask {
     pub status: StageStatus,
     /// 依賴的 task id。
     pub depends_on: Vec<TaskId>,
+    /// OpenSpec 同步資訊（openspec-stage-sync task 3.3，design D8）；沒有時序列化為 `null`，不省略。舊 JSON 缺這個
+    /// 欄位時為 `None`。
+    #[serde(default)]
+    pub sync: Option<ProjectedTaskSync>,
+}
+
+/// 一張 task 的 OpenSpec 同步資訊（spec `state-projection`「Project 投影」）：`change`、`phase`、`checked`、`total`
+/// 取自該 task 的 pane 最近一輪的偵測結果，`mode` 取自保存的同步狀態（沒有時為 `auto`）。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectedTaskSync {
+    /// 對應到的 change 名稱。
+    pub change: String,
+    /// 判定出的階段。
+    pub phase: OpenSpecPhase,
+    /// 已勾選的 checkbox 數。
+    pub checked: u32,
+    /// checkbox 總數。
+    pub total: u32,
+    /// 卡片目前由誰決定位置。
+    pub mode: SyncMode,
 }
 
 /// 一筆失效的覆蓋（design D3）：覆蓋的 runtime 已 `connected`，但 pane 不存在或已 `exited`。
@@ -618,6 +643,9 @@ fn project_project(
                 mark: current.mark,
                 status,
                 depends_on: task.depends_on.clone(),
+                sync: is_repo
+                    .then(|| task_sync(domain, &def.id, &task.id))
+                    .flatten(),
             }
         })
         .collect();
@@ -637,11 +665,52 @@ fn project_project(
         },
         repo: def.repo.clone(),
         stages: def.stages.clone(),
+        stage_phases: stage_phases(domain, def),
         warnings,
         warning_msgs,
         workstreams,
         tasks,
     }
+}
+
+/// 與 `def.stages` 對齊的階段對應（openspec-stage-sync task 3.3，design D8）：手寫 project 為空陣列；Repo Project
+/// 取同 id 且同 repo 的 [`RepoProjectDef::phases`](crate::domain::repo::RepoProjectDef::phases)，找不到或長度對不上
+/// （定義與生效 stages 暫時不一致）時全為 `None`，長度仍與 `stages` 相同。
+fn stage_phases(domain: &DomainState, def: &ProjectDef) -> Vec<Option<OpenSpecPhase>> {
+    let Some(repo) = def.repo.as_ref() else {
+        return Vec::new();
+    };
+    domain
+        .repo_projects
+        .iter()
+        .find(|r| r.id == def.id && &r.repo == repo)
+        .filter(|r| r.phases.len() == def.stages.len())
+        .map(|r| r.phases.clone())
+        .unwrap_or_else(|| vec![None; def.stages.len()])
+}
+
+/// Repo Project 的一張 task 的同步資訊（openspec-stage-sync task 3.3，design D8）：偵測結果取自 `openspec_obs` 中
+/// 該 task 的 pane；當下沒有偵測結果時為 `None`（即使 `repo_sync` 還留著舊紀錄，不顯示過時的 change）；有偵測結果但沒有
+/// 保存的同步狀態時 `mode` 為 `auto`。
+fn task_sync(
+    domain: &DomainState,
+    project: &ProjectId,
+    task: &TaskId,
+) -> Option<ProjectedTaskSync> {
+    let key = split_pane_item_id(task.as_str())?;
+    let obs = domain.openspec_obs.get(&key)?;
+    let mode = domain
+        .repo_sync
+        .get(project)
+        .and_then(|table| table.get(task))
+        .map_or(SyncMode::Auto, |sync| sync.mode);
+    Some(ProjectedTaskSync {
+        change: obs.change.clone(),
+        phase: obs.phase,
+        checked: obs.checked,
+        total: obs.total,
+        mode,
+    })
 }
 
 /// `Bound` 時從狀態庫取出綁定的 pane；其餘結果為 `None`。

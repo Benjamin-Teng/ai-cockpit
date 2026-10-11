@@ -111,14 +111,14 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
 use cockpit_core::{
     AgentRuntime, OutputFormat, Override, PaneId, ProgressOp, ProjectId, ProjectedState,
-    READ_OUTPUT_FAILED_PREFIX, RepoKey, RuntimeError, RuntimeId, StageEdit, TaskId, WorkstreamId,
+    READ_OUTPUT_FAILED_PREFIX, RepoKey, RuntimeError, RuntimeId, TaskId, WorkstreamId,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
 use crate::files;
 use crate::progress_service::{
-    NewRepoProject, ProgressService, RepoProjectError, RepoProjectPatch, WriteError,
+    NewRepoProject, ProgressService, RepoProjectError, RepoProjectPatch, StageEditInput, WriteError,
 };
 use crate::source_check::source_check;
 
@@ -765,15 +765,23 @@ pub struct AddRepoProjectRequest {
     /// 顯示名稱（選填，尚未正規化）。
     #[serde(default)]
     pub name: Option<String>,
+    /// 每站的 OpenSpec 階段對應（選填，與 `stages` 逐項對齊；`null` 與省略相同）。只以字串接收，由服務在名稱與
+    /// stages 之後轉成階段並驗證：未知字串不可落到反序列化錯誤的 `invalid_body`，也不在 HTTP 層提早回錯，才不會
+    /// 蓋掉較前面的檢查（openspec-stage-sync task 4.5，design D10-1）。
+    #[serde(default)]
+    pub phases: Option<Vec<Option<String>>>,
 }
 
-/// `PATCH` 本體中的一個 stage：`from` 省略與 `null` 都表示新增的 stage。
+/// `PATCH` 本體中的一個 stage：`from` 省略與 `null` 都表示新增的 stage；`phase` 省略與 `null` 都表示不對應
+/// （不是沿用舊值；openspec-stage-sync task 4.5）。
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StageEditRequest {
     name: String,
     #[serde(default)]
     from: Option<String>,
+    #[serde(default)]
+    phase: Option<String>,
 }
 
 /// `PATCH /api/repo-projects/{pid}` 的本體：`name`、`stages` 皆選填，但至少要給一個。
@@ -849,6 +857,7 @@ async fn add_repo_project(State(app): State<AppState>, body: Bytes) -> Response 
         repo,
         stages: request.stages,
         name: request.name,
+        phases: request.phases,
     };
     match progress.add_repo_project(new_project).await {
         Ok(id) => with_no_store_headers(
@@ -886,9 +895,10 @@ async fn update_repo_project(
         stages: request.stages.map(|edits| {
             edits
                 .into_iter()
-                .map(|edit| StageEdit {
+                .map(|edit| StageEditInput {
                     name: edit.name,
                     from: edit.from,
+                    phase: edit.phase,
                 })
                 .collect()
         }),

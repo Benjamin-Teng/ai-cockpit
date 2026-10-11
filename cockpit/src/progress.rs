@@ -7,7 +7,7 @@
 //!
 //! 容錯規則（design D5）：
 //! - 狀態檔不存在：所有 task 用初始進度、沒有覆蓋，**不建立檔案**。
-//! - 檔案無法解析為狀態檔形狀、或 `version` 不是 1 或 2：視為損毀，回傳 [`ProgressError`]（呼叫端
+//! - 檔案無法解析為狀態檔形狀、或 `version` 不是 1～4：視為損毀，回傳 [`ProgressError`]（呼叫端
 //!   應視為啟動失敗；這是使用者手改檔案才會發生的情況，靜默丟棄會吞掉進度）。
 //! - 狀態檔中的 project／task／workstream 在設定檔不存在，或覆蓋的 `runtime` 不是設定檔中的
 //!   runtime：忽略該筆並以 `tracing::warn!` 記錄一則操作記錄，不進入回傳的 `DomainState`
@@ -23,20 +23,28 @@
 //!   出現 `repo_projects`（含 `null`）即損毀。Repo Project 的 id／名稱／stages 不合 D6 規則、或兩個 Repo Project
 //!   的 `repo` 相同即損毀；task 的 stage 不在 stages → 第一個 stage＋warning；task id 的 runtime（最後一個 `~`
 //!   之前）不是設定中的 runtime → 忽略並 warn。Repo Project 的 task 全部讀入，不經 [`resolve_tasks`]（D4）。
+//! - v4（openspec-stage-sync task 4.1，design D4、D10-3）：每個 Repo Project 另有必填的 `phases`（與 `stages` 對齊，
+//!   長度不符或非 `null` 值重複即損毀），Repo Project 的 task 可帶 `sync`。v1～v3 出現 `phases` 或 `sync`（含 `null`）、
+//!   手寫 `projects` 底下的 task 帶 `sync` 都是損毀。讀 v1～v3 時依預設站名一次性補 `phases`（[`default_phases`]），
+//!   v4 的 `null` 一律尊重。
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use cockpit_core::{
-    DomainState, Mark, Message, Override, PaneId, ProjectDef, ProjectId, RepoKey, RepoProjectDef,
-    RuntimeId, TaskId, TaskProgress, WorkstreamId, is_valid_repo_project_id,
-    normalize_repo_project_name, normalize_repo_project_stages, split_pane_item_id,
+    DomainState, Mark, Message, Observation, OpenSpecPhase, Override, PaneId, ProjectDef,
+    ProjectId, RepoKey, RepoProjectDef, RuntimeId, SyncMode, TaskId, TaskProgress, TaskSync,
+    WorkstreamId, is_valid_repo_project_id, normalize_repo_project_name,
+    normalize_repo_project_stages, repo_project_phases_valid, split_pane_item_id,
 };
 use serde::{Deserialize, Serialize};
 
-/// 狀態檔寫出時的 `version`（加上 `repo_projects` 的 v3；repo-projects task 4.1，design D5）。
-pub const STATE_FILE_VERSION: u64 = 3;
+/// 狀態檔寫出時的 `version`（Repo Project 加 `phases`、task 加 `sync` 的 v4；openspec-stage-sync task 4.1，design D4）。
+pub const STATE_FILE_VERSION: u64 = 4;
+
+/// 加上 `repo_projects`、沒有 `phases` 與 `sync` 的舊版（repo-projects task 4.1，design D5）。
+const V3_STATE_FILE_VERSION: u64 = 3;
 
 /// 含目前 task、沒有 `repo_projects` 的舊版（progress-model task 3.1）。
 const V2_STATE_FILE_VERSION: u64 = 2;
@@ -66,8 +74,8 @@ pub enum ProgressError {
         /// 底層解析器的錯誤訊息。
         message: String,
     },
-    /// `version` 不是 1、2 或 [`STATE_FILE_VERSION`]。
-    #[error("狀態檔版本不支援（{}）：期望 1、2 或 {STATE_FILE_VERSION}，收到 {version}", path.display())]
+    /// `version` 不是 1 到 [`STATE_FILE_VERSION`]。
+    #[error("狀態檔版本不支援（{}）：期望 1 到 {STATE_FILE_VERSION}，收到 {version}", path.display())]
     UnsupportedVersion {
         /// 出錯的檔案路徑。
         path: PathBuf,
@@ -107,15 +115,118 @@ pub(crate) struct StateFile {
     pub(crate) repo_projects: Option<Option<BTreeMap<String, StateRepoProject>>>,
 }
 
-/// 單一 Repo Project 在狀態檔中的內容（design D5）：四個欄位皆必填；不保存 `overrides` 與 `active`
-/// （`deny_unknown_fields` 讓它們出現即損毀）。
+/// 單一 Repo Project 在狀態檔中的內容（design D5）：`name`／`repo`／`stages`／`tasks` 必填；不保存 `overrides` 與
+/// `active`（`deny_unknown_fields` 讓它們出現即損毀）。
+///
+/// `phases`（v4；openspec-stage-sync task 4.1，design D4）：v3 必須缺席、v4 必須有，由 [`check_version_shape`] 依
+/// `version` 檢查。出現但值為 `null`（任何版本）一律損毀，所以用 [`deserialize_non_null`]，不讓 `null` 被
+/// `Option` 收成缺席。寫出一律有值。
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct StateRepoProject {
     pub(crate) name: String,
     pub(crate) repo: String,
     pub(crate) stages: Vec<String>,
-    pub(crate) tasks: BTreeMap<String, StateTask>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) phases: Option<Vec<Option<OpenSpecPhase>>>,
+    pub(crate) tasks: BTreeMap<String, StateRepoTask>,
+}
+
+/// 欄位出現就必須是非 `null` 的 `T`；缺席由 `#[serde(default)]` 給 `None`。
+fn deserialize_non_null<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+/// Repo Project 底下單一 task 在狀態檔中的內容：手寫 project 的 [`StateTask`] 加選填的 `sync`
+/// （v4；`sync` 在 v1～v3 出現即損毀，見 [`check_version_shape`]；`null` 同樣損毀）。
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StateRepoTask {
+    pub(crate) stage: String,
+    pub(crate) mark: Mark,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) sync: Option<StateSync>,
+}
+
+/// task 的同步狀態（openspec-stage-sync task 4.1，design D4）：`mode` 與 `applied` 都必填，`applied` 可為 `null`。
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StateSync {
+    pub(crate) mode: SyncMode,
+    /// 刻意沒有 `default`：欄位缺席與 `null` 要分得開，缺席視為損毀（spec 形狀 `applied: {...} | null` 必填）。
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) applied: Option<StateObservation>,
+}
+
+/// 欄位必須出現，值可為 `null`；缺席時因為沒有 `#[serde(default)]` 而報 `missing field`。
+fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+
+/// [`Observation`] 在狀態檔中的形狀；另立型別是為了 `deny_unknown_fields`。
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StateObservation {
+    pub(crate) change: String,
+    pub(crate) phase: OpenSpecPhase,
+    pub(crate) checked: u32,
+    pub(crate) total: u32,
+}
+
+impl From<&Observation> for StateObservation {
+    fn from(obs: &Observation) -> Self {
+        Self {
+            change: obs.change.clone(),
+            phase: obs.phase,
+            checked: obs.checked,
+            total: obs.total,
+        }
+    }
+}
+
+impl From<StateObservation> for Observation {
+    fn from(obs: StateObservation) -> Self {
+        Self {
+            change: obs.change,
+            phase: obs.phase,
+            checked: obs.checked,
+            total: obs.total,
+        }
+    }
+}
+
+impl From<&TaskSync> for StateSync {
+    fn from(sync: &TaskSync) -> Self {
+        Self {
+            mode: sync.mode,
+            applied: sync.applied.as_ref().map(StateObservation::from),
+        }
+    }
+}
+
+impl From<StateSync> for TaskSync {
+    fn from(sync: StateSync) -> Self {
+        Self {
+            mode: sync.mode,
+            applied: sync.applied.map(Observation::from),
+        }
+    }
 }
 
 /// 同 [`deserialize_present_active`]：欄位出現（含 `null`）就包成 `Some`。
@@ -234,6 +345,7 @@ pub fn load_progress(
     }
     domain.repo_projects = repo.defs;
     domain.repo_progress = repo.progress;
+    domain.repo_sync = repo.sync;
     domain.refresh_projects();
     Ok(domain)
 }
@@ -242,6 +354,7 @@ pub fn load_progress(
 struct ResolvedRepoProjects {
     defs: Vec<RepoProjectDef>,
     progress: HashMap<ProjectId, HashMap<TaskId, TaskProgress>>,
+    sync: HashMap<ProjectId, HashMap<TaskId, TaskSync>>,
     warnings: HashMap<ProjectId, Vec<String>>,
 }
 
@@ -260,6 +373,7 @@ fn resolve_repo_projects(
     let mut resolved = ResolvedRepoProjects {
         defs: Vec::with_capacity(repo_projects.len()),
         progress: HashMap::new(),
+        sync: HashMap::new(),
         warnings: HashMap::new(),
     };
     let mut seen_repos: HashMap<String, String> = HashMap::new();
@@ -287,8 +401,23 @@ fn resolve_repo_projects(
             )));
         }
 
+        // v4 照檔案載入（`null` 一律尊重）；沒有 `phases` 的 v1～v3 依站名一次性補預設對應
+        // （openspec-stage-sync task 4.1，design D4）。`check_version_shape` 已保證 v4 有 `phases`、v3 沒有。
+        let phases = match entry.phases {
+            Some(phases) => {
+                if !repo_project_phases_valid(&stages, &phases) {
+                    return Err(corrupt(format!(
+                        "repo_projects.{id} 的 phases 不合法（長度須等於 stages，且非 null 的值不可重複）"
+                    )));
+                }
+                phases
+            }
+            None => default_phases(&stages),
+        };
+
         let project_id = ProjectId::new(id.clone());
         let mut tasks = HashMap::with_capacity(entry.tasks.len());
+        let mut task_sync = HashMap::new();
         for (task_id, state_task) in entry.tasks {
             let runtime_known = split_pane_item_id(&task_id)
                 .is_some_and(|(runtime, _)| known_runtime_ids.contains(runtime.as_str()));
@@ -301,9 +430,8 @@ fn resolve_repo_projects(
                 );
                 continue;
             }
-            let stage = if stages.contains(&state_task.stage) {
-                state_task.stage
-            } else {
+            let stage_reset = !stages.contains(&state_task.stage);
+            let stage = if stage_reset {
                 resolved
                     .warnings
                     .entry(project_id.clone())
@@ -317,9 +445,23 @@ fn resolve_repo_projects(
                         .text(),
                     );
                 stages[0].clone()
+            } else {
+                state_task.stage
             };
+            let task_id = TaskId::new(task_id);
+            if let Some(sync) = state_task.sync {
+                let mut sync = TaskSync::from(sync);
+                // 載入時 stage 已不存在而退回第一站：auto 的 `applied` 是「上次套用到哪一站」的紀錄，已經與卡片實際所在
+                // 的站對不起來；留著的話偵測結果不變時（`applied` 與偵測結果相等）不再套用，卡片永久停在第一站。
+                // 清成 `None` 讓下一輪偵測重新套用。manual 保留不動（手動優先，design D4／D10-3；
+                // openspec-stage-sync task 7.2）。
+                if stage_reset && sync.mode == SyncMode::Auto {
+                    sync.applied = None;
+                }
+                task_sync.insert(task_id.clone(), sync);
+            }
             tasks.insert(
-                TaskId::new(task_id),
+                task_id,
                 TaskProgress {
                     stage,
                     mark: state_task.mark,
@@ -329,19 +471,47 @@ fn resolve_repo_projects(
         if !tasks.is_empty() {
             resolved.progress.insert(project_id.clone(), tasks);
         }
+        if !task_sync.is_empty() {
+            resolved.sync.insert(project_id.clone(), task_sync);
+        }
         resolved.defs.push(RepoProjectDef {
             id: project_id,
             name,
             repo: RepoKey::new(entry.repo),
+            phases,
             stages,
         });
     }
     Ok(resolved)
 }
 
-/// 依 `version` 檢查 `active` 與 `repo_projects` 欄位有無：v1 不得有 `active`（含 `null`）、v2／v3 每個
-/// project 都必須有非 `null` 的 `active`；v1／v2 不得有 `repo_projects`（含 `null`）、v3 必須有非 `null` 的
-/// `repo_projects`（design D5）。其他版本不支援。
+/// 讀 v1～v3 檔時依站名補預設階段對應（openspec-stage-sync task 4.1，design D4）：站名完全等於 規劃／Plan → plan、
+/// 實作／Implement → implement、審查／Review → review、完成／Complete → complete，其餘 `None`；同一個階段被多個
+/// stage 取得時只保留 stage 順序中最先出現的一個，後出現的改為 `None`。
+fn default_phases(stages: &[String]) -> Vec<Option<OpenSpecPhase>> {
+    let mut taken: HashSet<OpenSpecPhase> = HashSet::new();
+    stages
+        .iter()
+        .map(|stage| {
+            let phase = match stage.as_str() {
+                "規劃" | "Plan" => OpenSpecPhase::Plan,
+                "實作" | "Implement" => OpenSpecPhase::Implement,
+                "審查" | "Review" => OpenSpecPhase::Review,
+                "完成" | "Complete" => OpenSpecPhase::Complete,
+                _ => return None,
+            };
+            taken.insert(phase).then_some(phase)
+        })
+        .collect()
+}
+
+/// 依 `version` 檢查各版形狀（design D5、D10-3）。其他版本不支援。
+///
+/// - `active`：v1 不得有（含 `null`）；v2～v4 每個 project 都必須有非 `null` 的 `active`。
+/// - `repo_projects`：v1、v2 不得有（含 `null`）；v3、v4 必須有非 `null` 的 `repo_projects`。
+/// - `phases`（Repo Project）：v3 以前不得有；v4 每個 Repo Project 都必須有。
+/// - `sync`（Repo Project 的 task）：v4 才可有；v3 以前出現即損毀。手寫 `projects` 底下的 task 帶 `sync` 由
+///   [`StateTask`] 的 `deny_unknown_fields` 擋下（任何版本）。
 fn check_version_shape(path: &Path, state_file: &StateFile) -> Result<(), ProgressError> {
     let parse_error = |message: String| ProgressError::Parse {
         path: path.to_path_buf(),
@@ -356,7 +526,7 @@ fn check_version_shape(path: &Path, state_file: &StateFile) -> Result<(), Progre
                 )));
             }
         }
-        V2_STATE_FILE_VERSION | STATE_FILE_VERSION => {
+        V2_STATE_FILE_VERSION | V3_STATE_FILE_VERSION | STATE_FILE_VERSION => {
             if let Some((id, _)) = state_file
                 .projects
                 .iter()
@@ -374,15 +544,46 @@ fn check_version_shape(path: &Path, state_file: &StateFile) -> Result<(), Progre
             });
         }
     }
-    match (&state_file.repo_projects, version == STATE_FILE_VERSION) {
-        (Some(Some(_)), true) | (None, false) => Ok(()),
-        (_, true) => Err(parse_error(format!(
-            "version {version} 的狀態檔必須有 repo_projects 物件（缺少該欄位或為 null）"
-        ))),
-        (Some(_), false) => Err(parse_error(format!(
-            "version {version} 的狀態檔不應有 repo_projects 欄位"
-        ))),
+
+    let repo_projects = match (&state_file.repo_projects, version >= V3_STATE_FILE_VERSION) {
+        (Some(Some(repo_projects)), true) => Some(repo_projects),
+        (None, false) => None,
+        (_, true) => {
+            return Err(parse_error(format!(
+                "version {version} 的狀態檔必須有 repo_projects 物件（缺少該欄位或為 null）"
+            )));
+        }
+        (Some(_), false) => {
+            return Err(parse_error(format!(
+                "version {version} 的狀態檔不應有 repo_projects 欄位"
+            )));
+        }
+    };
+
+    let is_v4 = version >= STATE_FILE_VERSION;
+    for (id, repo_project) in repo_projects.into_iter().flatten() {
+        match (&repo_project.phases, is_v4) {
+            (Some(_), true) | (None, false) => {}
+            (None, true) => {
+                return Err(parse_error(format!(
+                    "version {version} 的狀態檔每個 Repo Project 都必須有 phases（repo_projects.{id} 缺少該欄位）"
+                )));
+            }
+            (Some(_), false) => {
+                return Err(parse_error(format!(
+                    "version {version} 的狀態檔不應有 phases 欄位（repo_projects.{id}）"
+                )));
+            }
+        }
+        if !is_v4
+            && let Some((task_id, _)) = repo_project.tasks.iter().find(|(_, t)| t.sync.is_some())
+        {
+            return Err(parse_error(format!(
+                "version {version} 的狀態檔不應有 sync 欄位（repo_projects.{id} 的 task {task_id}）"
+            )));
+        }
     }
+    Ok(())
 }
 
 /// 把解析成功的狀態檔套到 `projects` 上；純函數（不再碰檔案系統），容錯規則見模組文件。

@@ -210,6 +210,11 @@ function waitForChildExit(child, timeoutMs) {
 }
 async function settleChild(child, port, label) {
   const exited = await waitForChildExit(child, 5000);
+  // 已觀察到這個 ChildProcess 的 exit 事件＝這個 PID 的行程確實結束了：自 OUR_PIDS 移除。收尾之後同一個 PID
+  // 若又出現，是 Windows 重用 PID 給別的程式（例：使用者的 msedge.exe 渲染行程），不是本腳本的殘留；不移除的話
+  // 收尾的 pidStillRunning 只看 PID 會誤報（openspec-stage-sync task 5.1；ledger「調查（Task 4.6 carry）」）。
+  // 沒觀察到 exit 的 PID 仍留在 OUR_PIDS，真殘留照樣抓得到。
+  if (exited && child.pid) OUR_PIDS.delete(child.pid);
   const portListening = isPortListening(port);
   if (exited && !portListening) {
     const i = SPAWNED.findIndex((e) => e.child === child);

@@ -15,14 +15,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cockpit::progress::{self};
 use cockpit::progress_service::{
-    BindingBasis, NewRepoProject, ProgressService, RepoProjectError, RepoProjectPatch, WriteError,
-    WriteHook, WriteStage,
+    BindingBasis, NewRepoProject, ProgressService, RepoProjectError, RepoProjectPatch,
+    StageEditInput, WriteError, WriteHook, WriteStage,
 };
 use cockpit_core::{
     AgentStatus, ConnectionState, DomainState, Focused, Mark, Message, Pane, PaneId, PaneRepo,
     PaneRepos, ProgressOp, ProjectDef, ProjectId, ProjectedState, Rejection, RepoKey,
-    RepoProjectDef, RuntimeId, RuntimeSnapshot, RuntimeStore, StageEdit, StoreHandle, TabId,
-    TaskDef, TaskId, TaskProgress, WorkspaceId, WorkstreamDef, WorkstreamId, project,
+    RepoProjectDef, RuntimeId, RuntimeSnapshot, RuntimeStore, StoreHandle, TabId, TaskDef, TaskId,
+    TaskProgress, WorkspaceId, WorkstreamDef, WorkstreamId, project,
 };
 use serde_json::{Value, json};
 
@@ -102,6 +102,7 @@ fn pane_repo(repo: &str, default_name: &str) -> PaneRepo {
         repo: RepoKey::new(repo),
         default_name: s(default_name),
         worktree: None,
+        root: None,
     }
 }
 
@@ -204,6 +205,7 @@ fn with_repo_project(
         name: s(id),
         repo: RepoKey::new(repo),
         stages: stages(project_stages),
+        phases: vec![None; project_stages.len()],
     });
     let table = domain.repo_progress.entry(pid(id)).or_default();
     for (task, stage, mark) in tasks {
@@ -258,6 +260,7 @@ fn new_project(repo: &str, project_stages: &[&str], name: Option<&str>) -> NewRe
         repo: RepoKey::new(repo),
         stages: stages(project_stages),
         name: name.map(s),
+        phases: None,
     }
 }
 
@@ -305,7 +308,7 @@ async fn add_creates_project_with_tasks_for_each_pane_and_persists() {
     );
     assert_eq!(
         read_json(&dir.state_path())["repo_projects"]["app"],
-        json!({"name": "app", "repo": APP_REPO, "stages": four_stages(), "tasks": {}})
+        json!({"name": "app", "repo": APP_REPO, "stages": four_stages(), "phases": [null, null, null, null], "tasks": {}})
     );
 }
 
@@ -435,6 +438,8 @@ async fn add_trims_stage_names() {
         domain_of(&handle).repo_projects[0].stages,
         stages(&["Plan", "Build"])
     );
+    // openspec-stage-sync task 3.1：加入時 phases 與 stages 對齊（本體尚不帶 phases，全為不對應）。
+    assert_eq!(domain_of(&handle).repo_projects[0].phases, vec![None, None]);
 }
 
 /// spec「加入時寫檔失敗」：回 persist_failed、記憶體不變（偵測區仍含該 repo）。
@@ -560,10 +565,11 @@ async fn add_rejects_alm_in_given_name_but_strips_from_default_name() {
 // 修改
 // ---------------------------------------------------------------------------
 
-fn edit(name: &str, from: Option<&str>) -> StageEdit {
-    StageEdit {
+fn edit(name: &str, from: Option<&str>) -> StageEditInput {
+    StageEditInput {
         name: s(name),
         from: from.map(s),
+        phase: None,
     }
 }
 
@@ -646,6 +652,11 @@ async fn edit_stages_remaps_tasks_and_keeps_marks() {
     let file = read_json(&dir.state_path());
     let app = &file["repo_projects"]["app"];
     assert_eq!(app["stages"], json!(["Plan", "Design", "Build", "Done"]));
+    // openspec-stage-sync task 3.1：stages 改過後 phases 長度仍與 stages 對齊。
+    assert_eq!(
+        domain_of(&handle).repo_projects[0].phases,
+        vec![None, None, None, None]
+    );
     assert_eq!(
         app["tasks"],
         json!({
@@ -1111,6 +1122,50 @@ async fn patch_checks_pid_before_name() {
     assert_eq!(error.code(), "not_repo_project", "{error:?}");
 }
 
+/// openspec-stage-sync task 4.5：階段字串在服務內依 pid → name → stages → phases 的順序判定。未知字串對不存在或
+/// 手寫的 pid 仍回 `unknown_project`／`not_repo_project`，名稱不合法時先回 `invalid_name`。
+#[tokio::test]
+async fn unknown_phase_string_is_checked_after_pid_and_name() {
+    let handle = StoreHandle::new_with_domain(
+        store_connecting(),
+        detected_domain(vec![config_project("hand")]),
+    );
+    let service = ProgressService::in_memory(handle.clone());
+    service
+        .add_repo_project(new_project(APP_REPO, &["A", "B"], None))
+        .await
+        .expect("加入 app");
+    let bad_phase = |name: Option<&str>| RepoProjectPatch {
+        name: name.map(s),
+        stages: Some(vec![StageEditInput {
+            name: s("A"),
+            from: Some(s("A")),
+            phase: Some(s("nope")),
+        }]),
+    };
+
+    let error = service
+        .update_repo_project(&pid("ghost"), bad_phase(None))
+        .await
+        .expect_err("不存在");
+    assert_eq!(error.code(), "unknown_project", "{error:?}");
+    let error = service
+        .update_repo_project(&pid("hand"), bad_phase(None))
+        .await
+        .expect_err("手寫");
+    assert_eq!(error.code(), "not_repo_project", "{error:?}");
+    let error = service
+        .update_repo_project(&pid("app"), bad_phase(Some("   ")))
+        .await
+        .expect_err("名稱不合法");
+    assert_eq!(error.code(), "invalid_name", "{error:?}");
+    let error = service
+        .update_repo_project(&pid("app"), bad_phase(None))
+        .await
+        .expect_err("未知階段");
+    assert_eq!(error.code(), "invalid_stages", "{error:?}");
+}
+
 // ---------------------------------------------------------------------------
 // stage 編輯對沒有進度紀錄的 task（fix round 1 Critical 1）：沒有紀錄的 task 在**舊**的第一個 stage，
 // 編輯後須依 `from` 對應，不得因新清單的第一個 stage 不同而靜默移動。
@@ -1322,9 +1377,11 @@ async fn progress_op_on_repo_task_is_visible_and_persisted() {
         .expect("投影中有該 task");
     assert_eq!(task.stage, "Build");
     assert!(!domain_of(&handle).progress.contains_key(&pid("app")));
+    // openspec-stage-sync task 4.3：spec「手動操作暫時優先」「沒有偵測結果時手動推進」改變了這裡——人工推進是手動入口，
+    // task 沒有同步狀態時建立 `{manual, applied: null}`。
     assert_eq!(
         read_json(&dir.state_path())["repo_projects"]["app"]["tasks"]["local~wJ:p1"],
-        json!({"stage": "Build", "mark": "none"})
+        json!({"stage": "Build", "mark": "none", "sync": {"mode": "manual", "applied": null}})
     );
 }
 

@@ -1,0 +1,150 @@
+# state-projection（delta）
+
+## MODIFIED Requirements
+
+### Requirement: Project 投影
+
+系統必須在 `projects` 中為每個 Project 輸出：`id`、`name`、`kind`（手寫於設定檔的為 `config`，畫面加入的 Repo Project 為
+`repo`）、`stages`（字串陣列，設定順序）、`stage_phases`（與 `stages` 逐項對齊的陣列，每項為 `plan`、`implement`、`review`、
+`complete` 之一或 `null`，意義見 `repo-projects`「Stage 對應 OpenSpec 階段」；手寫 project 沒有階段對應，為空陣列）、
+`warnings`（字串陣列，無則空）、`workstreams`、`tasks`；Repo Project 另帶 `repo`
+（repo key），手寫 project 沒有 `repo` 欄位。順序為：手寫 project 依設定檔順序，其後是 Repo Project 依名稱（不分大小寫）排序、同名再依 `id`。
+每筆 workstream 含 `id`、`name`、`binding`、`active_task`
+（目前 task 的 id，無則 `null`）、`activity_undeclared`（布林）；Repo Project 位於 linked worktree 的 pane 所產生的 workstream
+另帶 `worktree`（worktree 資料夾名稱），其餘 workstream 沒有 `worktree` 欄位。`binding.state` 為 `none`、`runtime_disconnected`、
+`bound`、`unbound`、`ambiguous` 之一——
+`unbound` 另帶 `runtime`（Repo Project 的 `unbound` 另帶 `source`，值為 `pane`）；`runtime_disconnected` 另帶 `runtime` 與 `source`（`auto`／`override`／`pane`，
+與 `bound` 的 `source` 同義：這個斷線的綁定來自自動解析、使用者覆蓋，或 Repo Project 的固定 pane）；`ambiguous` 另帶 `runtime` 與 `candidates`（pane id
+陣列）；`bound` 另帶 `runtime`、`pane_id`、`source`（`auto`／`override`／`pane`，`pane` 只出現在 Repo Project 的工作線）、`agent`（無則 `null`）、
+`agent_status`（小寫字串）。`activity_undeclared` 只在 `binding.state` 為 `bound`、`agent_status` 為 `working` 或
+`blocked`、且 `active_task` 為 `null` 時為 `true`，其餘為 `false`（Repo Project 的 task 標記為 `none` 時就是目前 task，見
+`repo-projects`）。每筆 task 含 `id`、`title`、`workstream`、`stage`
+（目前 Stage）、`mark`
+（`none`／`completed`／`failed`）、`status`（`pending`／`ready`／`running`／`blocked`／`failed`／
+`completed`）、`depends_on`（task id 陣列）、`sync`（OpenSpec 同步資訊，見下）。`sync` 為 `null` 或
+`{"change": "<change 名稱>", "phase": "plan|implement|review|complete", "checked": <整數>, "total": <整數>, "mode": "auto|manual"}`：
+`change`、`phase`、`checked`、`total` 取自該 task 的 pane 最近一輪的 OpenSpec 進度偵測結果（見 `openspec-stage-sync`），
+`mode` 取自該 task 保存的同步狀態；偵測結果目前對不上任何 change 時一律為 `null`，即使保存的同步狀態還留有舊的 change 也一樣
+（不顯示過時的 change）；有偵測結果但該 task 還沒有保存的同步狀態時（例如帶著 Completed／Failed 標記而從未套用過），`mode` 為
+`auto`；手寫 project 的 task 的 `sync` 一律為 `null`。偵測結果改變時，投影遵守「version 只在內容改變時遞增」而更新。
+Domain 狀態改變（進度操作、目前 task 改變、覆蓋設定或取消、覆蓋失效、
+Repo Project 的加入／修改／移除、pane 歸類結果改變）與
+Runtime 層改變一樣觸發投影，並遵守「version 只在內容改變時遞增」與「合併廣播」。
+
+#### Scenario: Scenario C 的 JSON 欄位
+
+- **GIVEN** task `A` 在 `Implement`、所屬 workstream `be` 解析為 `bound` 到 `win`／`wJ:p1`，`be` 的目前 task 為 `A`
+- **WHEN** `wJ:p1` 的 agent 狀態變為 `working` 後產生投影
+- **THEN** `projects[0].tasks` 中 `id` 為 `A` 的項目 `stage` 為 `Implement`、`status` 為 `running`；
+  `projects[0].workstreams` 中 `be` 的 `binding` 為 `{"state":"bound","runtime":"win","pane_id":"wJ:p1","source":"auto","agent":"claude","agent_status":"working"}`，
+  `active_task` 為 `"A"`、`activity_undeclared` 為 `false`
+
+#### Scenario: 工作中但未宣告
+
+- **GIVEN** `be` 解析為 `bound`、`agent_status` 為 `working`，`be` 沒有目前 task
+- **WHEN** 產生投影
+- **THEN** `be` 的 `active_task` 為 `null`、`activity_undeclared` 為 `true`
+
+#### Scenario: 進度操作遞增 version
+
+- **GIVEN** 投影 version 為 5，Runtime 層沒有變動
+- **WHEN** 一次進度操作被接受
+- **THEN** 觀察者收到 version 6，其中該 task 的進度已更新
+
+#### Scenario: 無效操作不遞增
+
+- **GIVEN** 投影 version 為 5
+- **WHEN** 一次進度操作被拒絕
+- **THEN** version 仍為 5，觀察者沒有收到新的一份
+
+#### Scenario: 覆蓋綁定的 runtime 斷線
+
+- **GIVEN** workstream `be` 的覆蓋指向 `wsl`／`w1:p1`，`wsl` 為 `disconnected`
+- **WHEN** 產生投影
+- **THEN** `be` 的 `binding` 為 `{"state":"runtime_disconnected","runtime":"wsl","source":"override"}`
+
+#### Scenario: 自動綁定的 runtime 斷線
+
+- **GIVEN** workstream `be` 沒有覆蓋、設定檔 binding 的 `runtime` 為 `wsl`，`wsl` 為 `disconnected`
+- **WHEN** 產生投影
+- **THEN** `be` 的 `binding` 為 `{"state":"runtime_disconnected","runtime":"wsl","source":"auto"}`
+
+#### Scenario: 手寫 project 與 Repo Project 的 kind
+
+- **GIVEN** 設定檔有手寫 project `h`；已加入 Repo Project `app`（repo key `d:\work\app\.git`）
+- **WHEN** 產生投影
+- **THEN** `projects` 依序為 `h` 與 `app`；`h` 的 `kind` 為 `config` 且沒有 `repo` 欄位；`app` 的 `kind` 為 `repo`、`repo` 為
+  `d:\work\app\.git`
+
+#### Scenario: Repo Project 的工作線與 task
+
+- **GIVEN** Repo Project `app` 的 stages 為 `["Plan","Build"]`；runtime `local` 的 pane `wJ:p1`（label `backend`，agent
+  `claude`，`working`）位於 linked worktree `app-wt`，task 在 `Plan`
+- **WHEN** 產生投影
+- **THEN** `app.workstreams[0]` 為 `id` `local~wJ:p1`、`name` `backend`、`worktree` `app-wt`、`binding` 為
+  `{"state":"bound","runtime":"local","pane_id":"wJ:p1","source":"pane","agent":"claude","agent_status":"working"}`、
+  `active_task` `local~wJ:p1`、`activity_undeclared` `false`；`app.tasks[0]` 為 `id` `local~wJ:p1`、`title` `backend`、
+  `workstream` `local~wJ:p1`、`stage` `Plan`、`mark` `none`、`status` `running`、`depends_on` `[]`
+
+#### Scenario: Project 與偵測到的 repo 的排序
+
+- **GIVEN** 設定檔有手寫 project `z`、`a`；Repo Project 名稱為 `beta`（id `beta`）、`Alpha`（id `alpha-1`）、`alpha`（id `alpha-2`）；
+  `detected_repos` 有兩個同名 `lib` 的 repo（repo key 不同）
+- **WHEN** 產生投影
+- **THEN** `projects` 依序為 `z`、`a`、`alpha-1`、`alpha-2`、`beta`（名稱不分大小寫排序、同名依 id）；兩個 `lib` 依 `repo` 排序；`detected_repos` 的名稱比較不分大小寫（`app` 在 `Lib` 之前）
+
+#### Scenario: 位於主 worktree 的 pane 沒有 worktree 欄位
+
+- **GIVEN** Repo Project 的某 pane 位於主 worktree
+- **WHEN** 產生投影
+- **THEN** 該 workstream 的 JSON 沒有 `worktree` 欄位
+
+#### Scenario: pane 歸類結果改變遞增 version
+
+- **GIVEN** 投影 version 為 5，Repo Project `app` 有一條 workstream
+- **WHEN** 在 `app` 內新開一個 pane 且歸類完成
+- **THEN** 觀察者收到 version 6，`app` 多一條 workstream 與一張 task
+
+#### Scenario: Repo Project 的階段對應
+
+- **GIVEN** Repo Project `app` 的 stages 為 `["規劃","實作","審查","完成"]`，對應依序為 `plan`、`implement`、`review`、`complete`；
+  手寫 project `h` 有兩個 stages
+- **WHEN** 產生投影
+- **THEN** `app.stage_phases` 為 `["plan","implement","review","complete"]`；`h.stage_phases` 為 `[]`
+
+#### Scenario: 部分 stage 沒有對應
+
+- **GIVEN** Repo Project 的 stages 為 `["Plan","Build","Done"]`，只有 `Plan` 對應 `plan`
+- **WHEN** 產生投影
+- **THEN** `stage_phases` 為 `["plan",null,null]`，長度與 `stages` 相同
+
+#### Scenario: task 的同步資訊
+
+- **GIVEN** Repo Project `app` 的 task `local~wJ:p1` 所在 pane 的最近偵測結果為 change `foo`、階段 `implement`、勾選 3 / 8，該 task
+  保存的同步狀態 `mode` 為 `manual`
+- **WHEN** 產生投影
+- **THEN** 該 task 的 `sync` 為 `{"change":"foo","phase":"implement","checked":3,"total":8,"mode":"manual"}`
+
+#### Scenario: 對不上 change 時 sync 為 null
+
+- **GIVEN** task 保存的同步狀態曾套用過 change `foo`，但最近一次偵測結果是對不上任何 change
+- **WHEN** 產生投影
+- **THEN** 該 task 的 `sync` 為 `null`
+
+#### Scenario: 有偵測結果但沒有保存的同步狀態
+
+- **GIVEN** task 標記為 `completed`，其 pane 的偵測結果為 change `foo`、階段 `review`、勾選 5 / 5，該 task 沒有保存的同步狀態
+- **WHEN** 產生投影
+- **THEN** 該 task 的 `sync` 為 `{"change":"foo","phase":"review","checked":5,"total":5,"mode":"auto"}`
+
+#### Scenario: 手寫 project 的 task 沒有同步資訊
+
+- **GIVEN** 手寫 project 的 task
+- **WHEN** 產生投影
+- **THEN** 該 task 的 `sync` 為 `null`
+
+#### Scenario: 偵測結果改變遞增 version
+
+- **GIVEN** 投影 version 為 5，某 task 的 `sync` 為 `null`
+- **WHEN** 其 pane 的偵測結果變成對上 change `foo`、階段 `plan`
+- **THEN** 觀察者收到 version 6，該 task 的 `sync` 不再是 `null`

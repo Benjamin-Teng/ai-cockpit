@@ -125,6 +125,10 @@ path = "cockpit.state.json"   # 選填；相對路徑相對於設定檔目錄解
   檔案 `version` 為 3。v1、v2 照常讀取，下次寫入內容有變時才升級成 v3。**降版限制**：v0.1.3 以前的版本讀到 v3
   狀態檔會因版本不支援而拒絕啟動；裝回舊版前要先刪除或改名 `cockpit.state.json`（會失去進度與已加入的 Repo
   Project）。
+- **狀態檔 v4（change `openspec-stage-sync`）**：Repo Project 多一個 `phases`（每站對應的 OpenSpec 階段），task 多一個選填的
+  `sync`（自動或手動，以及上次套用的偵測結果），檔案 `version` 為 4。v1 到 v3 照常讀取，下次寫入內容有變時才升級成 v4。
+  **降版限制**：v0.1.5 以前的版本讀到 v4 狀態檔會因版本不支援而拒絕啟動；裝回舊版前要先刪除或改名 `cockpit.state.json`
+  （會失去進度與已加入的 Repo Project）。見下方「依 OpenSpec 進度自動移動卡片」。
 - **回滾注意**：`[[project]]`／`[state]` 是 change 2 新增的區段，設定檔解析一律 `deny_unknown_fields`
   （未知欄位＝啟動失敗）。換回沒有這兩個功能的舊版 `cockpit.exe` 前，要先把 `cockpit.toml` 裡的
   `[[project]]` 與 `[state]` 區段整段移除，不然舊版會直接啟動失敗；狀態檔可以留著不動，舊版本來就
@@ -149,7 +153,7 @@ path = "cockpit.state.json"   # 選填；相對路徑相對於設定檔目錄解
 該 pane 的列。沒有任何已綁定的工作線時，原本選定的 pane 不變。頁面剛開啟時自動顯示的 Project、以及改綁模式中，不會自動選 pane。
 
 這些 workstream 的綁定固定是那個 pane，不接受畫面改綁（覆蓋端點對它們回 409 `not_overridable`，畫面也不顯示
-「改綁」鈕）。Repo Project 的定義與進度存在狀態檔（見上一節的 v3）。
+「改綁」鈕）。Repo Project 的定義與進度存在狀態檔（見上一節的 v3、v4）。
 
 **限制：**
 
@@ -215,6 +219,67 @@ curl.exe -i -X DELETE http://127.0.0.1:7770/api/repo-projects/app -H "Host: 127.
 格式字元。錯誤本體沿用 `{"error", "code", "params"}`，代碼見「後端訊息代碼」：`invalid_body`、`invalid_name`、
 `invalid_stages`（400）、`repo_not_detected`、`unknown_project`（404）、`repo_already_added`、`not_repo_project`
 （409，`pid` 是手寫 project）、`persist_failed`（500）。
+
+## 依 OpenSpec 進度自動移動卡片（change `openspec-stage-sync`）
+
+Repo Project 的卡片可以跟著 repo 裡的 OpenSpec 進度自動移動，不必每階段手動按「推進」。Cockpit 只讀 git 與 repo 內的檔案，
+不呼叫 `openspec` 指令、不解析 pane 輸出、不對 HERDR 或 AI 寫入任何東西。決策理由見 `docs/adr/0009-openspec-stage-sync.md`。
+
+**怎麼運作：**
+
+1. 約每 10 秒，Cockpit 對每個 Repo Project pane 所在的 worktree 讀目前分支與 `openspec/changes/`，找出該 pane 正在做的 change。
+2. 依 change 的 `tasks.md` 判定 OpenSpec 階段：
+   - 規劃：`tasks.md` 不存在或沒有勾選任何項目。
+   - 實作：部分勾選。
+   - 審查：全部勾選、尚未 archive。
+   - 完成：已移入 `openspec/changes/archive/<日期>-<名稱>`。
+3. 卡片移到「對應該階段」的 stage。每個 stage 可在 Project 的「⋯」選單 →「編輯 stage」對話框裡，用每列的下拉選單選擇對應的
+   OpenSpec 階段（規劃、實作、審查、完成，或「不對應」）；同一個階段最多對應一個 stage。新加入的 Repo Project 預設四站已帶好對應。
+   沒有任何 stage 對應某個階段時，卡片在該階段不移動。
+4. 對上 change 的卡片會顯示一行小標示：change 名稱、勾選數（例如 `3/8`），以及「自動」或「手動」。
+
+**分支名對上 change 最準：** 對應 change 的順序是：
+
+1. 分支名最後一段（最後一個 `/` 之後）等於某個進行中 change 的名稱，例如分支 `feat/foo` 對應 `openspec/changes/foo/`。
+2. 否則 `openspec/changes/archive/` 下有 `YYYY-MM-DD-<該段>`，對應該 change，階段為完成。
+3. 否則進行中的 change 恰好一個，就是它。主 worktree 停在 `main`、而那個 change 其實是別的 worktree 在做時，主 worktree 的 pane
+   會誤對上它；影響只是卡片位置與標示，可以手動覆蓋（見下）。
+4. 否則對不上，卡片沒有標示，維持手動。
+
+**「自動」與「手動」的意義：**
+
+- **自動**：卡片位置由 OpenSpec 進度決定。偵測結果（change、階段、勾選數任一項）與上次套用的不同時，卡片會移到對應的 stage。
+- **手動**：你按過「推進」「退回」，或 agent 呼叫了推進端點之後，卡片會停在你放的位置，標示變淡並寫「手動」。
+  OpenSpec 進度**下一次變化**（例如多勾一項）時，卡片才會回到對應的 stage 並轉回「自動」；進度沒變就不會被拉走。
+- 已經標 Completed 或 Failed 的卡片不會自動移動（archive 也不會幫你貼 Completed）；清除標記後，若進度與標記前套用的不同，就會依最新進度移動；相同則卡片不動。
+- 改 stage 對應時，自動卡片會依新對應重新套用；手動卡片不動。
+- Cockpit 不會因為這個功能啟動 WSL 發行版：發行版沒在執行、或 runtime 未連線的 worktree 不偵測，卡片與標示維持上一次的樣子，
+  發行版恢復後自動接續。
+
+**限制：**
+
+- **約 10 秒反映**：勾選 `tasks.md` 後，卡片與標示最多約 10 秒後才更新。
+- **偵測不到時不移動**：`tasks.md` 超過 1 MiB、不是 UTF-8、讀取出錯，或查不到目前分支時，該 worktree 本輪沒有結果，卡片不動、
+  也沒有標示。detached HEAD 只有在進行中的 change 恰好一個時才對得上。
+- **WSL 偵測有一個極小的時間窗**：發行版剛好在 Cockpit 確認它在執行之後、查詢之前被停止，這次查詢可能把它開機。
+- **降版限制（狀態檔 v4）**：這個功能把 `cockpit.state.json` 升為 `version: 4`（新增每站的階段對應與每張卡片的自動或手動狀態）。
+  v0.1.5 以前的版本讀到 v4 會因版本不支援而拒絕啟動；裝回舊版前要先刪除或改名 `cockpit.state.json`（會失去進度與已加入的
+  Repo Project）。升級方向不受影響，舊版狀態檔照常讀取：站名剛好是預設四站名（繁中或英文）的 Repo Project，第一次載入時會
+  自動補上對應，下次寫入內容有變時存成 v4。
+- 手寫 `[[project]]` 沒有 repo 與 worktree 的對應，不適用這個功能。
+- 還沒建立 change 的階段（例如 brainstorming）偵測不到，對不上 change 的卡片請照舊手動推進。
+
+管理端點的本體也跟著多了階段對應（畫面按鈕送的就是它們）：`POST /api/repo-projects` 可選填 `phases`，與 `stages` 逐項對齊，
+每項是 `plan`、`implement`、`review`、`complete` 之一或 `null`；省略（或整個 `phases` 為 `null`）等同全部 `null`。
+`PATCH /api/repo-projects/<pid>` 的每個 stage 可選填 `phase`；注意省略等同 `null`（不對應），不是沿用舊值，所以改 stage 時每列都要
+帶上想保留的 `phase`。長度不符、值不合法或重複回 400 `invalid_stages`，型別不對回 400 `invalid_body`。
+
+```bash
+# 加入時指定每站的對應（null 表示不對應）
+curl -i -X POST http://127.0.0.1:7770/api/repo-projects \
+  -H 'Host: 127.0.0.1:7770' -H 'Content-Type: application/json' \
+  -d '{"repo":"d:\\work\\app\\.git","stages":["Plan","Build","Ship"],"phases":["plan","implement",null]}'
+```
 
 ## 寫入 API（change 2 `pipeline-projection`）
 

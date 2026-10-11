@@ -653,8 +653,34 @@
     return actions;
   }
 
+  // 卡片的 OpenSpec 同步標示（spec cockpit-dashboard「卡片的 OpenSpec 同步標示」；design D9；
+  // openspec-stage-sync task 5.1）：task 的 sync 不是 null 才多一行「change 名稱 checked/total 自動／手動」，
+  // 位於「符號＋status」與按鈕之間；sync 為 null（或欄位缺漏）回傳 null、節點與沒有此功能時完全相同。
+  // change 名稱是使用者資料，一律 el() 的文字節點（textContent），不以 HTML 插入；整行是唯讀文字，沒有互動。
+  // 手動較淡由 style.css 的 [data-sync-mode="manual"] 決定，文字本身（自動／手動）才是主要區分。
+  function renderTaskSync(sync) {
+    if (!sync || typeof sync !== "object") return null;
+    var mode = sync.mode;
+    var modeText =
+      mode === "auto" ? t("render.task.syncAuto") : mode === "manual" ? t("render.task.syncManual") : String(mode);
+    var row = el("div", "task-sync");
+    // 未知 mode 不壞畫面：照原字串顯示，樣式落在預設（自動）那一套。
+    row.setAttribute("data-sync-mode", mode === "manual" ? "manual" : "auto");
+    row.title = t("render.task.syncTitle", {
+      change: sync.change,
+      checked: sync.checked,
+      total: sync.total,
+      mode: modeText,
+    });
+    row.appendChild(el("span", "task-sync-change", String(sync.change)));
+    row.appendChild(el("span", "task-sync-progress", String(sync.checked) + "/" + String(sync.total)));
+    row.appendChild(el("span", "task-sync-mode", modeText));
+    return row;
+  }
+
   // Task 節點（spec「Factory Floor」；design D4；direction-01-visual task 3.2）：由上往下固定
-  // 是「標題 → 符號＋status 文字 → 按鈕」三段。符號是 aria-hidden 的 span（design D4「符號
+  // 是「標題 → 符號＋status 文字 → 同步標示（task 有 sync 才有，renderTaskSync()）→ 按鈕」，沒有 sync 時是三段、有時是
+  // 四段（openspec-stage-sync task 5.1）。符號是 aria-hidden 的 span（design D4「符號
   // 放在 DOM 文字裡，不用 CSS content」），跟左欄計數 chip 共用 taskStatusSymbol()；status
   // 文字沿用投影的英文原字串（不翻成中文，http.rs 的禁字測試守著）。色條、外框、柔光全部由 style.css 依
   // .task-status-* 決定，這裡只負責結構。
@@ -674,6 +700,9 @@
     state.appendChild(symbol);
     state.appendChild(el("span", "task-status-label", task.status));
     node.appendChild(state);
+
+    var syncRow = renderTaskSync(task.sync);
+    if (syncRow) node.appendChild(syncRow);
 
     node.appendChild(renderTaskActions(project, task));
     return node;

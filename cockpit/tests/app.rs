@@ -512,6 +512,7 @@ fn components_with_slow_driver() -> (Components, StoreHandle, Arc<AtomicBool>) {
             progress_service: None,
             stale_remover: None,
             repo_resolver: None,
+            openspec_sync: None,
             port: Arc::new(AtomicU16::new(0)),
             runtimes: Arc::new(HashMap::new()),
             activity: cockpit::http::ClientActivity::new(),
@@ -848,6 +849,7 @@ fn pane_repos_for_app(panes: &[(&str, &str)]) -> PaneRepos {
                     repo: RepoKey::new(APP_REPO),
                     default_name: "app".to_string(),
                     worktree: None,
+                    root: None,
                 },
             )
         })
@@ -981,6 +983,7 @@ async fn zero_config_first_repo_project_creates_folder_and_state_file() {
             repo: RepoKey::new(APP_REPO),
             stages: vec!["Plan".to_string(), "Build".to_string()],
             name: None,
+            phases: None,
         })
         .await
         .expect("加入 Repo Project");
@@ -989,7 +992,7 @@ async fn zero_config_first_repo_project_creates_folder_and_state_file() {
     let written: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&state_path).expect("讀狀態檔"))
             .expect("狀態檔是 JSON");
-    assert_eq!(written["version"], 3);
+    assert_eq!(written["version"], 4);
     assert_eq!(written["repo_projects"][id.as_str()]["repo"], APP_REPO);
 }
 
@@ -1179,8 +1182,8 @@ async fn restart_keeps_progress_and_override() {
     let raw_state = fs::read_to_string(&state_path).expect("重啟後狀態檔應該存在");
     let state_json: serde_json::Value =
         serde_json::from_str(&raw_state).expect("狀態檔應該是合法 JSON");
-    // 狀態檔改為 v3（pipeline-progress「狀態檔格式與持久化」：系統寫出的狀態檔一律為 version 3；repo-projects task 4.1）。
-    assert_eq!(state_json["version"], 3);
+    // 狀態檔改為 v4（pipeline-progress「狀態檔格式與持久化」：系統寫出的狀態檔一律為 version 4；openspec-stage-sync task 4.1）。
+    assert_eq!(state_json["version"], 4);
     assert_eq!(state_json["projects"]["p"]["tasks"]["t1"]["stage"], "Build");
     assert_eq!(
         state_json["projects"]["p"]["tasks"]["t1"]["mark"],
@@ -1237,6 +1240,16 @@ async fn shutdown_all_finishes_projector_and_stale_remover() {
         .as_ref()
         .expect("應該有 repo resolver")
         .abort_handle();
+    // openspec-stage-sync task 4.4：OpenSpec 偵測工作一律建立，關機時同樣要真的結束。
+    let openspec_sync_handle = components
+        .openspec_sync
+        .as_ref()
+        .expect("應該有 OpenSpec 偵測工作")
+        .abort_handle();
+    assert!(
+        !openspec_sync_handle.is_finished(),
+        "剛組裝完，OpenSpec 偵測工作不該已經結束"
+    );
 
     assert!(
         !projector_handle.is_finished(),
@@ -1259,9 +1272,15 @@ async fn shutdown_all_finishes_projector_and_stale_remover() {
         components.projector,
         components.stale_remover,
         components.repo_resolver,
+        components.openspec_sync,
         Duration::from_secs(5),
     )
     .await;
+
+    assert!(
+        openspec_sync_handle.is_finished(),
+        "shutdown_all 回傳時 OpenSpec 偵測工作必須已經結束（不能變成孤兒 task）"
+    );
 
     assert!(
         repo_resolver_handle.is_finished(),
@@ -1447,4 +1466,38 @@ async fn run_with_shutdown_bail_branch() {
         finished.load(Ordering::SeqCst),
         "bail 分支也要等驅動器收乾淨再回傳"
     );
+}
+
+/// openspec-stage-sync task 4.7（Codex UNC 讀檔 finding）：`spawn_blocking` 卡住（例如讀 `\wsl.localhost` 卡在 9P）
+/// 時，`block_on_bounded` 仍在關閉期限內返回，回傳 future 的結果，不讓行程結束被拖住。
+#[test]
+fn block_on_bounded_returns_despite_stuck_blocking_task() {
+    let shutdown = Duration::from_millis(200);
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        let output = app::block_on_bounded(
+            async {
+                // 永遠收不到的頻道：blocking 執行緒一直卡著。等它真的開始跑才返回——還沒開始的 blocking 工作在
+                // runtime 關閉時會被直接取消，驗不到「卡住」。
+                let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+                drop(tokio::task::spawn_blocking(move || {
+                    let (_never_tx, never_rx) = std::sync::mpsc::channel::<()>();
+                    let _ = started_tx.send(());
+                    never_rx.recv()
+                }));
+                started_rx.await.expect("blocking 工作已開始");
+                42
+            },
+            shutdown,
+        )
+        .expect("建 runtime");
+        let _ = done_tx.send((output, started.elapsed()));
+    });
+
+    let (output, elapsed) = done_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("卡住的 blocking 工作不得拖住 runtime 關閉");
+    assert_eq!(output, 42);
+    assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
 }

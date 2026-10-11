@@ -213,7 +213,8 @@ fn scenario_c_binding_json_fields() {
             "stage": "Implement",
             "mark": "none",
             "status": "running",
-            "depends_on": []
+            "depends_on": [],
+            "sync": null
         })
     );
     assert_eq!(p["tasks"][1]["status"], json!("pending"));

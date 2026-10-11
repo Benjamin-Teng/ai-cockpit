@@ -4,6 +4,42 @@ All notable changes to AI Agent Cockpit are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Cards follow your OpenSpec progress.** For a repo you added as a project, Cockpit now reads
+  each pane's current git branch and the `openspec/changes/` folder of its worktree about every
+  10 seconds, and moves the card to the stage that matches the change's phase: planning (no task
+  ticked yet), implementing (some ticked), review (all ticked) or complete (archived). The change
+  is matched by the last part of the branch name (`feat/foo` matches `openspec/changes/foo`); if
+  that fails, an archived change with that name, or the only change in progress, is used. A card
+  that matches a change shows the change name, the ticked count (for example `3/8`) and whether it
+  is **Auto** or **Manual**.
+- **Pick the OpenSpec phase of each stage.** The stage editor (the **⋯** menu on a project) has a
+  dropdown on every row: Plan, Implement, Review, Complete or none. A phase can belong to one stage
+  only. New projects start with the four default stages already mapped, and in existing projects,
+  each stage named exactly like a default (English or Traditional Chinese) is mapped to its phase
+  the first time they are loaded (if a phase would repeat, only the first stage keeps it).
+- `POST /api/repo-projects` accepts an optional `phases` list and each stage in
+  `PATCH /api/repo-projects/<pid>` an optional `phase` (leaving it out means no phase).
+
+### Changed
+
+- **Your own moves win until the progress changes.** After you advance or step back a card (or an
+  agent advances it), the card stays where you put it and is marked **Manual**. The next time the
+  OpenSpec progress changes (for example another task is ticked), it moves back to the matching
+  stage and returns to **Auto**. Cards marked Completed or Failed never move by themselves, and
+  Cockpit never sets those marks for you, not even when a change is archived.
+- **State file version 4.** `cockpit.state.json` now records the phase of each stage and, for each
+  card, whether it is Auto or Manual. Older state files are read as before and upgraded the next
+  time something changes. **Going back is not possible without a reset:** Cockpit 0.1.5 and earlier
+  refuse to start when they find a version 4 state file. Before installing an older version, delete
+  or rename `cockpit.state.json`; you lose your progress and the repos you added.
+- The detection is read-only: it only reads git and files inside the repo, never calls the
+  `openspec` command and never sends anything to HERDR. It does not start a stopped WSL
+  distribution, and a worktree whose runtime is disconnected keeps its last known state.
+
 ## [0.1.5] - 2026-10-08
 
 ### Changed

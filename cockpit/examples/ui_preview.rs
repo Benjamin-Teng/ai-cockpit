@@ -126,13 +126,14 @@ use axum::http::{Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{patch, post, put};
 use cockpit::http::{AppState, parse_add_repo_project_body, router};
-use cockpit::progress_service::RepoProjectError;
+use cockpit::progress_service::{RepoProjectError, parse_phases};
 use cockpit_core::{
-    AgentRuntime, AgentStatus, BindingSource, DetectedRepo, Mark, PaneId, PaneOutput, ProjectId,
-    ProjectKind, ProjectedBinding, ProjectedPane, ProjectedProject, ProjectedState, ProjectedTab,
-    ProjectedTask, ProjectedWorkstream, RepoKey, RuntimeError, RuntimeEvents, RuntimeId,
-    RuntimeSnapshot, StageStatus, TabId, TaskId, WorkstreamId, derive_repo_project_id,
-    normalize_repo_project_name, normalize_repo_project_stages,
+    AgentRuntime, AgentStatus, BindingSource, DetectedRepo, Mark, OpenSpecPhase, PaneId,
+    PaneOutput, ProjectId, ProjectKind, ProjectedBinding, ProjectedPane, ProjectedProject,
+    ProjectedState, ProjectedTab, ProjectedTask, ProjectedTaskSync, ProjectedWorkstream, RepoKey,
+    RuntimeError, RuntimeEvents, RuntimeId, RuntimeSnapshot, StageStatus, SyncMode, TabId, TaskId,
+    WorkstreamId, derive_repo_project_id, normalize_repo_project_name,
+    normalize_repo_project_stages, repo_project_phases_valid,
 };
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -1302,6 +1303,7 @@ fn apply_progress_scenarios(state: &mut ProjectedState) {
         mark: Mark::None,
         status: StageStatus::Ready,
         depends_on: Vec::new(),
+        sync: None,
     });
 }
 
@@ -1355,6 +1357,9 @@ const PREVIEW_DETECTED_REPOS: [(&str, &str, usize); 2] = [
 ///    取 pane 的 label，空的話 agent 名稱，再空用 pane id；id 為 `<runtime>~<pane>`；目前 task 是
 ///    `mark: none` 的那張）。
 /// 3. `detected_repos` 放兩個尚未加入的 repo（[`PREVIEW_DETECTED_REPOS`]）。
+/// 4. OpenSpec 階段同步（openspec-stage-sync task 4.6）：`stage_phases` 為 Plan→plan、Build→implement；
+///    兩張 task 各帶一種 `sync`——`add-login`（自動、implement、3/8，在 Build）與 `fix-cache`（手動、review、
+///    5/5，在 Plan）。change 名稱是虛構字串。
 ///
 /// 這份 fixture 不放真的 git repo；投影是手工組的，寫入端點只記錄請求（[`write_routes`]），加入／
 /// 修改／移除 project 都不會改變之後推送的投影。
@@ -1419,7 +1424,17 @@ fn apply_repo_project_scenario(state: &mut ProjectedState) -> anyhow::Result<()>
             active_task: Some(TaskId::new(item_id(pane))),
             activity_undeclared: false,
         };
-    let task = |pane: &PaneId, title: &str, stage: &str, status| ProjectedTask {
+    // 同步狀態（openspec-stage-sync task 4.6）：change 名稱是虛構字串，不含使用者名稱或真實路徑。
+    let sync = |change: &str, phase, checked, total, mode| {
+        Some(ProjectedTaskSync {
+            change: change.to_string(),
+            phase,
+            checked,
+            total,
+            mode,
+        })
+    };
+    let task = |pane: &PaneId, title: &str, stage: &str, status, sync| ProjectedTask {
         id: TaskId::new(item_id(pane)),
         title: title.to_string(),
         workstream: WorkstreamId::new(item_id(pane)),
@@ -1427,6 +1442,7 @@ fn apply_repo_project_scenario(state: &mut ProjectedState) -> anyhow::Result<()>
         mark: Mark::None,
         status,
         depends_on: Vec::new(),
+        sync,
     };
 
     state.projects.push(ProjectedProject {
@@ -1435,6 +1451,8 @@ fn apply_repo_project_scenario(state: &mut ProjectedState) -> anyhow::Result<()>
         kind: ProjectKind::Repo,
         repo: Some(RepoKey::new(PREVIEW_REPO_KEY)),
         stages: vec!["Plan".to_string(), "Build".to_string()],
+        // Plan → plan、Build → implement（openspec-stage-sync task 4.6），「編輯 stage」對話框有預設值可顯示。
+        stage_phases: vec![Some(OpenSpecPhase::Plan), Some(OpenSpecPhase::Implement)],
         warnings: Vec::new(),
         warning_msgs: Vec::new(),
         workstreams: vec![
@@ -1452,8 +1470,22 @@ fn apply_repo_project_scenario(state: &mut ProjectedState) -> anyhow::Result<()>
             ),
         ],
         tasks: vec![
-            task(&main_pane, "api-worker", "Build", StageStatus::Running),
-            task(&linked_pane, "codex", "Plan", StageStatus::Ready),
+            // 自動、實作中 3/8：偵測階段 implement 對應 Build，卡片就在 Build。
+            task(
+                &main_pane,
+                "api-worker",
+                "Build",
+                StageStatus::Running,
+                sync("add-login", OpenSpecPhase::Implement, 3, 8, SyncMode::Auto),
+            ),
+            // 手動、審查 5/5：Build 沒有對應 review，使用者手動把卡片放在 Plan，偵測結果不再把它拉走。
+            task(
+                &linked_pane,
+                "codex",
+                "Plan",
+                StageStatus::Ready,
+                sync("fix-cache", OpenSpecPhase::Review, 5, 5, SyncMode::Manual),
+            ),
         ],
     });
 
@@ -1589,7 +1621,19 @@ fn fake_created_repo_project(body: &[u8]) -> Result<String, FakeAddRejection> {
                 .ok_or(FakeAddRejection::Rule(RepoProjectError::InvalidName))
         })
         .transpose()?;
-    if normalize_repo_project_stages(&request.stages).is_none() {
+    let Some(stages) = normalize_repo_project_stages(&request.stages) else {
+        return Err(FakeAddRejection::Rule(RepoProjectError::InvalidStages));
+    };
+    // 階段對應與正式端點同規則（openspec-stage-sync task 4.5）：未知字串、長度不符、非 null 重複都是 `invalid_stages`。
+    // 順序同服務（名稱 → stages → phases），字串解析用同一個 `parse_phases`。
+    if let Some(phases) = request
+        .phases
+        .as_deref()
+        .map(parse_phases)
+        .transpose()
+        .map_err(FakeAddRejection::Rule)?
+        && !repo_project_phases_valid(&stages, &phases)
+    {
         return Err(FakeAddRejection::Rule(RepoProjectError::InvalidStages));
     }
     let name = name
@@ -1619,6 +1663,15 @@ fn fake_add_rejection_response(rejection: FakeAddRejection) -> Response {
     }
 }
 
+/// 記錄行 `write-request <METHOD> <PATH> <BODY>`：本體逐字輸出（`POST` 的 `phases`、`PATCH` 每列的 `phase`
+/// 都在本體裡，openspec-stage-sync task 4.6），前端驗收腳本從 stdout 解析它來斷言送出的請求。
+fn write_request_log_line(method: &Method, path: &str, body: &[u8]) -> String {
+    format!(
+        "write-request {method} {path} {}",
+        String::from_utf8_lossy(body)
+    )
+}
+
 /// 寫入端點的替身：記錄請求（stdout 一行 `write-request <METHOD> <PATH> <BODY>`），不改投影
 /// ——畫面收到的新投影仍只來自推送迴圈（task 5.3）。預設立即回 204（`POST /api/repo-projects` 回
 /// 201 加 `{"id": ...}`，本體不合法時回正式端點同樣的 400，見 [`fake_created_repo_project`]）；路徑符合
@@ -1629,11 +1682,7 @@ async fn record_write_request(
     uri: Uri,
     body: Bytes,
 ) -> Response {
-    println!(
-        "write-request {method} {} {}",
-        uri.path(),
-        String::from_utf8_lossy(&body)
-    );
+    println!("{}", write_request_log_line(&method, uri.path(), &body));
     // `Some(..)`：成功時帶的 JSON 本體；`None`：成功無本體。本體不合法直接回正式端點同樣的錯誤。
     let created = if method == Method::POST && uri.path() == "/api/repo-projects" {
         match fake_created_repo_project(&body) {
@@ -3918,6 +3967,111 @@ mod tests {
         }
     }
 
+    /// openspec-stage-sync task 4.6（spec state-projection「投影含階段對應」）：`demo-app` 的每一站帶對應，
+    /// 與 `stages` 等長，供「編輯 stage」對話框顯示預設值。
+    #[test]
+    fn repo_project_scenario_stages_carry_phases_aligned_with_stages() {
+        let state = state_with_repo_project();
+        let project = state.projects.last().unwrap();
+
+        assert_eq!(project.stages, ["Plan", "Build"]);
+        assert_eq!(
+            project.stage_phases,
+            [Some(OpenSpecPhase::Plan), Some(OpenSpecPhase::Implement)]
+        );
+        let json = serde_json::to_value(project).unwrap();
+        assert_eq!(
+            json["stage_phases"],
+            serde_json::json!(["plan", "implement"])
+        );
+    }
+
+    /// openspec-stage-sync task 4.6（spec state-projection「投影含同步狀態」）：兩張 task 各帶一種 `sync`——
+    /// 自動、實作中 3/8；手動、審查 5/5。
+    #[test]
+    fn repo_project_scenario_tasks_carry_one_auto_and_one_manual_sync() {
+        let state = state_with_repo_project();
+        let project = state.projects.last().unwrap();
+        let sync_of = |task: &str| {
+            project
+                .tasks
+                .iter()
+                .find(|t| t.id.as_str() == task)
+                .unwrap_or_else(|| panic!("fixture 缺少 task {task}"))
+                .sync
+                .clone()
+        };
+
+        assert_eq!(
+            sync_of("win~wJ:p6"),
+            Some(ProjectedTaskSync {
+                change: "add-login".to_string(),
+                phase: OpenSpecPhase::Implement,
+                checked: 3,
+                total: 8,
+                mode: SyncMode::Auto,
+            })
+        );
+        assert_eq!(
+            sync_of("win~wJ:p7"),
+            Some(ProjectedTaskSync {
+                change: "fix-cache".to_string(),
+                phase: OpenSpecPhase::Review,
+                checked: 5,
+                total: 5,
+                mode: SyncMode::Manual,
+            })
+        );
+        // 自動那張的所在站與偵測階段一致（Implement → Build），前端不會看到「對應站」與卡片所在站矛盾。
+        let auto_task = project
+            .tasks
+            .iter()
+            .find(|t| t.id.as_str() == "win~wJ:p6")
+            .unwrap();
+        assert_eq!(auto_task.stage, "Build");
+    }
+
+    /// openspec-stage-sync task 4.6：新增的 fixture 字串（change 名稱）同樣不得含使用者名稱或真實路徑。
+    #[test]
+    fn repo_project_scenario_sync_strings_are_neutral() {
+        let state = state_with_repo_project();
+        let text = serde_json::to_string(state.projects.last().unwrap()).unwrap();
+        assert!(text.contains("add-login") && text.contains("fix-cache"));
+    }
+
+    /// openspec-stage-sync task 4.6：假寫入路由記錄的請求行逐字保留本體，前端腳本才能斷言 `phases`／`phase`。
+    #[test]
+    fn write_request_log_line_keeps_phases_and_phase_in_the_body() {
+        let post = serde_json::json!({
+            "repo": PREVIEW_DETECTED_REPOS[0].0,
+            "stages": ["Plan", "Build"],
+            "phases": ["plan", null],
+        })
+        .to_string();
+        let line = write_request_log_line(&Method::POST, "/api/repo-projects", post.as_bytes());
+        assert_eq!(
+            line,
+            format!("write-request POST /api/repo-projects {post}")
+        );
+
+        let patch = serde_json::json!({
+            "stages": [
+                { "name": "Plan", "from": "Plan", "phase": "plan" },
+                { "name": "Build", "from": "Build", "phase": null },
+            ],
+        })
+        .to_string();
+        let line = write_request_log_line(
+            &Method::PATCH,
+            "/api/repo-projects/demo-app",
+            patch.as_bytes(),
+        );
+        assert_eq!(
+            line,
+            format!("write-request PATCH /api/repo-projects/demo-app {patch}")
+        );
+    }
+
     #[test]
     fn repo_project_scenario_errs_when_review_tab_is_missing() {
         let mut state: ProjectedState = serde_json::from_str(FIXTURE).unwrap();
@@ -4050,6 +4204,44 @@ mod tests {
                 )),
             ),
             (
+                r#"{"repo":"d:\\work\\billing-api\\.git","stages":["A"],"name":"   ","phases":["done"]}"#,
+                StatusCode::BAD_REQUEST,
+                Some(real(
+                    cockpit::progress_service::RepoProjectError::InvalidName,
+                )),
+            ),
+            (
+                r#"{"repo":"d:\\work\\billing-api\\.git","stages":["A"],"phases":"plan"}"#,
+                StatusCode::BAD_REQUEST,
+                None,
+            ),
+            (
+                r#"{"repo":"d:\\work\\billing-api\\.git","stages":["A"],"phases":[1]}"#,
+                StatusCode::BAD_REQUEST,
+                None,
+            ),
+            (
+                r#"{"repo":"d:\\work\\billing-api\\.git","stages":["A"],"phases":["done"]}"#,
+                StatusCode::BAD_REQUEST,
+                Some(real(
+                    cockpit::progress_service::RepoProjectError::InvalidStages,
+                )),
+            ),
+            (
+                r#"{"repo":"d:\\work\\billing-api\\.git","stages":["A","B"],"phases":["plan"]}"#,
+                StatusCode::BAD_REQUEST,
+                Some(real(
+                    cockpit::progress_service::RepoProjectError::InvalidStages,
+                )),
+            ),
+            (
+                r#"{"repo":"d:\\work\\billing-api\\.git","stages":["A","B"],"phases":["plan","plan"]}"#,
+                StatusCode::BAD_REQUEST,
+                Some(real(
+                    cockpit::progress_service::RepoProjectError::InvalidStages,
+                )),
+            ),
+            (
                 r#"{"repo":"d:\\work\\billing-api\\.git","stages":["A"],"name":"   "}"#,
                 StatusCode::BAD_REQUEST,
                 Some(real(
@@ -4067,6 +4259,15 @@ mod tests {
                 None => assert_eq!(json["code"], "invalid_body", "{body}"),
             }
         }
+    }
+
+    /// openspec-stage-sync task 4.5：`"phases": null` 與省略相同，假端點回 201（與正式端點一致）。
+    #[tokio::test]
+    async fn post_repo_projects_accepts_null_phases() {
+        let app = preview_write_app(Vec::new());
+        let body = r#"{"repo":"d:\\work\\billing-api\\.git","stages":["A"],"phases":null}"#;
+        let (status, _) = call(app, "POST", "/api/repo-projects", body).await;
+        assert_eq!(status, StatusCode::CREATED);
     }
 
     /// 同上：`invalid_body` 的本體與正式端點逐字相同（不是 preview 自己的另一句話）。

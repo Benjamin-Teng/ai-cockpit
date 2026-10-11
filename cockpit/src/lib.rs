@@ -7,6 +7,8 @@ pub mod files;
 pub mod git;
 pub mod http;
 pub mod launch;
+pub mod openspec_sync;
+pub mod openspec_sync_job;
 pub mod progress;
 pub mod progress_service;
 pub mod repo_resolver;

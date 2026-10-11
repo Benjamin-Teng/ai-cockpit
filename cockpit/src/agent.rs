@@ -407,6 +407,7 @@ mod tests {
                 kind: ProjectKind::Config,
                 repo: None,
                 stages: vec!["Plan".to_string()],
+                stage_phases: Vec::new(),
                 warnings: Vec::new(),
                 warning_msgs: Vec::new(),
                 workstreams,

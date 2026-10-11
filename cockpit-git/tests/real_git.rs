@@ -28,9 +28,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cockpit_git::{
-    Blob, BlobHead, BlobId, BlobSize, ChangedFiles, CommitInfo, DiffRow, FileDiff, GitParseError,
-    GitRunner, GitTarget, GraphCommit, Log, MergeBase, Oid, RefKind, Refs, RepoIdentity, RepoPath,
-    RunnerError, Side, Status, StatusGroup, VerifyCommit, layout,
+    Blob, BlobHead, BlobId, BlobSize, ChangedFiles, CommitInfo, CurrentBranch, DiffRow, FileDiff,
+    GitParseError, GitRunner, GitTarget, GraphCommit, Log, MergeBase, Oid, RefKind, Refs,
+    RepoIdentity, RepoPath, RunnerError, Side, Status, StatusGroup, VerifyCommit, layout,
 };
 
 // ---------------------------------------------------------------------------
@@ -1437,6 +1437,136 @@ async fn blob_head_returns_full_content_untruncated_for_a_smaller_file() {
 }
 
 // ---------------------------------------------------------------------------
+// CurrentBranch（openspec-stage-sync task 2.1；design D7、spec「git 讀取的安全邊界」）
+// ---------------------------------------------------------------------------
+
+/// 對 `target` 執行 `CurrentBranch` 並解析（runner 層錯誤直接 panic，解析層結果原樣回傳）。
+async fn current_branch_at(
+    target: &GitTarget,
+) -> (
+    Result<Option<String>, GitParseError>,
+    Vec<Result<cockpit_git::CallOutcome, RunnerError>>,
+) {
+    let run_output = GitRunner::new()
+        .run(&CurrentBranch, target)
+        .await
+        .expect("CurrentBranch 不應有 runner 層錯誤");
+    (CurrentBranch::parse(&run_output.calls), run_output.calls)
+}
+
+fn repo_with_commit(label: &str) -> TempRepo {
+    let repo = TempRepo::new(label);
+    init_with_commit(&repo);
+    repo
+}
+
+/// spec「目前分支查詢回傳分支名稱」：一般分支。
+#[tokio::test]
+async fn current_branch_reports_plain_branch_name() {
+    let repo = repo_with_commit("cur-branch-plain");
+    let (parsed, _) = current_branch_at(&repo.native_target()).await;
+    assert_eq!(parsed, Ok(Some("main".to_string())));
+}
+
+/// spec「目前分支查詢回傳分支名稱」：含 `/` 的完整名稱。
+#[tokio::test]
+async fn current_branch_keeps_slashes_in_branch_name() {
+    let repo = repo_with_commit("cur-branch-slash");
+    repo.git_ok(&["checkout", "-q", "-b", "feat/x"]);
+    let (parsed, _) = current_branch_at(&repo.native_target()).await;
+    assert_eq!(parsed, Ok(Some("feat/x".to_string())));
+}
+
+/// 還沒有任何 commit（unborn branch）時 HEAD 仍是符號參照，分支名稱照常回傳。
+#[tokio::test]
+async fn current_branch_on_repo_without_commits_reports_unborn_branch() {
+    let repo = TempRepo::new("cur-branch-unborn");
+    repo.init();
+    assert_toplevel_is_self(repo.path());
+    let (parsed, _) = current_branch_at(&repo.native_target()).await;
+    assert_eq!(parsed, Ok(Some("main".to_string())));
+}
+
+/// spec「與 tag 同名的分支」：結果是 `feat/foo`，不是 `heads/feat/foo`。同時用 `--short` 當對照組，
+/// 證明這個 fixture 真的能讓縮寫形式出現歧義（否則本測試擋不住「改用 --short」的回歸）。
+#[tokio::test]
+async fn current_branch_ignores_same_named_tag() {
+    let repo = repo_with_commit("cur-branch-tag");
+    repo.git_ok(&["checkout", "-q", "-b", "feat/foo"]);
+    repo.git_ok(&["tag", "feat/foo"]);
+
+    let short = repo.git_ok(&["symbolic-ref", "--short", "HEAD"]);
+    assert_eq!(
+        String::from_utf8_lossy(&short.stdout).trim(),
+        "heads/feat/foo",
+        "對照組前提：有同名 tag 時 --short 會縮成帶歧義的 heads/feat/foo"
+    );
+
+    let (parsed, _) = current_branch_at(&repo.native_target()).await;
+    assert_eq!(parsed, Ok(Some("feat/foo".to_string())));
+}
+
+/// spec「detached HEAD 沒有分支但不是錯誤」：`-q` 下 exit 1、無任何輸出，解析為 `None`。
+#[tokio::test]
+async fn current_branch_on_detached_head_is_none_not_an_error() {
+    let repo = repo_with_commit("cur-branch-detached");
+    let c1 = repo.head_oid();
+    repo.git_ok(&["checkout", "-q", c1.as_str()]);
+
+    let (parsed, calls) = current_branch_at(&repo.native_target()).await;
+    match &calls[0] {
+        Err(RunnerError::Failed {
+            exit_code: Some(1),
+            stderr_tail,
+        }) => assert!(
+            stderr_tail.is_empty(),
+            "-q 下 detached 應安靜結束，stderr：{}",
+            String::from_utf8_lossy(stderr_tail)
+        ),
+        other => panic!("應為 Failed(exit 1)，實際：{other:?}"),
+    }
+    assert_eq!(parsed, Ok(None));
+}
+
+/// spec「HEAD 指向非 refs/heads 的 ref」：成功但不是分支 → `None`。
+#[tokio::test]
+async fn current_branch_with_head_pointing_outside_refs_heads_is_none() {
+    let repo = repo_with_commit("cur-branch-remote");
+    repo.git_ok(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    repo.git_ok(&["symbolic-ref", "HEAD", "refs/remotes/origin/main"]);
+
+    let (parsed, calls) = current_branch_at(&repo.native_target()).await;
+    assert!(calls[0].is_ok(), "前提：symbolic-ref 本身成功");
+    assert_eq!(parsed, Ok(None));
+}
+
+/// spec「目前分支查詢失敗為錯誤」：不是 repo（exit 128）→ 解析層回錯誤，不是 `None`。先用 plain
+/// git 確認暫存目錄真的不在任何 repo 內。
+#[tokio::test]
+async fn current_branch_outside_a_repo_is_an_error() {
+    let dir = TempRepo::new("cur-branch-plain-dir");
+    let probe = run_git(dir.path(), &["rev-parse", "--git-dir"]);
+    assert_eq!(
+        probe.status.code(),
+        Some(128),
+        "前提：暫存目錄不在任何 repo 內（%TEMP% 不該被放進 git repo）"
+    );
+
+    let (parsed, calls) = current_branch_at(&dir.native_target()).await;
+    match &calls[0] {
+        Err(RunnerError::Failed {
+            exit_code: Some(128),
+            ..
+        }) => {}
+        other => panic!("應為 Failed(exit 128)，實際：{other:?}"),
+    }
+    assert!(
+        matches!(parsed, Err(GitParseError::UnexpectedCallOutcome(_))),
+        "非 repo 必須是錯誤、不是沒有分支：{parsed:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // RepoIdentity（repo-projects task 2.1；design D1、spec「repo 身分判定」）
 // ---------------------------------------------------------------------------
 
@@ -2637,4 +2767,50 @@ async fn wsl_repo_identity_of_plain_directory_is_not_a_repo() {
         other => panic!("應為 Failed(exit 128)，實際：{other:?}"),
     }
     assert_eq!(RepoIdentity::parse(&run_output.calls), Ok(None));
+}
+
+/// spec「目前分支查詢遵守讀取邊界」（WSL 部分）：在 distro 內以 `wsl.exe --exec` 執行；分支名稱、
+/// 同名 tag、detached 三種結果與 Windows 端一致，且 `.git/index` 內容不變。
+/// 手動：`COCKPIT_GIT_TEST_WSL_DISTRO=<distro> cargo test -p cockpit-git --test real_git --
+/// --ignored wsl_current_branch`。
+#[tokio::test]
+#[ignore = "需要 WSL 與環境變數 COCKPIT_GIT_TEST_WSL_DISTRO；控制端手動執行 --ignored"]
+async fn wsl_current_branch_reports_branch_tag_collision_and_detached() {
+    let distro = wsl_test_distro();
+    let (base, _cleanup) = wsl_temp_base(&distro);
+    wsl_init_with_commit(&distro, &base);
+    let target = GitTarget::Wsl {
+        distro: distro.clone(),
+        posix: base.clone(),
+    };
+
+    let (parsed, _) = current_branch_at(&target).await;
+    assert_eq!(parsed, Ok(Some("main".to_string())));
+
+    wsl_git_ok(&distro, &base, &["checkout", "-q", "-b", "feat/foo"]);
+    wsl_git_ok(&distro, &base, &["tag", "feat/foo"]);
+    let (parsed, _) = current_branch_at(&target).await;
+    assert_eq!(parsed, Ok(Some("feat/foo".to_string())));
+
+    wsl_git_ok(&distro, &base, &["checkout", "-q", "--detach"]);
+    // fixture 的 git 操作可能改寫 index；只比較「查詢前後」。
+    let index_before = wsl_exec_ok(&distro, &["cat", &format!("{base}/.git/index")]).stdout;
+    let (parsed, calls) = current_branch_at(&target).await;
+    assert!(
+        matches!(
+            &calls[0],
+            Err(RunnerError::Failed {
+                exit_code: Some(1),
+                ..
+            })
+        ),
+        "detached 應為 exit 1：{:?}",
+        calls[0]
+    );
+    assert_eq!(parsed, Ok(None));
+
+    let index_after = wsl_exec_ok(&distro, &["cat", &format!("{base}/.git/index")]).stdout;
+    assert_eq!(index_before, index_after, "查詢不應改動 .git/index");
+    let lock = wsl_exec(&distro, &["test", "-e", &format!("{base}/.git/index.lock")]);
+    assert!(!lock.status.success(), "不應出現 index.lock");
 }

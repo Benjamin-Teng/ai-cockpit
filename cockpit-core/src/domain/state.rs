@@ -12,6 +12,7 @@ use crate::domain::ids::{ProjectId, TaskId, WorkstreamId};
 use crate::domain::progress::{Mark, ProgressOp, TaskProgress, apply_op};
 use crate::domain::rejection::Rejection;
 use crate::domain::repo::{PaneRepos, RepoProjectDef, expand_repo_projects, split_pane_item_id};
+use crate::domain::sync::{OpenSpecObservations, RepoSync};
 use crate::message::Message;
 use crate::store::RuntimeStore;
 use crate::types::connection::ConnectionState;
@@ -48,6 +49,13 @@ pub struct DomainState {
     pub repo_progress: HashMap<ProjectId, HashMap<TaskId, TaskProgress>>,
     /// pane 的 repo 歸類結果（design D2），不持久化。
     pub pane_repos: PaneRepos,
+    /// Repo Project task 的同步狀態（openspec-stage-sync task 3.2，design D2）：Repo Project id → task id → `TaskSync`。
+    /// 持久化；清除規則與 `repo_progress` 一致（pane 消失、Repo Project 移除時一併清）。有同步狀態的 task 一定有
+    /// `repo_progress` 項目，且不會被 [`DomainState::drop_untouched_initial`] 撤回。
+    pub repo_sync: RepoSync,
+    /// 最新一輪的 OpenSpec 偵測結果（design D2），用於投影顯示與手動入口建立同步狀態；不持久化，寫法比照
+    /// `pane_repos`。由寫入服務在 task 4.3 更新。
+    pub openspec_obs: OpenSpecObservations,
 }
 
 impl DomainState {
@@ -73,13 +81,16 @@ impl DomainState {
             repo_projects: Vec::new(),
             repo_progress: HashMap::new(),
             pane_repos: PaneRepos::new(),
+            repo_sync: RepoSync::new(),
+            openspec_obs: OpenSpecObservations::new(),
         }
     }
 
     /// 以 `projects` 中的手寫 project（`repo` 為 `None`，依原順序）、`repo_projects` 與 `pane_repos`
     /// 重算 `projects`（[`expand_repo_projects`]），並把 `warnings` 中的撞名警告換成這次的結果；載入時
     /// 產生的其他警告保留、順序不變，撞名警告接在後面。不碰任何進度、覆蓋與目前 task（repo-projects
-    /// task 3.1，design D3）。手寫 project 清單取自 `projects` 本身，呼叫端不必另外保存；重複呼叫結果相同。
+    /// task 3.1，design D3）；最新偵測結果只保留仍展開的 pane（[`DomainState::retain_expanded_openspec_obs`]，
+    /// openspec-stage-sync task 4.4）。手寫 project 清單取自 `projects` 本身，呼叫端不必另外保存；重複呼叫結果相同。
     pub fn refresh_projects(&mut self) {
         let expansion = expand_repo_projects(&self.projects, &self.repo_projects, &self.pane_repos);
         self.projects = expansion.projects;
@@ -95,6 +106,7 @@ impl DomainState {
         for (project, list) in expansion.warnings {
             self.warnings.entry(project).or_default().extend(list);
         }
+        self.retain_expanded_openspec_obs();
     }
 
     /// 取一個 project 的 task 進度表（repo-projects task 4.1，design D3）：**依 `def.repo` 分流**——生效 def
@@ -141,6 +153,16 @@ impl DomainState {
         initial: &TaskProgress,
         remove_empty_table: bool,
     ) {
+        // 有同步狀態的 task 不算「未動過」（openspec-stage-sync task 3.2，design D2）：進度項目被撤回會連同 `sync`
+        // 一起消失，手動優先在重啟後失效。
+        if def.repo.is_some()
+            && self
+                .repo_sync
+                .get(&def.id)
+                .is_some_and(|table| table.contains_key(task))
+        {
+            return;
+        }
         let table = self.progress_tables_mut(def);
         let Some(entries) = table.get_mut(&def.id) else {
             return;
@@ -159,7 +181,7 @@ impl DomainState {
     /// task 4.6：剛連上的首份 snapshot 可能還不完整，清除不可逆）、且該 runtime 目前的 pane 樹**沒有**這個
     /// pane id 時清除。已 exited 但仍在樹中、runtime 未連線／尚未連上／尚未沉降／未登記、id 拆不開時一律保留。依據是呼叫當下的
     /// `RuntimeStore`，不是投影（專案 memory：用落後的投影做檢查會放過剛寫入的狀態）。被這次清空的進度表一併
-    /// 移除。有清掉任何一筆時回 `true`。
+    /// 移除。同步狀態（`repo_sync`）依同一個判定一併清除。有清掉任何一筆時回 `true`。
     pub fn clear_vanished_repo_progress(&mut self, store: &RuntimeStore) -> bool {
         let vanished = |task: &TaskId| -> bool {
             let Some((runtime, pane)) = split_pane_item_id(task.as_str()) else {
@@ -174,6 +196,16 @@ impl DomainState {
         };
         let mut cleared = false;
         self.repo_progress.retain(|_, table| {
+            let before = table.len();
+            table.retain(|task, _| !vanished(task));
+            if table.len() == before {
+                return true;
+            }
+            cleared = true;
+            !table.is_empty()
+        });
+        // 同步狀態與進度一起清（openspec-stage-sync task 3.2）。
+        self.repo_sync.retain(|_, table| {
             let before = table.len();
             table.retain(|task, _| !vanished(task));
             if table.len() == before {

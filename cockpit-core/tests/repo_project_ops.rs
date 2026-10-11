@@ -12,9 +12,10 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, SystemTime};
 
 use cockpit_core::{
-    ConnectionState, DomainState, Mark, PaneRepo, PaneRepos, ProgressOp, ProjectDef, ProjectId,
-    Rejection, RepoKey, RepoProjectDef, RuntimeStore, StageEdit, TaskDef, TaskId, TaskProgress,
-    WorkstreamDef, WorkstreamId, apply_stage_edits, derive_repo_project_id,
+    ConnectionState, DomainState, Mark, OpenSpecPhase, PaneRepo, PaneRepos, ProgressOp, ProjectDef,
+    ProjectId, Rejection, RepoKey, RepoProjectDef, RuntimeStore, StageEdit, TaskDef, TaskId,
+    TaskProgress, WorkstreamDef, WorkstreamId, apply_stage_edits, derive_repo_project_id,
+    repo_project_phases_valid,
 };
 
 use common::{empty_focused, pane, pane_id, runtime_id, snapshot};
@@ -80,6 +81,7 @@ fn domain_with_app(config: Vec<ProjectDef>) -> DomainState {
         name: s("app"),
         repo: RepoKey::new(APP_REPO),
         stages: vec![s("Plan"), s("Build"), s("Review")],
+        phases: vec![None; 3],
     }];
     let mut pane_repos = PaneRepos::new();
     pane_repos.insert(
@@ -88,6 +90,7 @@ fn domain_with_app(config: Vec<ProjectDef>) -> DomainState {
             repo: RepoKey::new(APP_REPO),
             default_name: s("app"),
             worktree: None,
+            root: None,
         },
     );
     domain.pane_repos = pane_repos;
@@ -244,9 +247,14 @@ fn id_gets_numeric_suffix_when_taken() {
 // ---------------------------------------------------------------------------
 
 fn edit(name: &str, from: Option<&str>) -> StageEdit {
+    edit_p(name, from, None)
+}
+
+fn edit_p(name: &str, from: Option<&str>, phase: Option<OpenSpecPhase>) -> StageEdit {
     StageEdit {
         name: s(name),
         from: from.map(s),
+        phase,
     }
 }
 
@@ -314,6 +322,221 @@ fn stage_edits_reject_bad_from_and_bad_names() {
         "名稱重複"
     );
     assert!(apply_stage_edits(&current, &[edit("Plan\u{7}", None)]).is_none());
+}
+
+// ---------------------------------------------------------------------------
+// stage 對應 OpenSpec 階段（openspec-stage-sync task 3.1，design D1、D10-2）
+// ---------------------------------------------------------------------------
+
+use OpenSpecPhase::{Complete, Implement, Plan, Review};
+
+fn phases(list: &[Option<OpenSpecPhase>]) -> Vec<Option<OpenSpecPhase>> {
+    list.to_vec()
+}
+
+/// 階段在狀態檔與投影中的字串形式固定為小寫四值。
+#[test]
+fn phase_string_forms_are_stable() {
+    for (phase, text) in [
+        (Plan, "plan"),
+        (Implement, "implement"),
+        (Review, "review"),
+        (Complete, "complete"),
+    ] {
+        assert_eq!(phase.as_str(), text);
+        assert_eq!(OpenSpecPhase::parse(text), Some(phase));
+        assert_eq!(
+            serde_json::to_string(&phase).unwrap(),
+            format!("\"{text}\"")
+        );
+        assert_eq!(
+            serde_json::from_str::<OpenSpecPhase>(&format!("\"{text}\"")).unwrap(),
+            phase
+        );
+    }
+    assert_eq!(OpenSpecPhase::parse("done"), None);
+    assert_eq!(OpenSpecPhase::parse("Plan"), None, "大小寫須完全相符");
+    assert_eq!(OpenSpecPhase::parse(""), None);
+}
+
+/// spec「phases 長度與 stages 不同」「phases 內有重複的階段」。
+#[test]
+fn phases_must_align_and_be_unique() {
+    let two = stages(&["A", "B"]);
+    assert!(repo_project_phases_valid(&two, &[None, None]));
+    assert!(repo_project_phases_valid(&two, &[Some(Plan), None]));
+    assert!(repo_project_phases_valid(&two, &[Some(Plan), Some(Review)]));
+    assert!(!repo_project_phases_valid(&two, &[None]), "太短");
+    assert!(
+        !repo_project_phases_valid(&two, &[None, None, None]),
+        "太長"
+    );
+    assert!(
+        !repo_project_phases_valid(&two, &[Some(Plan), Some(Plan)]),
+        "非空值重複"
+    );
+}
+
+/// spec「stage 改名、新增、刪除、排序」＋「phase 省略視為不對應」：每列帶自己的 phase，順序即結果順序。
+#[test]
+fn stage_edits_produce_phases_from_each_row() {
+    let remap = apply_stage_edits(
+        &stages(&["Plan", "Implement", "Review", "Done"]),
+        &[
+            edit_p("Plan", Some("Plan"), Some(Plan)),
+            edit_p("Design", None, None),
+            edit_p("Build", Some("Implement"), Some(Implement)),
+            edit_p("Done", Some("Done"), Some(Complete)),
+        ],
+    )
+    .expect("合法的編輯");
+    assert_eq!(
+        remap.phases(),
+        phases(&[Some(Plan), None, Some(Implement), Some(Complete)])
+    );
+    assert_eq!(remap.phases().len(), remap.stages().len());
+
+    // 省略 phase（None）不是沿用舊值。
+    let omitted = apply_stage_edits(
+        &stages(&["Plan", "Build"]),
+        &[edit("Plan", Some("Plan")), edit("Build", Some("Build"))],
+    )
+    .expect("合法");
+    assert_eq!(omitted.phases(), phases(&[None, None]));
+}
+
+/// spec「PATCH 的 phase 重複」→ `invalid_stages`（`apply_stage_edits` 回 `None`）。
+#[test]
+fn stage_edits_reject_duplicate_phases() {
+    let current = stages(&["A", "B"]);
+    assert!(
+        apply_stage_edits(
+            &current,
+            &[
+                edit_p("A", Some("A"), Some(Review)),
+                edit_p("B", Some("B"), Some(Review)),
+            ]
+        )
+        .is_none()
+    );
+    // 多列為 None 不算重複。
+    assert!(apply_stage_edits(&current, &[edit("A", Some("A")), edit("B", Some("B"))]).is_some());
+}
+
+/// 取一份「修改前」的定義並回報這次編輯是否改變階段對應。
+fn changed(old_stages: &[&str], old_phases: &[Option<OpenSpecPhase>], edits: &[StageEdit]) -> bool {
+    let old = stages(old_stages);
+    apply_stage_edits(&old, edits)
+        .expect("合法的編輯")
+        .phases_changed(&old, old_phases)
+}
+
+/// spec「改名但 phase 跟著走不算改變」。
+#[test]
+fn phases_unchanged_when_rename_follows_phase() {
+    assert!(!changed(
+        &["Plan", "Build"],
+        &[Some(Plan), Some(Implement)],
+        &[
+            edit_p("Plan", Some("Plan"), Some(Plan)),
+            edit_p("Make", Some("Build"), Some(Implement)),
+        ],
+    ));
+}
+
+/// spec「只重排不算改變」。
+#[test]
+fn phases_unchanged_when_only_reordered() {
+    assert!(!changed(
+        &["A", "B"],
+        &[Some(Plan), Some(Review)],
+        &[
+            edit_p("B", Some("B"), Some(Review)),
+            edit_p("A", Some("A"), Some(Plan)),
+        ],
+    ));
+}
+
+/// 沒有任何對應、也沒有被加上時不算改變（只改 stage 名稱／新增沒對應的站）。
+#[test]
+fn phases_unchanged_when_no_mapping_before_and_after() {
+    assert!(!changed(
+        &["A", "B"],
+        &[None, None],
+        &[edit("A", Some("A")), edit("C", None), edit("B2", Some("B"))],
+    ));
+}
+
+/// spec「phase 換了擁有者算改變」。
+#[test]
+fn phases_changed_when_owner_swapped() {
+    assert!(changed(
+        &["A", "B"],
+        &[Some(Plan), Some(Review)],
+        &[
+            edit_p("A", Some("A"), Some(Review)),
+            edit_p("B", Some("B"), Some(Plan)),
+        ],
+    ));
+}
+
+/// 原本有擁有者而改為沒有、或原本沒有而改由某列擁有，都算改變。
+#[test]
+fn phases_changed_when_gained_or_lost() {
+    assert!(changed(
+        &["A", "B"],
+        &[Some(Plan), None],
+        &[edit("A", Some("A")), edit("B", Some("B"))],
+    ));
+    assert!(changed(
+        &["A", "B"],
+        &[Some(Plan), None],
+        &[
+            edit_p("A", Some("A"), Some(Plan)),
+            edit_p("B", Some("B"), Some(Review)),
+        ],
+    ));
+}
+
+/// `from: null` 的新列是新身分：即使名稱與舊 stage 相同，也不等於舊擁有者。
+#[test]
+fn phases_changed_when_new_row_takes_over_with_same_name() {
+    assert!(changed(
+        &["A", "B"],
+        &[Some(Plan), None],
+        &[edit_p("A", None, Some(Plan)), edit("B", Some("B"))],
+    ));
+    // 舊擁有者被刪除、由新列接手 → 改變。
+    assert!(changed(
+        &["A", "B"],
+        &[Some(Plan), None],
+        &[edit("B", Some("B")), edit_p("C", None, Some(Plan))],
+    ));
+}
+
+/// 修改前擁有 phase 的 stage 被刪除、修改後也沒有任何 stage 擁有它時，兩邊都沒有擁有者，視為不變（spec）。
+/// 其他 phase 不受影響時整體不變。
+#[test]
+fn phases_unchanged_when_owner_deleted_and_nobody_owns_it() {
+    assert!(!changed(
+        &["A", "B"],
+        &[Some(Plan), Some(Review)],
+        &[edit_p("B", Some("B"), Some(Review))],
+    ));
+}
+
+/// 同時有一個 phase 沒變、另一個變了，整體算改變（任一不同即可）。
+#[test]
+fn phases_changed_when_any_single_phase_differs() {
+    assert!(changed(
+        &["A", "B", "C"],
+        &[Some(Plan), Some(Implement), Some(Review)],
+        &[
+            edit_p("A", Some("A"), Some(Plan)),
+            edit_p("B", Some("B"), Some(Review)),
+            edit_p("C", Some("C"), Some(Implement)),
+        ],
+    ));
 }
 
 // ---------------------------------------------------------------------------

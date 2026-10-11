@@ -771,11 +771,41 @@ impl GitQuery for RepoIdentity {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CurrentBranch（openspec-stage-sync task 2.1；design D7）
+// ---------------------------------------------------------------------------
+
+/// `symbolic-ref -q HEAD`：HEAD 指向的完整 refname（design D7）。
+///
+/// **不用 `--short`**：存在與分支同名的 tag 時，`--short` 會把 `refs/heads/x` 縮成帶歧義的
+/// `heads/x`，拿到錯的分支名；改由 [`CurrentBranch::parse`] 自行去掉 `refs/heads/` 前綴。
+/// `-q`：HEAD 是 detached（不是符號參照）時不印錯誤訊息、安靜地以 exit 1 結束（git 官方文件
+/// `git-symbolic-ref`），解析器據此回 `None`，不當成錯誤。引數都是常數，不需要
+/// `--end-of-options`。此查詢只供 OpenSpec 進度偵測內部使用，不對應任何 HTTP 端點。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CurrentBranch;
+
+impl private::Sealed for CurrentBranch {}
+
+impl GitQuery for CurrentBranch {
+    type Output = Option<String>;
+
+    fn commands(&self, target: &crate::GitTarget) -> Vec<Vec<String>> {
+        let mut argv = target.base_argv();
+        argv.extend(strings(&["symbolic-ref", "-q", "HEAD"]));
+        vec![argv]
+    }
+
+    fn stdout_cap(&self) -> usize {
+        DEFAULT_STDOUT_CAP
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        Blob, BlobHead, BlobId, BlobSize, ChangedFiles, CommitInfo, FileDiff, GitQuery, Log,
-        MergeBase, QueryError, Refs, RepoIdentity, Status, VerifyCommit,
+        Blob, BlobHead, BlobId, BlobSize, ChangedFiles, CommitInfo, CurrentBranch, FileDiff,
+        GitQuery, Log, MergeBase, QueryError, Refs, RepoIdentity, Status, VerifyCommit,
     };
     use crate::{GitTarget, Oid, RepoPath, Side};
 
@@ -843,6 +873,24 @@ mod tests {
                     "--show-toplevel"
                 ]
             );
+            assert!(!argv.contains(&"--end-of-options".to_string()));
+        }
+    }
+
+    /// openspec-stage-sync task 2.1（design D7）：單次呼叫 `symbolic-ref -q HEAD`，不用
+    /// `--short`（同名 tag 時會縮成帶歧義的 `heads/x`），也不需要 `--end-of-options`。
+    #[test]
+    fn current_branch_argv_is_single_symbolic_ref_without_short() {
+        for target in [native(), wsl()] {
+            let mut calls = CurrentBranch.commands(&target);
+            assert_eq!(calls.len(), 1);
+            let argv = calls.remove(0);
+            assert_common_prefix(&argv, &target);
+            assert_eq!(
+                &argv[target.base_argv().len()..],
+                ["symbolic-ref", "-q", "HEAD"]
+            );
+            assert!(!argv.contains(&"--short".to_string()));
             assert!(!argv.contains(&"--end-of-options".to_string()));
         }
     }
@@ -1479,6 +1527,9 @@ mod tests {
 
         assert_eq!(RepoIdentity.stdout_cap(), ONE_MIB);
         assert!(!RepoIdentity.truncatable());
+
+        assert_eq!(CurrentBranch.stdout_cap(), ONE_MIB);
+        assert!(!CurrentBranch.truncatable());
     }
 
     #[test]

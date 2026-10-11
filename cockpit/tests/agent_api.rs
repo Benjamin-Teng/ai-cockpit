@@ -873,7 +873,7 @@ async fn start_declares_active_task() {
 
     let on_disk: Value =
         serde_json::from_str(&fs::read_to_string(&path).expect("狀態檔應該存在")).expect("JSON");
-    assert_eq!(on_disk["version"], 3);
+    assert_eq!(on_disk["version"], 4);
     assert_eq!(on_disk["projects"]["p"]["active"], json!({"be": "t2"}));
 }
 

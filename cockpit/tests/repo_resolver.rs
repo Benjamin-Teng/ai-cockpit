@@ -208,11 +208,19 @@ fn repo_at(common_dir: &str, toplevel: &str) -> LookupOutcome {
     })
 }
 
+/// 本檔的 repo 都是主 worktree：根目錄是 git 回報的工作樹根目錄（openspec-stage-sync task 4.4）。Windows 的 repo key
+/// 是小寫，根目錄保留 git 輸出（`D:/work/...`）的大小寫；WSL 的 key 去掉結尾 `\.git` 即根目錄。
 fn pane_repo(key: &str, name: &str) -> PaneRepo {
+    let root = match key {
+        APP_KEY => r"D:\work\app",
+        LIB_KEY => r"D:\work\lib",
+        other => other.strip_suffix(r"\.git").expect("WSL key 以 .git 結尾"),
+    };
     PaneRepo {
         repo: RepoKey::new(key),
         default_name: s(name),
         worktree: None,
+        root: Some(s(root)),
     }
 }
 
@@ -684,6 +692,7 @@ async fn first_round_after_connect_clears_progress_of_vanished_panes() {
         name: s("app"),
         repo: RepoKey::new(APP_KEY),
         stages: vec![s("Plan"), s("Review")],
+        phases: vec![None; 2],
     });
     let table = domain
         .repo_progress

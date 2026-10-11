@@ -48,6 +48,7 @@ fn repo_project(id: &str, name: &str, repo: &str) -> RepoProjectDef {
         name: s(name),
         repo: RepoKey::new(repo),
         stages: vec![s("Plan"), s("Implement"), s("Review")],
+        phases: vec![None; 3],
     }
 }
 
@@ -56,6 +57,7 @@ fn pane_repo(repo: &str, worktree: Option<&str>) -> PaneRepo {
         repo: RepoKey::new(repo),
         default_name: s("app"),
         worktree: worktree.map(s),
+        root: None,
     }
 }
 

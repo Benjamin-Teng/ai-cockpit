@@ -985,11 +985,31 @@ body {
   gap: 6px;
 }
 
+/* 一列：名稱輸入框、OpenSpec 階段下拉（openspec-stage-sync task 5.2）、上移／下移／刪除，note 獨佔下一行。用 flex-wrap
+   而不用 @media：對話框寬度被 100vw 限制時，放不下的元件自己換到下一行（輸入框的基準寬 8em），不依賴視窗寬度斷點。 */
 .stage-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 2px 6px;
+}
+
+.stage-row > .stage-name {
+  flex: 1 1 8em;
+  /* 與同列階段下拉等高（下拉比輸入框高約 2px，openspec-stage-sync task 5.3 設計審核）。 */
+  align-self: stretch;
+}
+
+.stage-phase {
+  flex: 0 1 9em;
+  min-width: 0;
+  /* 原生下拉清單跟著深色介面，不跳淺色底。 */
+  color-scheme: dark;
+}
+
+/* 「不對應」比已選階段暗一階：--text-dim 對 --bg-deep 約 9:1，仍遠高於 4.5:1（openspec-stage-sync task 5.3）。 */
+.stage-phase:has(option[value=""]:checked) {
+  color: var(--text-dim);
 }
 
 .stage-row-actions {
@@ -998,7 +1018,7 @@ body {
 }
 
 .stage-row-note {
-  grid-column: 1 / -1;
+  flex: 0 0 100%;
   color: var(--text-dim);
   font-size: var(--fs-meta);
   overflow-wrap: anywhere;
@@ -1244,7 +1264,8 @@ body {
 
 /* Task 節點（spec「Factory Floor」；design D4；direction-01-visual task 3.2）：--surface 底、
    左緣 4px 狀態色條、1px --line 細框（裝飾，只負責讓 --surface 的卡片跟 --bg-base 的格子分得
-   出邊界）。由上往下「標題 → 符號＋status 文字 → 按鈕」（render.js renderTaskNode()）。
+   出邊界）。由上往下「標題 → 符號＋status 文字 → 同步標示（task 有 sync 才有）→ 按鈕」（render.js
+   renderTaskNode()）。
    狀態色只透過 --task-status-color 傳給色條與狀態列（符號＋status 文字同一個顏色，design
    D4），標題固定 --text（未知 status 例外，見下）、按鈕固定中性（.action-button），都不吃
    狀態色。 */
@@ -1367,7 +1388,52 @@ body {
   color: var(--text-dim);
 }
 
-/* 節點上的操作按鈕獨佔最後一段（design D4「動作按鈕」：固定排在節點底部，和標題、狀態之間留
+/* 卡片的 OpenSpec 同步標示（spec cockpit-dashboard「卡片的 OpenSpec 同步標示」；design D9；
+   openspec-stage-sync task 5.1）：「符號＋status」與按鈕之間的一行小字（--fs-meta 12px）——change 名稱、
+   checked/total、自動／手動。名稱與數字是 id 與數值，用等寬字（design D11）；模式文字用無襯線。
+   名稱可換行（overflow-wrap: anywhere）而不撐寬 stage 欄，進度與模式不換行。唯讀文字，沒有互動，
+   也沒有 animation／transition。
+   顏色只走既有 token：自動＝--text-dim（對 --surface 約 7.7:1）；手動較淡＝--text-dim 與 --surface 以
+   75/25 混合（color-mix 從 token 推導，不引入新色值；對比約 4.9:1，仍 ≥ 4.5:1）。不用 opacity——
+   透明度會讓對比隨底色變動而算不準。標示也不靠顏色區分自動與手動：「自動」「手動」文字本身就是區分。 */
+.task-sync {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 6px;
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-meta);
+  line-height: 1.3;
+}
+
+.task-sync[data-sync-mode="manual"] {
+  color: color-mix(in srgb, var(--text-dim) 75%, var(--surface));
+}
+
+.task-sync-change {
+  min-width: 0;
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+  /* 超長名稱最多兩行，其餘截掉；整列 title 仍帶完整名稱（openspec-stage-sync task 5.3 設計審核）。 */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.task-sync-progress {
+  flex: none;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.task-sync-mode {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* 節點上的操作按鈕獨佔最後一段（design D4「動作按鈕」：固定排在節點底部，和上一段（狀態或同步標示）之間留
    8px＝.task-node 的 gap 4px＋這裡的 margin-top 4px；放不下時換行，不縮字級）。按鈕本身就是
    .action-button 的第三層級中性樣式，不另外覆寫任何顏色。 */
 .task-actions {

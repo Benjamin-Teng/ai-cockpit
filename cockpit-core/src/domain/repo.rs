@@ -40,6 +40,41 @@ impl fmt::Display for RepoKey {
     }
 }
 
+/// OpenSpec change 的四個進度階段（openspec-stage-sync task 3.1，design D1）。每個 Stage 最多對應一個階段，
+/// 同一個階段最多對應一個 Stage。序列化為小寫字串 `"plan" | "implement" | "review" | "complete"`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OpenSpecPhase {
+    /// 規劃：proposal／design／specs／tasks 還在寫。
+    Plan,
+    /// 實作：`tasks.md` 已有勾選進度、尚未全部完成。
+    Implement,
+    /// 審查：`tasks.md` 全部勾完、尚未 archive。
+    Review,
+    /// 完成：change 已 archive。
+    Complete,
+}
+
+impl OpenSpecPhase {
+    /// 四個階段（宣告順序）。
+    pub const ALL: [OpenSpecPhase; 4] = [Self::Plan, Self::Implement, Self::Review, Self::Complete];
+
+    /// 狀態檔、投影與 HTTP 本體使用的字串形式。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Plan => "plan",
+            Self::Implement => "implement",
+            Self::Review => "review",
+            Self::Complete => "complete",
+        }
+    }
+
+    /// [`Self::as_str`] 的反向：只接受完全相符的小寫字串，其他回 `None`。
+    pub fn parse(raw: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|phase| phase.as_str() == raw)
+    }
+}
+
 /// 一個 Repo Project 的定義（design D3、D5）：id 產生後不隨改名改變；`stages` 已通過驗證（D6）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RepoProjectDef {
@@ -51,6 +86,9 @@ pub struct RepoProjectDef {
     pub repo: RepoKey,
     /// Stage 的線性順序。
     pub stages: Vec<String>,
+    /// 每個 Stage 對應的 OpenSpec 階段（openspec-stage-sync task 3.1，design D1）：與 `stages` 逐項對齊、長度
+    /// 恆等於 `stages`，非 `None` 的值互不重複（[`repo_project_phases_valid`]）。
+    pub phases: Vec<Option<OpenSpecPhase>>,
 }
 
 /// 一個 pane 的 repo 歸類結果（design D2 第 3 點）：只取決於 pane 的 cwd。
@@ -62,6 +100,24 @@ pub struct PaneRepo {
     pub default_name: String,
     /// pane 位於 linked worktree 時為 worktree 資料夾名稱；主 worktree 為 `None`。
     pub worktree: Option<String>,
+    /// pane 所在 worktree 根目錄的主機路徑（openspec-stage-sync task 4.4，design D5；spec `repo-projects`「納入 repo
+    /// 判定的 pane 與更新時機」）：Windows 為反斜線、保留大小寫；WSL 為 `\\wsl.localhost\<distro>\...`。轉不出主機路徑時為
+    /// `None`，該 pane 仍歸入 repo，但不被 OpenSpec 進度偵測查詢。
+    pub root: Option<String>,
+}
+
+impl PaneRepo {
+    /// 兩個歸類結果是否指向同一個位置：除 `default_name`（顯示用的預設名稱）以外的欄位全部相同
+    /// （openspec-stage-sync task 4.3 Ruling、task 4.4）。OpenSpec 偵測結果屬於「某個 repo 的某個 worktree 根目錄」，
+    /// 這些欄位任一個變了，舊的偵測結果就不得再套到這個 pane 上。以「去掉 `default_name` 後整體相等」實作，日後新增欄位
+    /// 自動納入比較。
+    pub fn same_location(&self, other: &PaneRepo) -> bool {
+        let strip = |repo: &PaneRepo| PaneRepo {
+            default_name: String::new(),
+            ..repo.clone()
+        };
+        strip(self) == strip(other)
+    }
 }
 
 /// 所有已歸類的 pane：`(runtime id, pane id)` → 歸類結果。不在這裡的 pane 不屬於任何 repo（或尚未判定）。
@@ -135,6 +191,17 @@ pub fn normalize_repo_project_stages(raw: &[String]) -> Option<Vec<String>> {
         stages.push(stage);
     }
     Some(stages)
+}
+
+/// Repo Project 的階段對應是否合法（openspec-stage-sync task 3.1，design D1）：長度等於 `stages` 的長度，且非
+/// `None` 的值互不重複（同一個階段最多對應一個 Stage）。不合法對應 `invalid_stages`。
+pub fn repo_project_phases_valid(stages: &[String], phases: &[Option<OpenSpecPhase>]) -> bool {
+    if phases.len() != stages.len() {
+        return false;
+    }
+    OpenSpecPhase::ALL
+        .into_iter()
+        .all(|phase| phases.iter().filter(|p| **p == Some(phase)).count() <= 1)
 }
 
 /// Repo Project id 的長度上限，與設定檔 id 規則 `^[A-Za-z0-9_-]{1,64}$` 一致（repo-projects task 4.6）。
@@ -297,6 +364,8 @@ pub struct StageEdit {
     pub name: String,
     /// 這個新 stage 由哪個舊 stage 而來；`None` 表示新增。
     pub from: Option<String>,
+    /// 這個新 stage 修改後對應的 OpenSpec 階段；`None` 表示不對應（不是沿用舊值，openspec-stage-sync task 3.1）。
+    pub phase: Option<OpenSpecPhase>,
 }
 
 /// [`apply_stage_edits`] 的結果：新的 stage 清單與舊 stage → 新 stage 的對應。
@@ -306,12 +375,48 @@ pub struct StageRemap {
     stages: Vec<String>,
     /// 被某個新 stage 以 `from` 引用的舊 stage → 新 stage 名稱。
     renamed: HashMap<String, String>,
+    /// 與 `stages` 對齊的新階段對應，已通過 [`repo_project_phases_valid`]。
+    phases: Vec<Option<OpenSpecPhase>>,
 }
 
 impl StageRemap {
     /// 新的 stage 清單（非空）。
     pub fn stages(&self) -> &[String] {
         &self.stages
+    }
+
+    /// 與 [`Self::stages`] 逐項對齊的新階段對應（來自各列的 `phase`；長度相同、非 `None` 值不重複）。
+    pub fn phases(&self) -> &[Option<OpenSpecPhase>] {
+        &self.phases
+    }
+
+    /// 這次編輯是否改變了階段對應（openspec-stage-sync task 3.1，design D10-2）：對每個階段，比較「修改前擁有它的
+    /// stage 經本次 `from` 對應後的新名稱」與「修改後擁有它的 stage 名稱」，任一階段不同即為改變。`from` 為 `None`
+    /// 的新列是新身分，不等於任何舊 stage；修改前的擁有者被刪除（沒有新名稱）而修改後也沒有擁有者時，兩邊都是
+    /// `None`，視為不變。`old_stages` 與 `old_phases` 是修改前的定義，須逐項對齊。
+    pub fn phases_changed(
+        &self,
+        old_stages: &[String],
+        old_phases: &[Option<OpenSpecPhase>],
+    ) -> bool {
+        debug_assert_eq!(
+            old_stages.len(),
+            old_phases.len(),
+            "old_stages 與 old_phases 必須逐項對齊（修改前的定義）"
+        );
+        OpenSpecPhase::ALL.into_iter().any(|phase| {
+            let before: Option<&String> = old_phases
+                .iter()
+                .position(|p| *p == Some(phase))
+                .and_then(|index| old_stages.get(index))
+                .and_then(|old_name| self.renamed.get(old_name));
+            let after: Option<&String> = self
+                .phases
+                .iter()
+                .position(|p| *p == Some(phase))
+                .map(|index| &self.stages[index]);
+            before != after
+        })
     }
 
     /// 新清單的第一個 stage。
@@ -331,7 +436,8 @@ impl StageRemap {
 
 /// 驗證並套用 stage 編輯（design D6；spec `repo-projects`「修改 Repo Project 名稱與 stages」，repo-projects
 /// task 4.2）：新名稱須符合 [`normalize_repo_project_stages`]；每個 `from` 必須（逐字）是 `current` 中的名稱，且
-/// 每個舊名稱最多被引用一次。不合規則回 `None`（對應 `invalid_stages`）。
+/// 每個舊名稱最多被引用一次；各列的 `phase` 非 `None` 的值不得重複（openspec-stage-sync task 3.1）。不合規則回
+/// `None`（對應 `invalid_stages`）。
 pub fn apply_stage_edits(current: &[String], edits: &[StageEdit]) -> Option<StageRemap> {
     let names: Vec<String> = edits.iter().map(|edit| edit.name.clone()).collect();
     let stages = normalize_repo_project_stages(&names)?;
@@ -344,5 +450,13 @@ pub fn apply_stage_edits(current: &[String], edits: &[StageEdit]) -> Option<Stag
             return None;
         }
     }
-    Some(StageRemap { stages, renamed })
+    let phases: Vec<Option<OpenSpecPhase>> = edits.iter().map(|edit| edit.phase).collect();
+    if !repo_project_phases_valid(&stages, &phases) {
+        return None;
+    }
+    Some(StageRemap {
+        stages,
+        renamed,
+        phases,
+    })
 }

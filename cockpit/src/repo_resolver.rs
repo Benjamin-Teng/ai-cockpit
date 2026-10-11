@@ -373,14 +373,7 @@ impl<L: RepoLookup, D: RunningDistros, S: PaneReposSink> Resolver<L, D, S> {
     async fn running_distros(&mut self) -> &[String] {
         if self.distro_probe.is_none() {
             let started = Instant::now();
-            let running =
-                match tokio::time::timeout(DISTRO_PROBE_TIMEOUT, self.distros.running()).await {
-                    Ok(running) => running.unwrap_or_default(),
-                    Err(_) => {
-                        tracing::debug!("WSL 探測逾時，視為沒有發行版在執行");
-                        Vec::new()
-                    }
-                };
+            let running = probe_running_distros(&self.distros).await;
             self.distro_probe = Some(DistroProbe {
                 running,
                 expires_at: started + RETRY_TTL,
@@ -389,6 +382,26 @@ impl<L: RepoLookup, D: RunningDistros, S: PaneReposSink> Resolver<L, D, S> {
         self.distro_probe
             .as_ref()
             .map_or(&[], |probe| probe.running.as_slice())
+    }
+}
+
+/// 探測一次正在執行的 WSL 發行版：超過 [`DISTRO_PROBE_TIMEOUT`] 就放棄（`wsl.exe` 卡住時不讓呼叫端停住），逾時與失敗
+/// 都視為沒有發行版在執行。resolver 用它；OpenSpec 偵測工作用分得出失敗的 [`try_probe_running_distros`]。
+pub(crate) async fn probe_running_distros<D: RunningDistros>(distros: &D) -> Vec<String> {
+    try_probe_running_distros(distros).await.unwrap_or_default()
+}
+
+/// 同 [`probe_running_distros`]，但分得出「拿到清單」（`Some`，可能是空的）與「逾時或執行失敗」（`None`）。OpenSpec
+/// 偵測工作用它在探測壞掉時停止本輪其餘的探測（openspec-stage-sync task 4.7）。
+pub(crate) async fn try_probe_running_distros<D: RunningDistros>(
+    distros: &D,
+) -> Option<Vec<String>> {
+    match tokio::time::timeout(DISTRO_PROBE_TIMEOUT, distros.running()).await {
+        Ok(running) => running,
+        Err(_) => {
+            tracing::debug!("WSL 探測逾時，視為沒有發行版在執行");
+            None
+        }
     }
 }
 
@@ -409,12 +422,12 @@ fn is_connected(connection: &ProjectedConnection) -> bool {
 /// 連續失敗只在第一次記 warn（之後降為 debug），成功後重置並記一次 info。狀態檔持續寫不進去時，每一輪都會重試，
 /// 不這樣做會每輪洗一次 warn（比照 `cockpit-core` 投影任務的 `closed_logged`）。
 #[derive(Default)]
-struct FailureLog {
+pub(crate) struct FailureLog {
     failing: bool,
 }
 
 impl FailureLog {
-    fn report(&mut self, result: &Result<(), WriteError>, message: &'static str) {
+    pub(crate) fn report(&mut self, result: &Result<(), WriteError>, message: &'static str) {
         if let Some(level) = self.observe(result.is_err()) {
             match (level, result) {
                 (LogLevel::Warn, Err(error)) => tracing::warn!(%error, "{message}"),
@@ -425,7 +438,7 @@ impl FailureLog {
     }
 
     /// 依這次是否失敗決定要記哪一級：第一次失敗 `Warn`、持續失敗 `Debug`、失敗後第一次成功 `Info`、一直成功不記。
-    fn observe(&mut self, failed: bool) -> Option<LogLevel> {
+    pub(crate) fn observe(&mut self, failed: bool) -> Option<LogLevel> {
         let level = match (self.failing, failed) {
             (false, true) => Some(LogLevel::Warn),
             (true, true) => Some(LogLevel::Debug),
@@ -438,7 +451,7 @@ impl FailureLog {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum LogLevel {
+pub(crate) enum LogLevel {
     Warn,
     Debug,
     Info,
@@ -480,7 +493,7 @@ pub fn default_repo_name(common_dir: &str) -> String {
     name.to_string()
 }
 
-/// 一次成功查詢的原始輸出 → 歸類結果（repo key、預設名稱、worktree 標註；design D1、D2）。路徑轉不出來時回
+/// 一次成功查詢的原始輸出 → 歸類結果（repo key、預設名稱、worktree 標註、worktree 根目錄；design D1、D2）。repo key 轉不出來時回
 /// `None`（該 pane 不歸類）。
 ///
 /// worktree 標註：自己的 git 目錄（正規化後）不等於共同目錄（正規化後）時，取工作樹根目錄的資料夾名稱。submodule
@@ -497,7 +510,20 @@ pub fn classify(target: &GitTarget, output: &RepoIdentityOutput) -> Option<PaneR
         repo: RepoKey::new(key),
         default_name: default_repo_name(&output.common_dir),
         worktree,
+        root: worktree_root(target, &output.toplevel),
     })
+}
+
+/// git 回報的工作樹根目錄 → 主機路徑（openspec-stage-sync task 4.4，design D5）。Windows：正斜線轉反斜線、保留大小寫
+/// （不套 repo key 的小寫化：偵測要拿它讀檔，大小寫要與實際一致才好閱讀，NTFS 本身不分大小寫）；WSL：經
+/// [`wsl_host_path`] 轉成 `\\wsl.localhost\<distro>\...`，轉不出來回 `None`（該 pane 不被 OpenSpec 偵測查詢）。
+fn worktree_root(target: &GitTarget, toplevel: &str) -> Option<String> {
+    match target {
+        GitTarget::Native { .. } => Some(toplevel.replace('/', "\\")),
+        GitTarget::Wsl { distro, .. } => wsl_host_path(distro, toplevel)?
+            .to_str()
+            .map(str::to_string),
+    }
 }
 
 #[cfg(test)]
@@ -550,11 +576,12 @@ mod tests {
         }
     }
 
-    fn repo(key: &str, name: &str, worktree: Option<&str>) -> PaneRepo {
+    fn repo(key: &str, name: &str, worktree: Option<&str>, root: &str) -> PaneRepo {
         PaneRepo {
             repo: RepoKey::new(key),
             default_name: name.to_string(),
             worktree: worktree.map(str::to_string),
+            root: Some(root.to_string()),
         }
     }
 
@@ -600,11 +627,21 @@ mod tests {
         .expect("應歸類");
         assert_eq!(
             upper,
-            repo(r"\\wsl.localhost\Ubuntu\home\u\App\.git", "App", None)
+            repo(
+                r"\\wsl.localhost\Ubuntu\home\u\App\.git",
+                "App",
+                None,
+                r"\\wsl.localhost\Ubuntu\home\u\App"
+            )
         );
         assert_eq!(
             lower,
-            repo(r"\\wsl.localhost\Ubuntu\home\u\app\.git", "app", None)
+            repo(
+                r"\\wsl.localhost\Ubuntu\home\u\app\.git",
+                "app",
+                None,
+                r"\\wsl.localhost\Ubuntu\home\u\app"
+            )
         );
         assert_ne!(upper.repo, lower.repo);
     }
@@ -639,8 +676,16 @@ mod tests {
             ),
         )
         .expect("應歸類");
-        assert_eq!(main, repo(r"d:\work\app\.git", "app", None));
-        assert_eq!(linked, repo(r"d:\work\app\.git", "app", Some("app-wt")));
+        assert_eq!(main, repo(r"d:\work\app\.git", "app", None, r"D:\work\app"));
+        assert_eq!(
+            linked,
+            repo(
+                r"d:\work\app\.git",
+                "app",
+                Some("app-wt"),
+                r"D:\work\app-wt"
+            )
+        );
     }
 
     /// 自己的 git 目錄與共同目錄只差大小寫時是同一個目錄（正規化後比較），不是 linked worktree。
@@ -666,7 +711,15 @@ mod tests {
             ),
         )
         .expect("應歸類");
-        assert_eq!(pane, repo(r"d:\work\super\.git\modules\lib", "lib", None));
+        assert_eq!(
+            pane,
+            repo(
+                r"d:\work\super\.git\modules\lib",
+                "lib",
+                None,
+                r"D:\work\super\lib"
+            )
+        );
     }
 
     #[test]
@@ -685,9 +738,78 @@ mod tests {
             repo(
                 r"\\wsl.localhost\Ubuntu\home\u\app\.git",
                 "app",
-                Some("Feat")
+                Some("Feat"),
+                r"\\wsl.localhost\Ubuntu\home\u\Feat"
             )
         );
+    }
+
+    /// spec「Windows 的 worktree 根目錄保留大小寫」：反斜線、保留大小寫；repo key 仍小寫。
+    #[test]
+    fn windows_root_uses_backslashes_and_keeps_case() {
+        let pane = classify(
+            &native(),
+            &output("D:/Work/App/.git", "D:/Work/App/.git", "D:/Work/App"),
+        )
+        .expect("應歸類");
+        assert_eq!(pane.root.as_deref(), Some(r"D:\Work\App"));
+        assert_eq!(pane.repo, RepoKey::new(r"d:\work\app\.git"));
+    }
+
+    /// spec「判定結果帶有 worktree 根目錄」：主 worktree 與 linked worktree 各自的根目錄，repo key 相同。
+    #[test]
+    fn root_is_the_worktree_toplevel_not_the_cwd() {
+        let main = classify(
+            &native(),
+            &output("D:/work/app/.git", "D:/work/app/.git", "D:/work/app"),
+        )
+        .expect("應歸類");
+        let linked = classify(
+            &native(),
+            &output(
+                "D:/work/app/.git",
+                "D:/work/app/.git/worktrees/feat",
+                "D:/work/app-wt/feat",
+            ),
+        )
+        .expect("應歸類");
+        assert_eq!(main.root.as_deref(), Some(r"D:\work\app"));
+        assert_eq!(linked.root.as_deref(), Some(r"D:\work\app-wt\feat"));
+        assert_eq!(main.repo, linked.repo);
+    }
+
+    /// spec「WSL 的 worktree 根目錄」。
+    #[test]
+    fn wsl_root_is_unc_path() {
+        let pane = classify(
+            &wsl("Ubuntu"),
+            &output("/home/u/app/.git", "/home/u/app/.git", "/home/u/app"),
+        )
+        .expect("應歸類");
+        assert_eq!(
+            pane.root.as_deref(),
+            Some(r"\\wsl.localhost\Ubuntu\home\u\app")
+        );
+    }
+
+    /// spec「轉不出主機路徑的根目錄」：仍歸入 repo，但沒有根目錄。
+    #[test]
+    fn unconvertible_wsl_root_is_none_but_pane_is_still_classified() {
+        let pane = classify(
+            &wsl("Ubuntu"),
+            &output(
+                "/home/u/app/.git",
+                "/home/u/app/.git/worktrees/x",
+                "/home/u/wt:x",
+            ),
+        )
+        .expect("仍應歸類");
+        assert_eq!(
+            pane.repo,
+            RepoKey::new(r"\\wsl.localhost\Ubuntu\home\u\app\.git")
+        );
+        assert_eq!(pane.worktree.as_deref(), Some("wt:x"));
+        assert_eq!(pane.root, None);
     }
 
     #[test]

@@ -27,17 +27,20 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cockpit_core::{
-    DomainState, Mark, Message, Override, PaneRepos, ProgressOp, ProjectDef, ProjectId, Rejection,
-    RepoKey, RepoProjectDef, StageEdit, StaleOverride, StoreHandle, TaskId, TaskProgress,
-    WorkstreamId, apply_stage_edits, derive_repo_project_id, domain::binding::validate_override,
+    DomainState, Mark, Message, Observation, OpenSpecPhase, Override, PaneId, PaneRepo, PaneRepos,
+    ProgressOp, ProjectDef, ProjectId, Rejection, RepoKey, RepoProjectDef, RuntimeId, StageEdit,
+    StaleOverride, StoreHandle, TaskId, TaskProgress, WorkstreamId, apply_stage_edits,
+    derive_repo_project_id, domain::binding::validate_override,
     domain::repo::REPO_PROJECT_NAME_MAX_CHARS, is_disallowed_label_char,
     normalize_repo_project_name, normalize_repo_project_stages, pane_item_id,
+    repo_project_phases_valid,
 };
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 
 use crate::progress::{
-    STATE_FILE_VERSION, StateFile, StateOverride, StateProject, StateRepoProject, StateTask,
+    STATE_FILE_VERSION, StateFile, StateOverride, StateProject, StateRepoProject, StateRepoTask,
+    StateSync, StateTask,
 };
 
 /// 寫入失敗的原因；變體對應 HTTP 狀態碼：`Unknown*`／`NoTaskForPane` → 404、`PaneNotBound` → 403、`Rejected`／`NotOverridable`／`AmbiguousTask` → 409、
@@ -189,6 +192,42 @@ pub struct NewRepoProject {
     pub stages: Vec<String>,
     /// 顯示名稱（尚未去除前後空白）；`None` 時用該 repo 的預設名稱。
     pub name: Option<String>,
+    /// 與 `stages` 逐項對齊的階段字串（`plan`／`implement`／`review`／`complete` 或 `None`）；`None`（本體省略）等同
+    /// 全部不對應（openspec-stage-sync task 4.3）。收字串而非 [`OpenSpecPhase`]，讓未知字串在服務內依既有順序
+    /// （名稱 → stages → phases）判定，不在 HTTP 層提早回錯（openspec-stage-sync task 4.5）。
+    pub phases: Option<Vec<Option<String>>>,
+}
+
+/// [`RepoProjectPatch`] 的一個 stage：同 [`StageEdit`]，但 `phase` 是尚未驗證的字串
+/// （openspec-stage-sync task 4.5；理由同 [`NewRepoProject::phases`]）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StageEditInput {
+    /// 修改後的 stage 名稱（尚未去除前後空白）。
+    pub name: String,
+    /// 它原本的 stage 名稱；`None` 表示新增的 stage。
+    pub from: Option<String>,
+    /// 修改後對應的 OpenSpec 階段字串；`None` 表示不對應（不沿用舊值）。
+    pub phase: Option<String>,
+}
+
+/// 階段字串 → 階段：`None` 是不對應，不是 `plan`／`implement`／`review`／`complete` 之一的字串回
+/// [`RepoProjectError::InvalidStages`]（design D10-1）。正式端點與 `ui_preview` 的假端點共用。
+///
+/// # Errors
+///
+/// 任一字串不是四個階段之一時回 [`RepoProjectError::InvalidStages`]。
+#[doc(hidden)]
+pub fn parse_phases(
+    raw: &[Option<String>],
+) -> Result<Vec<Option<OpenSpecPhase>>, RepoProjectError> {
+    raw.iter()
+        .map(|phase| parse_phase(phase.as_deref()))
+        .collect()
+}
+
+fn parse_phase(raw: Option<&str>) -> Result<Option<OpenSpecPhase>, RepoProjectError> {
+    raw.map(|text| OpenSpecPhase::parse(text).ok_or(RepoProjectError::InvalidStages))
+        .transpose()
 }
 
 /// 修改 Repo Project 的請求（`PATCH /api/repo-projects/{pid}` 的本體，design D6）。兩個欄位都是 `None` 屬
@@ -198,7 +237,7 @@ pub struct RepoProjectPatch {
     /// 新名稱（尚未去除前後空白）。
     pub name: Option<String>,
     /// 修改後完整的有序 stage 清單與 `from` 對應。
-    pub stages: Option<Vec<StageEdit>>,
+    pub stages: Option<Vec<StageEditInput>>,
 }
 
 /// 測試用：落檔 IO 的開始與結束時點，交給 [`WriteHook`]。
@@ -249,6 +288,18 @@ impl BindingBasis {
                 .is_some_and(|w| w.pinned_pane.is_some()),
         }
     }
+}
+
+/// 一筆 OpenSpec 偵測結果（openspec-stage-sync task 4.4；Task 4.3 Ruling）：哪個 pane、偵測當下它的歸類、偵測結果
+/// （`None` 為無結果）。歸類用來在寫入鎖內確認 pane 從偵測到送出之間沒有改歸類。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenSpecEntry {
+    /// `(runtime id, pane id)`。
+    pub pane: (RuntimeId, PaneId),
+    /// 偵測當下這個 pane 的歸類（repo、worktree、根目錄）。
+    pub location: PaneRepo,
+    /// 偵測結果；`None` 為無結果。
+    pub observation: Option<Observation>,
 }
 
 /// 狀態檔的落檔位置（repo-projects task 4.1，design D5）。
@@ -320,20 +371,74 @@ impl ProgressService {
         }))
     }
 
-    /// 換上新的 pane 歸類結果並重算實際生效的 project 清單（design D2、D3）。歸類結果與展開出的 workstream／
-    /// task 都不寫入狀態檔，所以只要序列化內容不變就不落檔（design D3「何時寫檔」）。
+    /// 換上新的 pane 歸類結果並重算實際生效的 project 清單（design D2、D3），再以記憶體中的最新偵測結果重套
+    /// （openspec-stage-sync task 4.3）。依序：
+    ///
+    /// 1. 歸類改變的 pane（新舊歸類去掉 `default_name` 後不同——repo、worktree 標註或根目錄任一個變了，見
+    ///    [`PaneRepo::same_location`]；或已不在新的歸類結果中）的偵測結果從 `openspec_obs` 移除：
+    ///    偵測結果是對舊歸類的 worktree 查到的，不得套到新 repo 的卡片上，也不得被手動入口記成 `applied`
+    ///    （task 4.3 review fix round 1）。新歸類的結果等下一輪偵測送來。
+    /// 2. 換上歸類結果、重算展開。
+    /// 3. [`DomainState::reapply_openspec_all`]：新展開的 task 若有屬於它目前歸類的偵測結果，可能被移動、建立同步狀態。
+    ///
+    /// 歸類結果、展開出的 workstream／task 與最新偵測結果都不寫入狀態檔；只有第 3 步真的改了某張 task 的 stage
+    /// 或同步狀態時，序列化內容才會改變而落檔（design D3「何時寫檔」）。
     ///
     /// 不做消失 pane 的進度清除：清除條件不看歸類結果（design D4），由 resolver 每一輪另外呼叫
     /// [`ProgressService::clear_vanished_progress`]（repo-projects task 4.2）。兩者經同一把鎖依序執行。
     ///
     /// # Errors
     ///
-    /// 只有序列化內容改變且落檔失敗時回傳 [`WriteError::Persist`]；歸類結果不進狀態檔，實際上不會發生。
+    /// 第 3 步造成序列化內容改變且落檔失敗時回傳 [`WriteError::Persist`]；此時整個歸類更新都不生效（記憶體維持
+    /// 呼叫前的值），resolver 不更新已送出的紀錄，下一輪重送。
     pub async fn set_pane_repos(&self, pane_repos: PaneRepos) -> Result<(), WriteError> {
         self.write(move |domain| {
             let mut new_domain = domain.clone();
+            new_domain.openspec_obs.retain(|key, _| {
+                match (domain.pane_repos.get(key), pane_repos.get(key)) {
+                    (Some(old), Some(new)) => old.same_location(new),
+                    _ => false,
+                }
+            });
             new_domain.pane_repos = pane_repos;
             new_domain.refresh_projects();
+            new_domain.reapply_openspec_all();
+            Ok(new_domain)
+        })
+        .await
+    }
+
+    /// 套用一輪 OpenSpec 偵測結果（openspec-stage-sync task 4.3；design D2、D3、D10-6）。`entries` 是**整張**對照表：
+    /// 所有仍在 Repo Project 中的 pane → 偵測結果（`None` 為無結果）。一次寫入內完成：以這張表**取代**
+    /// `openspec_obs`（值為 `None` 或不在表中的 pane 移除，投影以「沒有這筆」呈現 `sync: null`）。每筆附的歸類
+    /// （偵測當下）在鎖內與 `pane_repos` 比對（[`PaneRepo::same_location`]），不符或 pane 已不在 `pane_repos` 中就當無
+    /// 結果——偵測與送出之間 pane 可能改了歸類，舊 worktree 的結果不得套到新卡片上（task 4.3 Ruling，task 4.4）。再以
+    /// [`DomainState::reapply_openspec_all`] 對每張展開的 Repo Project task 套用自動移動規則（判定依寫入鎖內的當下
+    /// 狀態，不看投影）。
+    ///
+    /// 何時落檔：只有序列化後的狀態檔內容改變（某張 task 的 stage 或同步狀態變了）才寫檔；只改了最新偵測結果時只換上
+    /// 記憶體中的狀態（投影可見），不寫檔；完全沒有改變時連記憶體都不換，投影 `version` 不遞增。
+    ///
+    /// # Errors
+    ///
+    /// 落檔失敗回 [`WriteError::Persist`]，記憶體（含 `openspec_obs`）維持呼叫前的值；呼叫端（task 4.4）不應把這一輪
+    /// 記成「已送出」，下一輪要重送。
+    pub async fn sync_openspec(&self, entries: Vec<OpenSpecEntry>) -> Result<(), WriteError> {
+        self.write(move |domain| {
+            let mut new_domain = domain.clone();
+            new_domain.openspec_obs = entries
+                .into_iter()
+                .filter(|entry| {
+                    domain
+                        .pane_repos
+                        .get(&entry.pane)
+                        .is_some_and(|current| current.same_location(&entry.location))
+                })
+                .filter_map(|entry| entry.observation.map(|obs| (entry.pane, obs)))
+                .collect();
+            // 不變式：只留展開中 Repo Project task 的 pane（task 4.4 review fix round 2）。
+            new_domain.retain_expanded_openspec_obs();
+            new_domain.reapply_openspec_all();
             Ok(new_domain)
         })
         .await
@@ -361,7 +466,9 @@ impl ProgressService {
     /// repo-projects task 4.2），回傳新 id。依序檢查：名稱（有給時）與 stages 的格式 → `repo` 是否已被加入 →
     /// `repo` 是否為目前 `pane_repos` 中有的 key。名稱未給時用該 repo 的預設名稱（不合名稱規則時去掉控制字元、截到
     /// 64 字元，空的話用 `repo`）。id 與所有現有 project id（手寫與 Repo，含被撞名隱藏的）去重。新 project 的 task
-    /// 沒有進度紀錄，即第一個 stage、標記 none。
+    /// 沒有進度紀錄，即第一個 stage、標記 none。`phases` 省略時全部不對應；給了但與 stages 長度不同或非 `None` 值重複時回
+    /// [`RepoProjectError::InvalidStages`]。同 id 的殘留進度與同步狀態一併清掉；展開後以記憶體中的最新偵測結果重套
+    /// （openspec-stage-sync task 4.3）。
     ///
     /// # Errors
     ///
@@ -379,6 +486,15 @@ impl ProgressService {
                 .transpose()?;
             let stages = normalize_repo_project_stages(&request.stages)
                 .ok_or(RepoProjectError::InvalidStages)?;
+            // 省略 `phases` 等同全部不對應；有給時字串須合法、與 stages 對齊、非 `None` 值不重複
+            // （openspec-stage-sync task 4.3、4.5）。排在名稱與 stages 之後。
+            let phases = match request.phases.as_deref() {
+                Some(raw) => parse_phases(raw)?,
+                None => vec![None; stages.len()],
+            };
+            if !repo_project_phases_valid(&stages, &phases) {
+                return Err(RepoProjectError::InvalidStages);
+            }
             if domain.repo_projects.iter().any(|d| d.repo == request.repo) {
                 return Err(RepoProjectError::RepoAlreadyAdded(request.repo));
             }
@@ -396,13 +512,17 @@ impl ProgressService {
 
             let mut new_domain = domain.clone();
             new_domain.repo_progress.remove(&id);
+            // 殘留進度清掉時同步狀態也要清，否則留下沒有進度項目的 `sync`（openspec-stage-sync task 4.3）。
+            new_domain.clear_repo_project_sync(&id);
             new_domain.repo_projects.push(RepoProjectDef {
                 id: id.clone(),
                 name,
                 repo: request.repo,
+                phases,
                 stages,
             });
             new_domain.refresh_projects();
+            new_domain.reapply_openspec_all();
             Ok((new_domain, id))
         })
         .await
@@ -411,12 +531,15 @@ impl ProgressService {
     /// 修改 Repo Project 的名稱與（或）stages（design D6；spec `repo-projects`「修改 Repo Project 名稱與 stages」，
     /// repo-projects task 4.2）。`pid` 只查 Repo Project 定義（含被撞名隱藏的）。兩者都給時一起生效或一起被拒；
     /// id 不變。stages 變更時每張 task（全部 `repo_progress`，不只目前展開的）依
-    /// [`cockpit_core::StageRemap::stage_for`] 換到新 stage，標記保留。
+    /// [`cockpit_core::StageRemap::stage_for`] 換到新 stage，標記保留。各列的 `phase` 決定新的階段對應；對應依
+    /// [`cockpit_core::StageRemap::phases_changed`]（以覆寫前的定義比較）真的改變時，該 project 自動模式的 task 清掉
+    /// `applied`，並在同一次寫入內依新對應重套最新偵測結果（openspec-stage-sync task 4.3，design D3、D10-2）。
     ///
     /// # Errors
     ///
     /// 依序檢查：[`RepoProjectError::NotRepoProject`]／[`RepoProjectError::UnknownProject`]、
-    /// [`RepoProjectError::InvalidName`]、[`RepoProjectError::InvalidStages`]（含 `from` 不存在或重複引用），或落檔失敗；
+    /// [`RepoProjectError::InvalidName`]、[`RepoProjectError::InvalidStages`]（含 `from` 不存在或重複引用、階段字串不合法或重複），
+    /// 或落檔失敗；
     /// 任何錯誤都不改記憶體。
     pub async fn update_repo_project(
         &self,
@@ -432,11 +555,22 @@ impl ProgressService {
                 .as_deref()
                 .map(|raw| normalize_repo_project_name(raw).ok_or(RepoProjectError::InvalidName))
                 .transpose()?;
+            // 排在名稱之後：先轉階段字串（未知字串 → `InvalidStages`），再套用 stage 清單（openspec-stage-sync task 4.5）。
             let remap = patch
                 .stages
                 .as_deref()
-                .map(|edits| {
-                    apply_stage_edits(&domain.repo_projects[index].stages, edits)
+                .map(|inputs| {
+                    let edits = inputs
+                        .iter()
+                        .map(|input| {
+                            Ok(StageEdit {
+                                name: input.name.clone(),
+                                from: input.from.clone(),
+                                phase: parse_phase(input.phase.as_deref())?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, RepoProjectError>>()?;
+                    apply_stage_edits(&domain.repo_projects[index].stages, &edits)
                         .ok_or(RepoProjectError::InvalidStages)
                 })
                 .transpose()?;
@@ -449,7 +583,14 @@ impl ProgressService {
             if let Some(remap) = remap {
                 let old_first = def.stages.first().cloned().unwrap_or_default();
                 let repo = def.repo.clone();
+                // 判斷階段對應是否改變要用**覆寫前**的定義（openspec-stage-sync task 4.3，design D10-2）。
+                let mapping_changed = remap.phases_changed(&def.stages, &def.phases);
                 def.stages = remap.stages().to_vec();
+                def.phases = remap.phases().to_vec();
+                if mapping_changed {
+                    // 自動的 task 清掉 `applied`，下面的全表重套依新對應重新套用；手動的 task 不動（design D3）。
+                    new_domain.reset_auto_applied(&project);
+                }
                 // 沒有進度紀錄的 task 在**舊**的第一個 stage（投影退回 `TaskProgress::initial`，取的是當下定義的
                 // 第一個 stage）。舊的第一個 stage 對應到的不是新的第一個 stage 時（重新排序、在前面插入），先替這個
                 // repo 目前歸類到的每個 pane 補上 `(舊的第一個 stage, none)`，再與既有紀錄一起套用對應，否則它們會被
@@ -491,13 +632,14 @@ impl ProgressService {
                 }
             }
             new_domain.refresh_projects();
+            new_domain.reapply_openspec_all();
             Ok((new_domain, ()))
         })
         .await
     }
 
     /// 移除 Repo Project（spec `repo-projects`「移除 Repo Project」，repo-projects task 4.2）：定義與它的
-    /// `repo_progress` 一併移除；`pid` 查找規則同 [`ProgressService::update_repo_project`]。只清自己的
+    /// `repo_progress` 與同步狀態（`repo_sync`，openspec-stage-sync task 4.3）一併移除；`pid` 查找規則同 [`ProgressService::update_repo_project`]。只清自己的
     /// `repo_progress`：被撞名隱藏時，同 id 手寫 project 的進度、覆蓋與目前 task 都不動；沒被隱藏時連同記憶體中殘留的
     /// `overrides[pid]`／`active[pid]` 一併清掉。
     ///
@@ -511,6 +653,8 @@ impl ProgressService {
             let mut new_domain = domain.clone();
             new_domain.repo_projects.remove(index);
             new_domain.repo_progress.remove(&project);
+            // 同步狀態只屬於 Repo Project，撞名隱藏與否都一併清掉（openspec-stage-sync task 4.3）。
+            new_domain.clear_repo_project_sync(&project);
             // 沒被撞名隱藏時，`overrides[pid]`／`active[pid]`／`warnings[pid]` 若有殘留也屬於這個 Repo Project，一併
             // 清掉（fix round 1 Minor 2；warnings 為 task 4.6 Minor 2：同 repo、同名再加入會拿到同一個 id）；被隱藏時
             // 屬於同 id 的手寫 project，不動。
@@ -520,12 +664,15 @@ impl ProgressService {
                 new_domain.warnings.remove(&project);
             }
             new_domain.refresh_projects();
+            new_domain.reapply_openspec_all();
             Ok((new_domain, ()))
         })
         .await
     }
 
-    /// 對一個 task 套用進度操作（spec `pipeline-progress`「進度寫入端點」）。
+    /// 對一個 task 套用進度操作（spec `pipeline-progress`「進度寫入端點」）。Repo Project task 的推進／退回成功時，在同一次
+    /// 寫入內標為手動（[`DomainState::mark_manual`]）；清除標記成功時，在同一次寫入內重套最新偵測結果；標 Completed／
+    /// Failed 不改同步狀態（openspec-stage-sync task 4.3，design D3）。
     ///
     /// # Errors
     ///
@@ -543,6 +690,19 @@ impl ProgressService {
             let mut new_domain = domain.clone();
             let ensured = ensure_task(&mut new_domain, &project, &task)?;
             new_domain.apply_progress(&project, &task, op)?;
+            match op {
+                // 人工推進／退回成功後在同一次寫入內標手動，只落檔一次（openspec-stage-sync task 4.3，design D3）；
+                // 被拒絕時上面已回錯，不會走到這裡。手寫 project 的 task 是 no-op。
+                ProgressOp::Advance | ProgressOp::Retreat => {
+                    new_domain.mark_manual(&project, &task);
+                }
+                // 清除標記後，標記期間被擋下的最新偵測結果在同一次寫入內套用（Task 3.2 Ruling：背景工作去重，
+                // 偵測不變時不會再送下一輪）。`mode` 只有真的套用時才變自動（design D3 第 4 條）。
+                ProgressOp::Clear => {
+                    new_domain.reapply_openspec_all();
+                }
+                ProgressOp::Complete | ProgressOp::Fail => {}
+            }
             ensured.finish(&mut new_domain);
             Ok(new_domain)
         })
@@ -580,7 +740,8 @@ impl ProgressService {
         .await
     }
 
-    /// agent 推進：同一筆交易先推進 `task` 的 stage、再把它設為所屬 workstream 的目前 task（spec
+    /// agent 推進：同一筆交易先推進 `task` 的 stage（Repo Project task 同時標為手動，openspec-stage-sync task 4.3）、
+    /// 再把它設為所屬 workstream 的目前 task（spec
     /// `agent-reporting`「agent 推進」；progress-model task 3.2）。兩步在同一把鎖內、只落檔一次；
     /// 任一步被拒絕整筆不生效。身分判定與 `basis` 重驗同 [`ProgressService::declare_active`]。
     ///
@@ -604,6 +765,8 @@ impl ProgressService {
                 return Err(WriteError::PaneNotBound);
             }
             new_domain.apply_progress(&project, &task, ProgressOp::Advance)?;
+            // agent 推進算手動入口（openspec-stage-sync task 4.3，design D3）：同一次寫入內標記。
+            new_domain.mark_manual(&project, &task);
             new_domain.set_active(&project, &ensured.workstream, &task)?;
             ensured.finish(&mut new_domain);
             Ok(new_domain)
@@ -657,6 +820,8 @@ impl ProgressService {
             let mut new_domain = domain.clone();
             let ensured = ensure_task(&mut new_domain, project, task)?;
             new_domain.apply_progress(project, task, ProgressOp::Advance)?;
+            // 鎖內選出的 task 就地標手動，不在鎖外重選（openspec-stage-sync task 4.3，design D3）。
+            new_domain.mark_manual(project, task);
             new_domain.set_active(project, workstream, task)?;
             ensured.finish(&mut new_domain);
             Ok(new_domain)
@@ -789,6 +954,10 @@ impl ProgressService {
             let _guard = inner.lock.lock().await;
             let current = inner.handle.with_domain(Clone::clone);
             let (new_domain, output) = compute(&current)?;
+            debug_assert!(
+                repo_sync_backed_by_progress(&new_domain),
+                "有同步狀態的 task 一定有進度項目（openspec-stage-sync R1）"
+            );
             if new_domain != current {
                 inner.persist_if_changed(&current, &new_domain).await?;
                 inner.handle.set_domain(new_domain);
@@ -837,6 +1006,19 @@ impl Inner {
         .unwrap_or_else(|join_error| Err(std::io::Error::other(join_error)));
         result.map_err(|source| WriteError::Persist { path, source })
     }
+}
+
+/// 不變式 R1（openspec-stage-sync task 4.1／4.3，design D2）：`repo_sync` 的每一筆在 `repo_progress` 都有對應的進度
+/// 項目。狀態檔把 `sync` 放在 task 進度底下，沒有進度的 `sync` 寫不出去、會靜默消失。
+fn repo_sync_backed_by_progress(domain: &DomainState) -> bool {
+    domain.repo_sync.iter().all(|(project, table)| {
+        table.keys().all(|task| {
+            domain
+                .repo_progress
+                .get(project)
+                .is_some_and(|progress| progress.contains_key(task))
+        })
+    })
 }
 
 fn find_project<'a>(
@@ -1056,9 +1238,14 @@ fn to_state_file(domain: &DomainState) -> StateFile {
                         .map(|(task, progress)| {
                             (
                                 task.as_str().to_string(),
-                                StateTask {
+                                StateRepoTask {
                                     stage: progress.stage.clone(),
                                     mark: progress.mark,
+                                    sync: domain
+                                        .repo_sync
+                                        .get(&def.id)
+                                        .and_then(|m| m.get(task))
+                                        .map(StateSync::from),
                                 },
                             )
                         })
@@ -1071,6 +1258,7 @@ fn to_state_file(domain: &DomainState) -> StateFile {
                     name: def.name.clone(),
                     repo: def.repo.as_str().to_string(),
                     stages: def.stages.clone(),
+                    phases: Some(def.phases.clone()),
                     tasks,
                 },
             )
@@ -1150,6 +1338,7 @@ mod tests {
             name: "app".to_string(),
             repo: RepoKey::new(r"d:\work\app\.git"),
             stages: vec!["Plan".to_string()],
+            phases: vec![None],
         }];
         let mut pane_repos = PaneRepos::new();
         pane_repos.insert(
@@ -1158,6 +1347,7 @@ mod tests {
                 repo: RepoKey::new(r"d:\work\app\.git"),
                 default_name: "app".to_string(),
                 worktree: None,
+                root: None,
             },
         );
         domain.pane_repos = pane_repos;
