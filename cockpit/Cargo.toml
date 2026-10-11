@@ -1,6 +1,6 @@
 [package]
 name = "cockpit"
-version = "0.1.5"
+version = "0.1.6"
 edition.workspace = true
 publish = false
 # 第二個 bin（cockpit-launch）加入後，沒有 --bin 的 `cargo run -p cockpit` 仍選 cockpit
