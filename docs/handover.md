@@ -10,15 +10,14 @@
 ## 0. 三十秒版本
 
 1. **沒有 active change**。`openspec-stage-sync` 已併回 `main`（squash）、archive（主規格新增 capability `openspec-stage-sync`），
-   並發布 **v0.1.6**。本機分支 `feat/openspec-stage-sync` 還在（從未推送；舊版 ledger 含使用者名稱，刪分支前問使用者）。
+   並發布 **v0.1.6**。本機分支 `feat/openspec-stage-sync` 已依使用者同意刪除。
 2. **這一段做了什麼**：Repo Project 的卡片會依 repo 內的 OpenSpec 進度自動移動（唯讀：只讀 git 與 repo 內檔案，不呼叫 `openspec`
    指令、不對 HERDR 寫入）。pane 對應 change 先看分支名，對不上退回 archive 同名或「只有一個進行中的 change」；階段由 `tasks.md`
    勾選判定（規劃／實作／審查／完成）；每個 Stage 可設定對應哪個階段。**手動暫時優先**：人按推進或退回後卡片停住，偵測結果「下一次改變」
    才恢復自動。不自動貼 Completed／Failed。**狀態檔升到 v4**：v0.1.5 以前的版本讀到會拒絕啟動，降版只能刪檔。
 3. **待使用者決定**：
-   1. 是否刪除本機分支 `feat/openspec-stage-sync`（內容已在 `main`，`git diff main feat/openspec-stage-sync` 只差 archive 與發版 commit）。
-   2. 設計審核交付的問題：卡片的「手動」標示要不要加非顏色記號（虛線框或符號；現行 design D9 是一行文字，採用要改 D9）。
-   3. 第二期「按鈕直接對 AI 下指令」（推進＝送訊息讓 AI 接受建議、Failed＝停止 agent）：需要 HERDR 寫入 method，會推翻 ADR-0001。
+   1. 設計審核交付的問題：卡片的「手動」標示要不要加非顏色記號（虛線框或符號；現行 design D9 是一行文字，採用要改 D9）。
+   2. 第二期「按鈕直接對 AI 下指令」（推進＝送訊息讓 AI 接受建議、Failed＝停止 agent）：需要 HERDR 寫入 method，會推翻 ADR-0001。
       使用者 2026-10-10 選了先做唯讀這期，之後再決定；要做就另開 change 與新 ADR。
 4. repo **已公開**；**每次推送前**跑去識別化檢查（第 1 節指令，0 命中才推）；**歷史不再改寫**。跑 `deid-check.js` 可能把 WSL 開機（第 4 節）。
 5. **驗收腳本用固定 port，同時只能有一個 session 跑**。本機常駐的無關監聽：7778（ASUS Armoury Crate）、7679（Google Drive）、
@@ -28,7 +27,7 @@
 
 - **版本與版控**：GitHub `releases/latest` = **v0.1.6**（2026-10-11）。`main` 含 squash commit、archive commit、兩個發版 commit 與本
   handover commit；本機與遠端 `main` 一致。rc 演練版 `v0.1.6-rc.1` 已刪除。正式 tag 的 CI 撞到 `abort_await_is_bounded` 偶發失敗，
-  `gh run rerun --failed` 後綠（見 3.1）。
+  `gh run rerun --failed` 後綠；之後已修正其前提檢查的競態（放行前取樣，memory `precondition-sampled-after-release-races`）。
 - **使用者電腦**：桌面捷徑「AI Agent Cockpit」→ `%LOCALAPPDATA%\ai-cockpit\bin\cockpit-launch.exe --config "D:\projects\ai-cockpit\cockpit.toml"`，
   **2026-10-11 已更新為 v0.1.6 的 release 建置**（`install-desktop.ps1`，不會自動更新）。狀態檔在 `D:\projects\ai-cockpit\cockpit.state.json`
   （`.gitignore` 忽略），更新時仍是 v3；第一次以 v0.1.6 啟動後會升成 v4。
@@ -70,13 +69,7 @@
 
 ## 3. 接著要做
 
-### 3.1 修 `abort_await_is_bounded` 的時序前提（優先：已兩度卡發版）
-
-`cockpit/tests/app.rs` 的前提檢查「blocking task 在放行前確實收不掉」在 CI 高負載時不成立（CI run 37217313821；v0.1.6 推送後的
-`main` CI run 38108875786 又撞一次）；本機也偶發過一次（先 `release_tx.send` 才檢查 `is_finished`，中間有競態）。修法：前提改成
-「等到條件成立」而不是假設立刻成立；修完推分支看 CI。
-
-### 3.2 自動更新加獨立簽章（使用者 2026-10-06：「列入」，未開 change）
+### 3.1 自動更新加獨立簽章（使用者 2026-10-06：「列入」，未開 change）
 
 **機制**：現在只驗「HTTPS＋同 release 的 `SHA256SUMS.txt`」，擋不住 release 本身被換掉（GitHub 帳號或 token 被盜、CI 被入侵時攻擊者
 可同時上傳惡意安裝檔與對得上的雜湊檔）。獨立簽章是私鑰不放 GitHub、公鑰編進執行檔。要先白話說明後問使用者：私鑰放哪（GitHub
@@ -150,3 +143,4 @@ secrets vs 本機離線簽）、遺失或外洩的換鑰方案、已發出的版
 | 1–45 | 2026-09-13～10-08 | 見 `git log -- docs/handover.md`（change 1a～project-select-pane、v0.1.0～v0.1.5） |
 | 46 | 2026-10-11 | change `openspec-stage-sync` 在 `feat/openspec-stage-sync` 完成（SDD、逐 task 審查、Codex 與最終審查、設計審核、真機冒煙），未併回、未發版，待使用者確認 |
 | 47 | 2026-10-11 | 使用者同意：squash 併回 `main`、archive、推送；發布 v0.1.6；桌面版更新為 0.1.6（v3 狀態檔另備份） |
+| 48 | 2026-10-11 | 刪除本機 `feat/openspec-stage-sync`；修 `abort_await_is_bounded` 偶發失敗（放行前取樣前提）並併回 |

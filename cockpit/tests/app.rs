@@ -1417,7 +1417,11 @@ async fn abort_await_is_bounded() {
     .await;
     let elapsed = started.elapsed();
 
-    // 先放行 blocking task，免得 runtime 收尾時卡在它上面。
+    // 前提檢查要在放行「之前」取樣：放行前 blocking task 卡在 `recv()`，不可能結束，所以這個值是確定的。
+    // 放行之後才檢查，task 隨時可能跑完，CI 高負載時就會讓前提檢查偶發失敗（CI run 37217313821、38108875786）。
+    let still_running_before_release = !blocking_abort.is_finished();
+
+    // 再放行 blocking task，免得 runtime 收尾時卡在它上面。
     release_tx.send(()).ok();
 
     assert!(
@@ -1433,7 +1437,7 @@ async fn abort_await_is_bounded() {
         "abort 後的 await 上限是 1 秒，實際花了 {elapsed:?}"
     );
     assert!(
-        !blocking_abort.is_finished(),
+        still_running_before_release,
         "前提檢查：那個 blocking task 在放行前確實收不掉（否則這個測試沒測到上限）"
     );
 }
