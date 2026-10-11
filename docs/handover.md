@@ -1,23 +1,22 @@
 # 交接：下一段任務
 
-> **建立日期**：2026-10-11　|　**上一段做完的事**：change `openspec-stage-sync`（卡片依 OpenSpec 進度自動移動）實作與審查完成，
-> 在分支 `feat/openspec-stage-sync`，**未併回 `main`、未發版、未 push**，等使用者確認。
+> **建立日期**：2026-10-11　|　**上一段做完的事**：change `openspec-stage-sync`（卡片依 OpenSpec 進度自動移動）squash 併回 `main`、
+> archive，**發布 v0.1.6**（2026-10-11），桌面版已更新為 0.1.6。
 > **性質**：接手用文件，會過期，每段重寫。
 > 為什麼做看 `docs/cockpit-spec.md`（北極星）與各 change 的 proposal；怎麼做看 `~/.claude/CLAUDE.md`（本 repo 精簡版在
-> `AGENTS.md`）；規格看 `openspec/specs/`；本功能的決策與審查紀錄看 `openspec/changes/openspec-stage-sync/`
+> `AGENTS.md`）；規格看 `openspec/specs/`；本功能的決策與審查紀錄看 `openspec/changes/archive/2026-10-11-openspec-stage-sync/`
 > （`design.md`、`sdd-ledger.md`）與 `docs/adr/0009-openspec-stage-sync.md`。
 
 ## 0. 三十秒版本
 
-1. **active change = `openspec-stage-sync`**，在分支 `feat/openspec-stage-sync`（領先 `main` 一批 commit，`main` 沒動、仍是 v0.1.5 時的狀態）。
-   實作、逐 task 審查、Codex 與最終審查、真機冒煙都做完。**未併回、未發版、未 push**，等使用者確認。進度一律現場跑
-   `openspec status --change openspec-stage-sync`，不要信任何文件裡的 task 進度。
+1. **沒有 active change**。`openspec-stage-sync` 已併回 `main`（squash）、archive（主規格新增 capability `openspec-stage-sync`），
+   並發布 **v0.1.6**。本機分支 `feat/openspec-stage-sync` 還在（從未推送；舊版 ledger 含使用者名稱，刪分支前問使用者）。
 2. **這一段做了什麼**：Repo Project 的卡片會依 repo 內的 OpenSpec 進度自動移動（唯讀：只讀 git 與 repo 內檔案，不呼叫 `openspec`
    指令、不對 HERDR 寫入）。pane 對應 change 先看分支名，對不上退回 archive 同名或「只有一個進行中的 change」；階段由 `tasks.md`
    勾選判定（規劃／實作／審查／完成）；每個 Stage 可設定對應哪個階段。**手動暫時優先**：人按推進或退回後卡片停住，偵測結果「下一次改變」
    才恢復自動。不自動貼 Completed／Failed。**狀態檔升到 v4**：v0.1.5 以前的版本讀到會拒絕啟動，降版只能刪檔。
 3. **待使用者決定**：
-   1. 是否併回 `main` 並發版。下一版版號未定（CHANGELOG 目前在 `## [Unreleased]`，發版流程見第 2 節）。
+   1. 是否刪除本機分支 `feat/openspec-stage-sync`（內容已在 `main`，`git diff main feat/openspec-stage-sync` 只差 archive 與發版 commit）。
    2. 設計審核交付的問題：卡片的「手動」標示要不要加非顏色記號（虛線框或符號；現行 design D9 是一行文字，採用要改 D9）。
    3. 第二期「按鈕直接對 AI 下指令」（推進＝送訊息讓 AI 接受建議、Failed＝停止 agent）：需要 HERDR 寫入 method，會推翻 ADR-0001。
       使用者 2026-10-10 選了先做唯讀這期，之後再決定；要做就另開 change 與新 ADR。
@@ -27,16 +26,17 @@
 
 ## 1. 現在的狀態
 
-- **版本與版控**：GitHub `releases/latest` = **v0.1.5**（2026-10-08）。`main` 最新是 v0.1.5 之後的 handover commit；本機與遠端
-  `main` 一致。`feat/openspec-stage-sync` **只在本機**，沒有遠端分支。併回前先 `git log main..HEAD` 看範圍。
+- **版本與版控**：GitHub `releases/latest` = **v0.1.6**（2026-10-11）。`main` 含 squash commit、archive commit、兩個發版 commit 與本
+  handover commit；本機與遠端 `main` 一致。rc 演練版 `v0.1.6-rc.1` 已刪除。正式 tag 的 CI 撞到 `abort_await_is_bounded` 偶發失敗，
+  `gh run rerun --failed` 後綠（見 3.1）。
 - **使用者電腦**：桌面捷徑「AI Agent Cockpit」→ `%LOCALAPPDATA%\ai-cockpit\bin\cockpit-launch.exe --config "D:\projects\ai-cockpit\cockpit.toml"`，
-  是 **v0.1.5 的 release 建置**（`install-desktop.ps1`，不會自動更新）。狀態檔在 `D:\projects\ai-cockpit\cockpit.state.json`（`.gitignore` 忽略）。
-  - **踩降版地雷的路徑**：若用本分支的建置去跑使用者的真狀態檔，第一次偵測就會把它升成 v4，之後桌面捷徑的 v0.1.5 會拒絕啟動。
-    真機冒煙是用 repo 外的臨時設定與狀態檔做的，**使用者的真狀態檔沒被動過**。
+  **2026-10-11 已更新為 v0.1.6 的 release 建置**（`install-desktop.ps1`，不會自動更新）。狀態檔在 `D:\projects\ai-cockpit\cockpit.state.json`
+  （`.gitignore` 忽略），更新時仍是 v3；第一次以 v0.1.6 啟動後會升成 v4。
+  - **降版備份**：v3 原檔已複製到 `%LOCALAPPDATA%\ai-cockpit\cockpit.state.v3-before-0.1.6.json`。要退回 v0.1.5，先關 Cockpit，
+    把它複製回 `cockpit.state.json` 再裝回舊版。
   - 要換成新建置：關 Cockpit 等 10 秒後 `pwsh -File scripts\install-desktop.ps1`（release 建置會印 MSVC「正在建立程式庫 .lib／.exp」，是例行訊息）。
   - 安裝檔版本沒裝。Ubuntu-24.04 可能被驗證工具開機而沒關，使用者要關自己 `wsl --terminate Ubuntu-24.04`；Claude 不要代關。
-- **功能摘要**（細節看 `cockpit/README.md`「依 OpenSpec 進度自動移動卡片」、change 的 `design.md`；主規格 `openspec/specs/`
-  會在 archive 時更新）：
+- **功能摘要**（細節看 `cockpit/README.md`「依 OpenSpec 進度自動移動卡片」、archive 的 `design.md`；主規格 `openspec/specs/openspec-stage-sync/`）：
   - 偵測：`cockpit/src/openspec_sync.rs` 每約 10 秒對 Repo Project 的每個 pane 取 worktree 目前分支（`cockpit-git` 新增的唯讀
     `CurrentBranch`，`symbolic-ref -q HEAD`）並讀 `openspec/changes/`。分支以最後一段對 change 名稱；對不上退回 archive 同名（多個日期取最大）
     或該 worktree 唯一進行中的 change；都不是就不顯示標示、維持手動。
@@ -55,11 +55,10 @@
   - 推送前：`node docs/research/2026-10-02/deid-check.js && node docs/research/2026-10-02/deid-check.js --history`
   - 預覽：`cargo run -p cockpit --example ui_preview`（`127.0.0.1:7770`；fixture 含 Repo Project 與偵測到的 repo，已加同步標示的卡片）。
   - 驗收腳本（改了 `cockpit/assets/` 先 `cargo build -p cockpit --example ui_preview`；不可並行、一次一支）：清單在
-    `openspec/changes/openspec-stage-sync/sdd-ledger.md` 第 7.1 節（17 支，含本段新增的 `docs/research/2026-10-10/stage-sync-check.js`）。
+    `openspec/changes/archive/2026-10-11-openspec-stage-sync/sdd-ledger.md` 第 7.1 節（17 支，含本段新增的 `docs/research/2026-10-10/stage-sync-check.js`）。
     跑完還原被重拍的截圖：`git checkout -- docs/research/2026-09-16 docs/research/2026-10-03`。
-  - 看 change 進度：`openspec status --change openspec-stage-sync`
   - WSL 端 git 實測（會開機發行版，非必要不跑）：`cargo test -p cockpit-git --test real_git -- --ignored wsl_repo_identity`
-- **測試與 gate**：各指令數字以當場跑為準（併回前必須重跑全 gate）；7.1 與 7.2 修正後的紀錄在 ledger。
+- **測試與 gate**：各指令數字以當場跑為準（併回前必須重跑全 gate）。
 
 ## 2. 發版流程（下次發版照做）
 
@@ -71,12 +70,11 @@
 
 ## 3. 接著要做
 
-### 3.1 使用者確認後：併回、archive、發版
+### 3.1 修 `abort_await_is_bounded` 的時序前提（優先：已兩度卡發版）
 
-順序：重跑全 gate 與 17 支腳本 → 使用者同意後 squash 併回 `main`（慣例見 `~/.claude/guides/git-branch-workflow.md`）→ **`/opsx:archive`
-走獨立 commit**（archive 會把新 capability `openspec-stage-sync` 併進主規格；新 capability 的 Purpose 可能缺空行造成 MD022，見 memory
-`gate-exit-code-swallowed-by-pipe`，archive 後單獨跑 markdownlint）→ 依第 2 節發版（問使用者版號）→ 發版後更新桌面版。
-併回前提醒使用者降版限制（桌面 v0.1.5 讀不了 v4 狀態檔）。刪分支（本地）與 SDD 工作區 `.superpowers/sdd/tasks-openspec-stage-sync/` 要先問。
+`cockpit/tests/app.rs` 的前提檢查「blocking task 在放行前確實收不掉」在 CI 高負載時不成立（CI run 37217313821；v0.1.6 推送後的
+`main` CI run 38108875786 又撞一次）；本機也偶發過一次（先 `release_tx.send` 才檢查 `is_finished`，中間有競態）。修法：前提改成
+「等到條件成立」而不是假設立刻成立；修完推分支看 CI。
 
 ### 3.2 自動更新加獨立簽章（使用者 2026-10-06：「列入」，未開 change）
 
@@ -84,11 +82,6 @@
 可同時上傳惡意安裝檔與對得上的雜湊檔）。獨立簽章是私鑰不放 GitHub、公鑰編進執行檔。要先白話說明後問使用者：私鑰放哪（GitHub
 secrets vs 本機離線簽）、遺失或外洩的換鑰方案、已發出的版本升到第一個帶公鑰版本那一跳仍只靠 SHA-256、簽章檔怎麼發布（凍結契約之外）。
 工具名稱與格式（例如 minisign）動手前查一手來源。
-
-### 3.3 修 `abort_await_is_bounded` 的時序前提
-
-`cockpit/tests/app.rs` 的前提檢查「blocking task 在放行前確實收不掉」在 CI 高負載時不成立（CI run 37217313821）；本機也偶發過一次
-（先 `release_tx.send` 才檢查 `is_finished`，中間有競態）。修法：前提改成「等到條件成立」而不是假設立刻成立；修完推分支看 CI。
 
 ## 4. 已知限制與留待之後
 
@@ -156,3 +149,4 @@ secrets vs 本機離線簽）、遺失或外洩的換鑰方案、已發出的版
 |---|---|---|
 | 1–45 | 2026-09-13～10-08 | 見 `git log -- docs/handover.md`（change 1a～project-select-pane、v0.1.0～v0.1.5） |
 | 46 | 2026-10-11 | change `openspec-stage-sync` 在 `feat/openspec-stage-sync` 完成（SDD、逐 task 審查、Codex 與最終審查、設計審核、真機冒煙），未併回、未發版，待使用者確認 |
+| 47 | 2026-10-11 | 使用者同意：squash 併回 `main`、archive、推送；發布 v0.1.6；桌面版更新為 0.1.6（v3 狀態檔另備份） |
