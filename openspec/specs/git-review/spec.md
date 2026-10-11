@@ -10,7 +10,11 @@
 ### Requirement: git 讀取的安全邊界
 
 系統必須只以「讀取」的方式使用 git：只執行 status、列 refs、列 commit、讀 commit 內容、比較兩個版本、找共同祖先、讀取某版本
-的檔案內容這幾類查詢，且能執行的查詢種類在程式中是封閉清單，HTTP 請求無法讓服務執行清單以外的 git 子命令或加入任意引數。
+的檔案內容、取得工作樹目前所在的分支名稱這幾類查詢，且能執行的查詢種類在程式中是封閉清單，HTTP 請求無法讓服務執行清單以外的
+git 子命令或加入任意引數。「目前分支」查詢只供 Cockpit 內部的 OpenSpec 進度偵測使用（見 `openspec-stage-sync`），不對應任何
+HTTP 端點。「目前分支」查詢在 HEAD 指向某個分支時回傳該分支名稱（含 `/`，例如 `feat/foo`）；HEAD 是 detached（沒有指向任何分支）時
+回傳「沒有分支」，這不是錯誤；HEAD 指向的不是 `refs/heads/` 底下的 ref 時同樣回傳「沒有分支」；分支名稱以 HEAD 的完整 ref 去掉
+`refs/heads/` 前綴取得，不使用縮寫形式（存在同名 tag 時縮寫形式可能帶歧義）；其他失敗（不是 repo、git 無法執行、逾時、擁有者不符等）為錯誤，不回傳分支名稱。
 每次執行 git 都必須：不取得 optional lock、不寫入 index 或 repo 內任何檔案；不執行 repo 設定所指定的 fsmonitor、外部 diff 程式、
 textconv 與簽章驗證程式；把路徑一律當字面路徑（不解讀 pathspec 語法）；不修改任何 git 設定（含 `safe.directory`）。
 根目錄位於 WSL（主機路徑以 `\\wsl.localhost\<distro>\` 或 `\\wsl$\<distro>\` 開頭）時，git 必須在該 distro 內以
@@ -67,6 +71,42 @@ git 拒絕讀取「擁有者不是目前使用者」的 repo 時，系統必須�
 - **GIVEN** 以 Windows 的 git 讀取時會回報 dubious ownership 的 repo
 - **WHEN** 請求狀態
 - **THEN** 回 502，`code` 為 `git_untrusted`；git 的全域與系統設定沒有被修改
+
+#### Scenario: 目前分支查詢回傳分支名稱
+
+- **GIVEN** 一個 git repo，HEAD 指向分支 `feat/openspec-stage-sync`
+- **WHEN** 執行「目前分支」查詢
+- **THEN** 回傳分支名稱 `feat/openspec-stage-sync`（完整名稱，不截斷）
+
+#### Scenario: detached HEAD 沒有分支但不是錯誤
+
+- **GIVEN** 一個 git repo，HEAD 指向某個 commit 而不是分支（detached HEAD）
+- **WHEN** 執行「目前分支」查詢
+- **THEN** 回傳「沒有分支」，不是錯誤
+
+#### Scenario: 目前分支查詢失敗為錯誤
+
+- **GIVEN** 目標目錄不是 git repo（或 git 回報擁有者不符）
+- **WHEN** 執行「目前分支」查詢
+- **THEN** 回傳錯誤，不回傳分支名稱，且沒有修改任何 git 設定
+
+#### Scenario: 目前分支查詢遵守讀取邊界
+
+- **GIVEN** 一個 git repo，某個已追蹤檔案的修改時間被更新但內容不變；repo 位於 WSL 發行版內
+- **WHEN** 執行「目前分支」查詢
+- **THEN** 查詢在該 distro 內以 `wsl.exe --exec` 執行；`.git/index` 的內容與修改時間都不變，repo 內沒有出現 `index.lock`
+
+#### Scenario: 與 tag 同名的分支
+
+- **GIVEN** 一個 git repo，HEAD 指向分支 `feat/foo`，且存在一個同名的 tag `feat/foo`
+- **WHEN** 執行「目前分支」查詢
+- **THEN** 回傳 `feat/foo`（不是 `heads/feat/foo`）
+
+#### Scenario: HEAD 指向非 refs/heads 的 ref
+
+- **GIVEN** 一個 git repo，HEAD 是指向 `refs/remotes/origin/main` 的符號參照（非 `refs/heads/` 底下）
+- **WHEN** 執行「目前分支」查詢
+- **THEN** 回傳「沒有分支」，不是錯誤
 
 ### Requirement: git 端點的共同規則
 

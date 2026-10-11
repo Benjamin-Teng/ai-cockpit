@@ -499,15 +499,23 @@ pane 列用於指定改綁目標，不是選定 pane）。選定 pane 不反過�
 
 左欄 Project 分頁在 Project 清單之外必須有「偵測到的 repo」區，依投影 `detected_repos` 的順序列出每個 repo：顯示 `name`、
 `pane_count` 與「加入」鈕；沒有偵測到的 repo 時該區不列任何項目、沒有「加入」鈕。按「加入」送出 `POST /api/repo-projects`，
-本體為 `{"repo": <該項的 repo>, "stages": <預設 stages>}`（不帶 `name`）；預設 stages 依介面語言：繁中為 `規劃`、`實作`、
-`審查`、`完成`，英文為 `Plan`、`Implement`、`Review`、`Complete`。
+本體為 `{"repo": <該項的 repo>, "stages": <預設 stages>, "phases": <預設對應>}`（不帶 `name`）；預設 stages 依介面語言：繁中為 `規劃`、`實作`、
+`審查`、`完成`，英文為 `Plan`、`Implement`、`Review`、`Complete`；預設對應與介面語言無關，依序為 `plan`、`implement`、`review`、`complete`
+（四站各對應同名的 OpenSpec 階段）。
 
 `kind` 為 `repo` 的 Project 項目必須有「⋯」選單（手寫的 Project 沒有），選單項目為「改名」「編輯 stage」「移除」：
 
 - 「改名」讓使用者輸入新名稱，送出 `PATCH /api/repo-projects/<pid>`，本體 `{"name": <新名稱>}`。
-- 「編輯 stage」開啟對話框，依序列出該 Project 目前的 stages，使用者可改名、新增、刪除、調整順序；按儲存送出
-  `PATCH /api/repo-projects/<pid>`，本體 `{"stages": [{"name": <名稱>, "from": <原名稱 或 null>}, ...]}`，順序即對話框中的
-  順序，原有項目的 `from` 為它原本的名稱，新增項目的 `from` 為 `null`；按取消不送出請求。
+- 「編輯 stage」開啟對話框，依序列出該 Project 目前的 stages，使用者可改名、新增、刪除、調整順序，並為每一列選擇對應的 OpenSpec
+  階段（見下）；按儲存送出
+  `PATCH /api/repo-projects/<pid>`，本體 `{"stages": [{"name": <名稱>, "from": <原名稱 或 null>, "phase": <階段 或 null>}, ...]}`，順序即對話框中的
+  順序，原有項目的 `from` 為它原本的名稱，新增項目的 `from` 為 `null`，每一列都帶 `phase`（`plan`、`implement`、`review`、`complete`
+  或 `null`）；按取消不送出請求。
+  - 每一列有一個階段下拉選單，選項依序為「不對應」「規劃」「實作」「審查」「完成」（英文為 `None`、`Plan`、`Implement`、`Review`、
+    `Complete`），初始值取自投影的 `stage_phases`，新增的列初始為「不對應」。
+  - 選到已被其他列使用的階段時，原本使用該階段的那一列改回「不對應」，使同一個階段最多對應一列。
+  - 儲存時，若最新投影中該 Project 的 `stages` 或 `stage_phases` 與開啟對話框時不同（在別處被改過），不送出請求，改顯示指出需
+    重新開啟的錯誤訊息；Project 已不存在時同樣不送出。
 - 「移除」先顯示含 Project 名稱的確認，確認後送出 `DELETE /api/repo-projects/<pid>`；取消不送出請求。
 
 加入、改名、編輯 stage、移除都是「畫面操作」：失敗（回非 2xx 或請求失敗）時依「畫面操作」顯示錯誤訊息（含回應本體的 `error`，
@@ -612,8 +620,9 @@ pane 列用於指定改綁目標，不是選定 pane）。選定 pane 不反過�
 
 - **GIVEN** 介面為繁中，`detected_repos` 有 repo `app`（repo key `d:\work\app\.git`）
 - **WHEN** 按 `app` 的「加入」
-- **THEN** 服務收到 `POST /api/repo-projects`，本體 `{"repo":"d:\\work\\app\\.git","stages":["規劃","實作","審查","完成"]}`
-  （沒有 `name`）；新投影到達後 `app` 從該區消失並出現在 Project 清單。介面為英文時 `stages` 為 `["Plan","Implement","Review","Complete"]`
+- **THEN** 服務收到 `POST /api/repo-projects`，本體 `{"repo":"d:\\work\\app\\.git","stages":["規劃","實作","審查","完成"],"phases":["plan","implement","review","complete"]}`
+  （沒有 `name`）；新投影到達後 `app` 從該區消失並出現在 Project 清單。介面為英文時 `stages` 為 `["Plan","Implement","Review","Complete"]`，
+  `phases` 不變
 
 #### Scenario: 加入成功後自動選定新 Project
 
@@ -652,9 +661,9 @@ pane 列用於指定改綁目標，不是選定 pane）。選定 pane 不反過�
 
 #### Scenario: 編輯 stage
 
-- **GIVEN** `app` 的 stages 為 `Plan`、`Implement`、`Review`、`Done`
+- **GIVEN** `app` 的 stages 為 `Plan`、`Implement`、`Review`、`Done`，`stage_phases` 為 `["plan","implement","review","complete"]`
 - **WHEN** 開啟「編輯 stage」對話框，把 `Implement` 改名為 `Build`、刪除 `Review`、在最後新增 `Ship`，按儲存
-- **THEN** 服務收到 `PATCH /api/repo-projects/app`，本體 `{"stages":[{"name":"Plan","from":"Plan"},{"name":"Build","from":"Implement"},{"name":"Done","from":"Done"},{"name":"Ship","from":null}]}`
+- **THEN** 服務收到 `PATCH /api/repo-projects/app`，本體 `{"stages":[{"name":"Plan","from":"Plan","phase":"plan"},{"name":"Build","from":"Implement","phase":"implement"},{"name":"Done","from":"Done","phase":"complete"},{"name":"Ship","from":null,"phase":null}]}`
 
 #### Scenario: 取消編輯與取消移除不送請求
 
@@ -678,6 +687,30 @@ pane 列用於指定改綁目標，不是選定 pane）。選定 pane 不反過�
 - **GIVEN** 某 Repo Project 的名稱為 `<img src=x onerror=alert(1)>`，其 stage 名稱與 pane label 也含 HTML 字元
 - **WHEN** 重畫
 - **THEN** 這些名稱在左欄、Factory Floor 與對話框中以原樣文字顯示，沒有建立任何 `<img>` 元素，也沒有執行指令碼
+
+#### Scenario: 編輯 stage 對話框的階段下拉
+
+- **GIVEN** `app` 的 stages 為 `Plan`、`Build`、`Done`，`stage_phases` 為 `["plan",null,"complete"]`
+- **WHEN** 開啟「編輯 stage」對話框
+- **THEN** 三列的階段下拉初始值依序為「規劃」「不對應」「完成」，每個下拉的選項依序為「不對應」「規劃」「實作」「審查」「完成」
+
+#### Scenario: 選到已被使用的階段時他列改回不對應
+
+- **GIVEN** 對話框中 `Plan` 列對應「規劃」、`Build` 列為「不對應」
+- **WHEN** 把 `Build` 列的下拉選為「規劃」
+- **THEN** `Build` 列為「規劃」，`Plan` 列自動改回「不對應」；按儲存送出的本體中只有 `Build` 的 `phase` 為 `plan`、`Plan` 的 `phase` 為 `null`
+
+#### Scenario: 階段對應在別處被改過時不送出
+
+- **GIVEN** 「編輯 stage」對話框開著，開啟時 `stage_phases` 為 `["plan",null]`
+- **WHEN** 期間新投影到達，`stage_phases` 變成 `[null,"plan"]`（stages 沒變），使用者按儲存
+- **THEN** 服務沒有收到任何 `PATCH` 請求，對話框顯示指出需重新開啟的錯誤訊息
+
+#### Scenario: 英文介面的階段下拉
+
+- **GIVEN** 介面為英文
+- **WHEN** 開啟「編輯 stage」對話框
+- **THEN** 下拉選項為 `None`、`Plan`、`Implement`、`Review`、`Complete`；送出的 `phase` 值仍是 `plan`、`implement`、`review`、`complete` 或 `null`
 
 ### Requirement: 狀態端點只接受本機同源請求
 
@@ -731,3 +764,41 @@ pane 列用於指定改綁目標，不是選定 pane）。選定 pane 不反過�
 - **GIVEN** workstream 的 `binding` 為 `bound`、`source` 為 `pane`
 - **WHEN** 重畫
 - **THEN** 綁定摘要顯示 runtime 與 pane id，沒有「改綁」標示
+
+### Requirement: 卡片的 OpenSpec 同步標示
+
+系統必須在 Factory Floor 的 task 節點上，於 task 的 `sync` 不是 `null` 時（見 `state-projection`「Project 投影」）多顯示一行小標示：change
+名稱（`sync.change`，使用者資料，兩種語言都照原文以文字節點呈現）、勾選進度 `checked/total`（例如 `3/8`），以及目前是「自動」或「手動」
+（`sync.mode` 為 `auto` 或 `manual`；英文介面為 `Auto`、`Manual`）。手動標示以較淡的樣式呈現，但仍須符合「Direction 01 視覺語彙」的文字
+對比，且標示不得只靠顏色區分自動與手動（文字本身即區分）。`sync` 為 `null` 的 task 節點不顯示這一行，節點外觀與沒有此功能時相同。
+標示隨每一份新投影更新，不新增任何可點的互動。
+
+#### Scenario: 自動同步的卡片
+
+- **GIVEN** task 的 `sync` 為 `{"change":"foo","phase":"implement","checked":3,"total":8,"mode":"auto"}`
+- **WHEN** 重畫
+- **THEN** 該節點顯示 `foo`、`3/8` 與「自動」
+
+#### Scenario: 手動的卡片顯示較淡的手動標示
+
+- **GIVEN** task 的 `sync` 為 `{"change":"foo","phase":"review","checked":8,"total":8,"mode":"manual"}`
+- **WHEN** 重畫
+- **THEN** 該節點顯示 `foo`、`8/8` 與「手動」，「手動」標示的計算顏色比「自動」標示淡，對比仍不低於 4.5:1
+
+#### Scenario: 沒有同步資訊的卡片
+
+- **GIVEN** task 的 `sync` 為 `null`
+- **WHEN** 重畫
+- **THEN** 該節點沒有同步標示
+
+#### Scenario: change 名稱不以 HTML 解讀
+
+- **GIVEN** task 的 `sync.change` 為 `<img src=x onerror=alert(1)>`
+- **WHEN** 重畫
+- **THEN** 以原樣文字顯示，沒有建立 `<img>` 元素
+
+#### Scenario: 英文介面
+
+- **GIVEN** 介面為英文，task 的 `sync.mode` 為 `auto`
+- **WHEN** 重畫
+- **THEN** 標示的模式文字為 `Auto`，不出現繁中字典字串

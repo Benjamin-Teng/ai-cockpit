@@ -96,7 +96,9 @@
 ### Requirement: Project 投影
 
 系統必須在 `projects` 中為每個 Project 輸出：`id`、`name`、`kind`（手寫於設定檔的為 `config`，畫面加入的 Repo Project 為
-`repo`）、`stages`（字串陣列，設定順序）、`warnings`（字串陣列，無則空）、`workstreams`、`tasks`；Repo Project 另帶 `repo`
+`repo`）、`stages`（字串陣列，設定順序）、`stage_phases`（與 `stages` 逐項對齊的陣列，每項為 `plan`、`implement`、`review`、
+`complete` 之一或 `null`，意義見 `repo-projects`「Stage 對應 OpenSpec 階段」；手寫 project 沒有階段對應，為空陣列）、
+`warnings`（字串陣列，無則空）、`workstreams`、`tasks`；Repo Project 另帶 `repo`
 （repo key），手寫 project 沒有 `repo` 欄位。順序為：手寫 project 依設定檔順序，其後是 Repo Project 依名稱（不分大小寫）排序、同名再依 `id`。
 每筆 workstream 含 `id`、`name`、`binding`、`active_task`
 （目前 task 的 id，無則 `null`）、`activity_undeclared`（布林）；Repo Project 位於 linked worktree 的 pane 所產生的 workstream
@@ -110,7 +112,13 @@
 `repo-projects`）。每筆 task 含 `id`、`title`、`workstream`、`stage`
 （目前 Stage）、`mark`
 （`none`／`completed`／`failed`）、`status`（`pending`／`ready`／`running`／`blocked`／`failed`／
-`completed`）、`depends_on`（task id 陣列）。Domain 狀態改變（進度操作、目前 task 改變、覆蓋設定或取消、覆蓋失效、
+`completed`）、`depends_on`（task id 陣列）、`sync`（OpenSpec 同步資訊，見下）。`sync` 為 `null` 或
+`{"change": "<change 名稱>", "phase": "plan|implement|review|complete", "checked": <整數>, "total": <整數>, "mode": "auto|manual"}`：
+`change`、`phase`、`checked`、`total` 取自該 task 的 pane 最近一輪的 OpenSpec 進度偵測結果（見 `openspec-stage-sync`），
+`mode` 取自該 task 保存的同步狀態；偵測結果目前對不上任何 change 時一律為 `null`，即使保存的同步狀態還留有舊的 change 也一樣
+（不顯示過時的 change）；有偵測結果但該 task 還沒有保存的同步狀態時（例如帶著 Completed／Failed 標記而從未套用過），`mode` 為
+`auto`；手寫 project 的 task 的 `sync` 一律為 `null`。偵測結果改變時，投影遵守「version 只在內容改變時遞增」而更新。
+Domain 狀態改變（進度操作、目前 task 改變、覆蓋設定或取消、覆蓋失效、
 Repo Project 的加入／修改／移除、pane 歸類結果改變）與
 Runtime 層改變一樣觸發投影，並遵守「version 只在內容改變時遞增」與「合併廣播」。
 
@@ -187,3 +195,47 @@ Runtime 層改變一樣觸發投影，並遵守「version 只在內容改變時�
 - **GIVEN** 投影 version 為 5，Repo Project `app` 有一條 workstream
 - **WHEN** 在 `app` 內新開一個 pane 且歸類完成
 - **THEN** 觀察者收到 version 6，`app` 多一條 workstream 與一張 task
+
+#### Scenario: Repo Project 的階段對應
+
+- **GIVEN** Repo Project `app` 的 stages 為 `["規劃","實作","審查","完成"]`，對應依序為 `plan`、`implement`、`review`、`complete`；
+  手寫 project `h` 有兩個 stages
+- **WHEN** 產生投影
+- **THEN** `app.stage_phases` 為 `["plan","implement","review","complete"]`；`h.stage_phases` 為 `[]`
+
+#### Scenario: 部分 stage 沒有對應
+
+- **GIVEN** Repo Project 的 stages 為 `["Plan","Build","Done"]`，只有 `Plan` 對應 `plan`
+- **WHEN** 產生投影
+- **THEN** `stage_phases` 為 `["plan",null,null]`，長度與 `stages` 相同
+
+#### Scenario: task 的同步資訊
+
+- **GIVEN** Repo Project `app` 的 task `local~wJ:p1` 所在 pane 的最近偵測結果為 change `foo`、階段 `implement`、勾選 3 / 8，該 task
+  保存的同步狀態 `mode` 為 `manual`
+- **WHEN** 產生投影
+- **THEN** 該 task 的 `sync` 為 `{"change":"foo","phase":"implement","checked":3,"total":8,"mode":"manual"}`
+
+#### Scenario: 對不上 change 時 sync 為 null
+
+- **GIVEN** task 保存的同步狀態曾套用過 change `foo`，但最近一次偵測結果是對不上任何 change
+- **WHEN** 產生投影
+- **THEN** 該 task 的 `sync` 為 `null`
+
+#### Scenario: 有偵測結果但沒有保存的同步狀態
+
+- **GIVEN** task 標記為 `completed`，其 pane 的偵測結果為 change `foo`、階段 `review`、勾選 5 / 5，該 task 沒有保存的同步狀態
+- **WHEN** 產生投影
+- **THEN** 該 task 的 `sync` 為 `{"change":"foo","phase":"review","checked":5,"total":5,"mode":"auto"}`
+
+#### Scenario: 手寫 project 的 task 沒有同步資訊
+
+- **GIVEN** 手寫 project 的 task
+- **WHEN** 產生投影
+- **THEN** 該 task 的 `sync` 為 `null`
+
+#### Scenario: 偵測結果改變遞增 version
+
+- **GIVEN** 投影 version 為 5，某 task 的 `sync` 為 `null`
+- **WHEN** 其 pane 的偵測結果變成對上 change `foo`、階段 `plan`
+- **THEN** 觀察者收到 version 6，該 task 的 `sync` 不再是 `null`
